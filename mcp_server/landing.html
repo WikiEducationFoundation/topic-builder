@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Wikipedia Topic Builder</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            max-width: 720px;
+            margin: 40px auto;
+            padding: 0 20px;
+            color: #333;
+            line-height: 1.6;
+        }
+        h1 { margin-bottom: 0.2em; }
+        .subtitle { color: #666; margin-top: 0; font-size: 1.1em; }
+        code {
+            background: #f4f4f4;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 0.95em;
+        }
+        .url-box {
+            background: #f0f7ff;
+            border: 1px solid #c0d8f0;
+            border-radius: 6px;
+            padding: 12px 16px;
+            font-family: monospace;
+            font-size: 1.05em;
+            margin: 12px 0;
+            user-select: all;
+        }
+        .step {
+            margin: 16px 0;
+            padding-left: 0;
+        }
+        .step-num {
+            display: inline-block;
+            background: #2563eb;
+            color: white;
+            width: 26px;
+            height: 26px;
+            border-radius: 50%;
+            text-align: center;
+            line-height: 26px;
+            font-weight: bold;
+            font-size: 0.85em;
+            margin-right: 8px;
+        }
+        .tools-list {
+            background: #fafafa;
+            border: 1px solid #e0e0e0;
+            border-radius: 6px;
+            padding: 16px 20px;
+            margin: 16px 0;
+        }
+        .tools-list dt { font-weight: 600; margin-top: 8px; }
+        .tools-list dd { margin-left: 0; margin-bottom: 4px; color: #555; }
+        hr { border: none; border-top: 1px solid #e0e0e0; margin: 32px 0; }
+        .footer { color: #999; font-size: 0.85em; }
+
+        /* Accordion */
+        details {
+            border: 1px solid #e0e0e0;
+            border-radius: 6px;
+            margin: 8px 0;
+            background: #fff;
+        }
+        details + details {
+            margin-top: -1px;
+            border-top-left-radius: 0;
+            border-top-right-radius: 0;
+        }
+        details:first-of-type {
+            border-top-left-radius: 6px;
+            border-top-right-radius: 6px;
+        }
+        details:last-of-type {
+            border-bottom-left-radius: 6px;
+            border-bottom-right-radius: 6px;
+        }
+        details + details:not([open]) {
+            border-top: none;
+        }
+        summary {
+            padding: 12px 16px;
+            cursor: pointer;
+            font-weight: 600;
+            list-style: none;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        summary::-webkit-details-marker { display: none; }
+        summary::before {
+            content: '\25B6';
+            font-size: 0.7em;
+            transition: transform 0.2s;
+            flex-shrink: 0;
+        }
+        details[open] > summary::before {
+            transform: rotate(90deg);
+        }
+        .accordion-body {
+            padding: 0 16px 16px 16px;
+        }
+        .account-type-label {
+            display: inline-block;
+            font-size: 0.75em;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            padding: 2px 8px;
+            border-radius: 3px;
+            margin-left: auto;
+        }
+        .label-individual { background: #e0f2fe; color: #0369a1; }
+        .label-admin { background: #fef3c7; color: #92400e; }
+        .label-member { background: #d1fae5; color: #065f46; }
+    </style>
+</head>
+<body>
+    <h1>Wikipedia Topic Builder</h1>
+    <p class="subtitle">An MCP server for building comprehensive Wikipedia article lists</p>
+
+    <p>This server provides tools that help Claude identify all Wikipedia articles belonging to a topic. Connect it to Claude on the web and have a conversation to build your topic.</p>
+
+    <hr>
+
+    <h2>Connect to Claude</h2>
+
+    <p>Choose the setup that matches your account type:</p>
+
+    <details>
+        <summary>
+            Individual Claude account
+            <span class="account-type-label label-individual">Personal / Pro</span>
+        </summary>
+        <div class="accordion-body">
+            <div class="step">
+                <span class="step-num">1</span>
+                <strong>Open Settings</strong><br>
+                Go to <a href="https://claude.ai">claude.ai</a>. Click your profile icon (bottom-left), then <strong>Settings</strong>.
+            </div>
+            <div class="step">
+                <span class="step-num">2</span>
+                <strong>Add the integration</strong><br>
+                Go to the <strong>Integrations</strong> tab. Click <strong>Add More</strong>, then <strong>Add custom integration</strong>. Enter this URL:
+                <div class="url-box">https://topic-builder.wikiedu.org/mcp</div>
+                Name it <strong>Wikipedia Topic Builder</strong>. Set authentication to <strong>None</strong>.
+            </div>
+            <div class="step">
+                <span class="step-num">3</span>
+                <strong>Start a conversation</strong><br>
+                Start a new chat. Click the <strong>Integrations</strong> icon (plug icon) in the message bar and toggle <strong>Wikipedia Topic Builder</strong> on. Then try:
+                <blockquote><em>"I want to build a list of all Wikipedia articles about human trafficking. Let's start with reconnaissance."</em></blockquote>
+            </div>
+        </div>
+    </details>
+
+    <details>
+        <summary>
+            Organization account &mdash; admin setup
+            <span class="account-type-label label-admin">Admin</span>
+        </summary>
+        <div class="accordion-body">
+            <p>As an org admin, you add the connector once and it becomes available to all members.</p>
+            <div class="step">
+                <span class="step-num">1</span>
+                <strong>Open Organization Settings</strong><br>
+                Go to <a href="https://claude.ai">claude.ai</a>. Click your profile icon, then <strong>Settings</strong>, then navigate to your organization's admin settings.
+            </div>
+            <div class="step">
+                <span class="step-num">2</span>
+                <strong>Add a connector</strong><br>
+                Find the <strong>Connectors</strong> section. Click <strong>Add Connector</strong>. Enter:
+                <div class="url-box">https://topic-builder.wikiedu.org/mcp</div>
+                Name it <strong>Wikipedia Topic Builder</strong>. Set authentication to <strong>None</strong>.
+            </div>
+            <div class="step">
+                <span class="step-num">3</span>
+                <strong>Done</strong><br>
+                The connector is now available to all members of your organization. They can enable it from the Connectors menu in any chat.
+            </div>
+        </div>
+    </details>
+
+    <details>
+        <summary>
+            Organization account &mdash; using an enabled connector
+            <span class="account-type-label label-member">Member</span>
+        </summary>
+        <div class="accordion-body">
+            <p>Your admin has already added the Wikipedia Topic Builder connector. You just need to enable it in a chat.</p>
+            <div class="step">
+                <span class="step-num">1</span>
+                <strong>Start a new chat</strong><br>
+                Go to <a href="https://claude.ai">claude.ai</a> and start a new conversation.
+            </div>
+            <div class="step">
+                <span class="step-num">2</span>
+                <strong>Enable the connector</strong><br>
+                Click the <strong>Connectors</strong> menu (plug icon, or look for it below the message input). Find <strong>Wikipedia Topic Builder</strong> and toggle it on.
+            </div>
+            <div class="step">
+                <span class="step-num">3</span>
+                <strong>Start building</strong><br>
+                Tell Claude what topic you want to explore:
+                <blockquote><em>"I want to build a list of all Wikipedia articles about human trafficking. Let's start with reconnaissance."</em></blockquote>
+            </div>
+        </div>
+    </details>
+
+    <hr>
+
+    <h2>What it does</h2>
+
+    <p>You describe a topic, and Claude uses Wikipedia's APIs to systematically find all relevant articles. The workflow is:</p>
+
+    <ol>
+        <li><strong>Scope</strong> &mdash; Discuss how broadly to define the topic</li>
+        <li><strong>Reconnaissance</strong> &mdash; Survey how Wikipedia organizes the topic (categories, WikiProjects, index pages)</li>
+        <li><strong>Gather</strong> &mdash; Collect candidate articles from multiple strategies</li>
+        <li><strong>Score &amp; Review</strong> &mdash; Claude scores articles for relevance; you review borderline cases</li>
+        <li><strong>Edge Browse</strong> &mdash; Find articles that structured strategies missed</li>
+        <li><strong>Export</strong> &mdash; Download a CSV of the final article list</li>
+    </ol>
+
+    <p>Topics are saved automatically. You can leave a conversation and come back later to continue where you left off.</p>
+
+    <h2>Available tools</h2>
+
+    <div class="tools-list">
+        <dl>
+            <dt>start_topic / resume_topic</dt>
+            <dd>Begin a new topic build or resume an existing one</dd>
+
+            <dt>survey_categories</dt>
+            <dd>Survey Wikipedia's category tree for a topic (without collecting articles yet)</dd>
+
+            <dt>check_wikiproject</dt>
+            <dd>Check if a WikiProject exists (the best single source of curated articles)</dd>
+
+            <dt>find_list_pages</dt>
+            <dd>Search for Index/List/Glossary pages about the topic</dd>
+
+            <dt>get_wikiproject_articles</dt>
+            <dd>Fetch all articles tagged by a WikiProject</dd>
+
+            <dt>get_category_articles</dt>
+            <dd>Crawl a category tree and collect articles</dd>
+
+            <dt>harvest_list_page</dt>
+            <dd>Extract article links from an Index or List page</dd>
+
+            <dt>search_articles</dt>
+            <dd>Search Wikipedia using CirrusSearch operators</dd>
+
+            <dt>search_similar</dt>
+            <dd>Find articles similar to a given article (great for finding gaps)</dd>
+
+            <dt>score_by_extract</dt>
+            <dd>Fetch article introductions for Claude to judge relevance</dd>
+
+            <dt>set_scores</dt>
+            <dd>Save relevance scores (1&ndash;10) for articles</dd>
+
+            <dt>browse_edges</dt>
+            <dd>Find related articles by browsing outgoing links from confirmed articles</dd>
+
+            <dt>remove_by_pattern</dt>
+            <dd>Bulk-remove articles matching a pattern (with dry-run preview)</dd>
+
+            <dt>get_status</dt>
+            <dd>See current article count, score distribution, source breakdown</dd>
+
+            <dt>get_articles</dt>
+            <dd>List articles with optional filters (by score, source, etc.)</dd>
+
+            <dt>filter_articles</dt>
+            <dd>Clean up: resolve redirects, remove disambiguation and list pages</dd>
+
+            <dt>export_csv</dt>
+            <dd>Export the final article list as a downloadable CSV</dd>
+        </dl>
+    </div>
+
+    <hr>
+
+    <h2>Output format</h2>
+
+    <p>The final CSV has one article title per line, no header &mdash; ready for the <a href="https://github.com/WikiEducationFoundation/impact-visualizer">Wiki Education Impact Visualizer</a>.</p>
+
+    <hr>
+
+    <p class="footer">
+        Built by <a href="https://wikiedu.org">Wiki Education</a>.
+        Source: <a href="https://github.com/WikiEducationFoundation/topic-builder">GitHub</a> (coming soon).
+    </p>
+</body>
+</html>
