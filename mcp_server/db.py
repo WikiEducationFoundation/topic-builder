@@ -232,6 +232,15 @@ def get_status(topic_id):
     }
 
 
+def update_article_sources(topic_id, title, new_sources):
+    """Update the sources list for a single article."""
+    conn = _connect()
+    conn.execute("UPDATE articles SET sources = ? WHERE topic_id = ? AND title = ?",
+                 (json.dumps(new_sources), topic_id, title))
+    conn.commit()
+    conn.close()
+
+
 def replace_all_articles(topic_id, articles_dict):
     """Replace all articles for a topic (used by filter_articles).
     articles_dict: {title: {sources: [...], score: int|None}}"""

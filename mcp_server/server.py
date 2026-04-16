@@ -55,14 +55,19 @@ mcp = FastMCP(
     instructions="""You are a Wikipedia topic mapping assistant. Use these tools to help users
 identify all Wikipedia articles belonging to a topic. The workflow is:
 1. Scope the topic with the user
-2. Reconnaissance: survey_categories, check_wikiproject, find_list_pages
+2. Reconnaissance: survey_categories (with count_articles=True to gauge size), check_wikiproject, find_list_pages
 3. Gather candidates: get_wikiproject_articles, get_category_articles, harvest_list_page, search_articles
 4. Score and review: score_by_extract, get_status, get_articles
 5. Edge browse: browse_edges, search_similar
 6. Clean up and export: filter_articles, export_csv
 
-IMPORTANT: Always call start_topic or resume_topic before using any other tools.
-Topics are persisted — users can leave and return to continue a topic build later."""
+IMPORTANT GUIDELINES:
+- Always call start_topic or resume_topic before using any other tools.
+- Topics are persisted — users can leave and return to continue a topic build later.
+- Before pulling a large category tree, use survey_categories with count_articles=True to check the size. If >2000 articles, discuss with the user whether to pull specific subcategories instead.
+- Each gather operation records a specific source label (e.g., "category:Learning methods"). If a pull turns out to be too noisy, use remove_by_source to undo it cleanly.
+- After pruning is done, use score_all_unscored to mark everything as scored for export, rather than paging through and scoring individually.
+- export_csv with default min_score=0 exports all articles in the working list. No need to score first unless the user wants score-based filtering."""
 )
 
 
@@ -92,6 +97,23 @@ def start_topic(name: str) -> str:
         return f"Started new topic build: '{name}'. Working list is empty."
     else:
         return f"Resumed existing topic: '{name}'. Working list has {article_count} articles."
+
+
+@mcp.tool()
+def reset_topic() -> str:
+    """Clear all articles from the current topic and start over.
+    The topic itself is kept (so the name is preserved), but all articles,
+    scores, and sources are wiped.
+    """
+    err = _require_topic()
+    if err:
+        return err
+
+    all_articles = db.get_all_articles_dict(_current_topic_id)
+    count = len(all_articles)
+    db.replace_all_articles(_current_topic_id, {})
+    log_usage("reset_topic", {}, f"cleared {count} articles")
+    return f"Reset topic '{_current_topic_name}'. Removed all {count} articles. Working list is now empty."
 
 
 @mcp.tool()
@@ -129,13 +151,14 @@ def get_status() -> str:
 # ── Reconnaissance tools ──────────────────────────────────────────────────
 
 @mcp.tool()
-def survey_categories(category: str, depth: int = 2) -> str:
+def survey_categories(category: str, depth: int = 2, count_articles: bool = False) -> str:
     """Survey the subcategory tree of a Wikipedia category WITHOUT collecting articles.
-    Use this first to understand how Wikipedia organizes a topic.
+    Use this first to understand how Wikipedia organizes a topic before committing to a pull.
 
     Args:
         category: Category name without "Category:" prefix (e.g., "Climate change")
         depth: How deep to survey (default 2, max 4)
+        count_articles: If True, also count total articles across all categories (slower but helps gauge size before pulling)
     """
     depth = min(depth, 4)
     visited = set()
@@ -169,6 +192,24 @@ def survey_categories(category: str, depth: int = 2) -> str:
         'total_categories': len(visited),
         'categories_by_depth': {str(d): sorted(cats) for d, cats in sorted(by_depth.items())},
     }
+
+    # Optionally count articles to help gauge size
+    if count_articles:
+        total_articles = 0
+        for cat in visited:
+            params = {
+                'list': 'categorymembers',
+                'cmtitle': f'Category:{cat}',
+                'cmtype': 'page',
+                'cmnamespace': '0',
+                'cmlimit': '500',
+            }
+            for _ in api_query_all(params, 'categorymembers', max_items=50000):
+                total_articles += 1
+        result['estimated_total_articles'] = total_articles
+        if total_articles > 2000:
+            result['warning'] = f'This tree contains ~{total_articles} articles. Consider pulling specific subcategories rather than the whole tree.'
+
     log_usage("survey_categories", {"category": category, "depth": depth}, f"{len(visited)} categories")
     return json.dumps(result, indent=2, ensure_ascii=False)
 
@@ -256,7 +297,8 @@ def get_wikiproject_articles(project_name: str, max_articles: int = 50000) -> st
         title = normalize_title(title)
         articles.append(title)
 
-    batch = [(title, 'wikiproject', None) for title in articles]
+    source_label = f"wikiproject:{project_name}"
+    batch = [(title, source_label, None) for title in articles]
     added, updated = db.add_articles(_current_topic_id, batch)
 
     log_usage("get_wikiproject_articles", {"project": project_name}, f"{len(articles)} articles")
@@ -265,6 +307,7 @@ def get_wikiproject_articles(project_name: str, max_articles: int = 50000) -> st
         'articles_found': len(articles),
         'new_articles_added': added,
         'existing_updated': updated,
+        'source_label': source_label,
         'total_in_working_list': db.get_status(_current_topic_id)['total_articles'],
     }, indent=2, ensure_ascii=False)
 
@@ -323,7 +366,8 @@ def get_category_articles(category: str, depth: int = 3, exclude: list[str] | No
                     visited_cats.add(subcat)
                     queue.append((subcat, d + 1))
 
-    batch = [(title, 'category', None) for title in articles]
+    source_label = f"category:{category}"
+    batch = [(title, source_label, None) for title in articles]
     added, updated = db.add_articles(_current_topic_id, batch)
 
     log_usage("get_category_articles", {"category": category, "depth": depth}, f"{len(articles)} articles, {len(visited_cats)} categories")
@@ -334,7 +378,9 @@ def get_category_articles(category: str, depth: int = 3, exclude: list[str] | No
         'articles_found': len(articles),
         'categories_visited': len(visited_cats),
         'new_articles_added': added,
+        'source_label': source_label,
         'total_in_working_list': db.get_status(_current_topic_id)['total_articles'],
+        'note': f'To undo this pull, use: remove_by_source("{source_label}")',
     }, indent=2, ensure_ascii=False)
 
 
@@ -372,14 +418,17 @@ def harvest_list_page(title: str) -> str:
         else:
             break
 
-    batch = [(t, 'list_page', None) for t in links]
+    source_label = f"list_page:{title}"
+    batch = [(t, source_label, None) for t in links]
     added, updated = db.add_articles(_current_topic_id, batch)
 
     return json.dumps({
         'source_page': title,
         'links_found': len(links),
         'new_articles_added': added,
+        'source_label': source_label,
         'total_in_working_list': db.get_status(_current_topic_id)['total_articles'],
+        'note': f'To undo this harvest, use: remove_by_source("{source_label}")',
     }, indent=2)
 
 
@@ -692,6 +741,57 @@ def remove_articles(titles: list[str]) -> str:
     removed = db.remove_articles(_current_topic_id, titles)
     total = db.get_status(_current_topic_id)['total_articles']
     return f"Removed {removed} articles. Total: {total}"
+
+
+@mcp.tool()
+def remove_by_source(source: str, keep_if_other_sources: bool = True, dry_run: bool = True) -> str:
+    """Remove all articles that came from a specific source. Use this to undo a bad
+    category pull or noisy list harvest.
+
+    Args:
+        source: Source label to remove (e.g., "category:Learning methods", "list_page:List of printmakers")
+        keep_if_other_sources: If True (default), keep articles that also have OTHER sources.
+                               If False, remove all articles with this source regardless.
+        dry_run: If True (default), preview what would be removed without actually removing.
+    """
+    err = _require_topic()
+    if err:
+        return err
+
+    all_articles = db.get_all_articles_dict(_current_topic_id)
+
+    to_remove = []
+    to_keep = []
+    for title, article in all_articles.items():
+        sources = article.get('sources', [])
+        if source not in sources:
+            continue
+        other_sources = [s for s in sources if s != source]
+        if keep_if_other_sources and other_sources:
+            to_keep.append(title)
+        else:
+            to_remove.append(title)
+
+    if dry_run:
+        return json.dumps({
+            'source': source,
+            'would_remove': len(to_remove),
+            'would_keep_(other_sources)': len(to_keep),
+            'sample_remove': to_remove[:20],
+            'sample_keep': to_keep[:10],
+            'note': 'Set dry_run=False to actually remove.',
+        }, indent=2, ensure_ascii=False)
+
+    removed = db.remove_articles(_current_topic_id, to_remove)
+    # Also strip this source from articles we kept
+    if to_keep:
+        for title in to_keep:
+            article = all_articles[title]
+            new_sources = [s for s in article['sources'] if s != source]
+            db.update_article_sources(_current_topic_id, title, new_sources)
+
+    total = db.get_status(_current_topic_id)['total_articles']
+    return f"Removed {removed} articles from source '{source}' (kept {len(to_keep)} that had other sources). Total: {total}"
 
 
 @mcp.tool()
