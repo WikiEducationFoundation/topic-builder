@@ -9,6 +9,7 @@ import collections
 import datetime
 import logging
 import os
+import re
 import threading
 from mcp.server.fastmcp import FastMCP, Context
 
@@ -80,6 +81,27 @@ identify all Wikipedia articles belonging to a topic. The workflow is:
 6. Clean up and export: filter_articles, export_csv
 
 IMPORTANT GUIDELINES:
+- SCOPING is iterative dialogue, not a one-shot clarification. Do NOT call
+  any gather tool (get_wikiproject_articles, get_category_articles,
+  harvest_list_page, search_articles) until you have explicitly confirmed
+  scope with the user in plain language:
+
+    "So we're building <topic> — including <A>, <B>, <C>, and excluding
+     <D>. Does that sound right before I start pulling?"
+
+  To get there, converge through back-and-forth:
+  - Propose your initial understanding of what "belongs" to the topic.
+  - Ask follow-ups about edge cases — especially biographies (ask explicitly
+    when ambiguous, this trips people up), "List of…" / "Outline of…" pages,
+    "X in popular culture", country-specific / geographic breakdowns, and
+    whether stubs are OK.
+  - Refine until the user agrees to a plain-language scope statement.
+
+  Do NOT ask the user for a target article count. A target makes the AI
+  fit the result to an arbitrary number — either over-pruning or padding.
+  The value of this tool is helping the user DISCOVER the natural size of
+  a topic given their scope. If the user volunteers a count, accept it
+  gracefully but don't solicit.
 - Always call start_topic before using any other tools.
 - Topics are persisted — users can leave and return to continue a topic build later.
 - SESSION-STATE WARNING: some MCP clients (notably ChatGPT) open a fresh session
@@ -454,8 +476,7 @@ def get_category_articles(category: str, depth: int = 3, exclude: list[str] | No
     batch = [(title, source_label, None) for title in articles]
     added, updated = db.add_articles(topic_id, batch)
 
-    log_usage(ctx, "get_category_articles", {"category": category, "depth": depth}, f"{len(articles)} articles, {len(visited_cats)} categories")
-    return json.dumps({
+    result = {
         'root_category': category,
         'depth': depth,
         'excluded': sorted(exclude_set),
@@ -465,7 +486,28 @@ def get_category_articles(category: str, depth: int = 3, exclude: list[str] | No
         'source_label': source_label,
         'total_in_working_list': db.get_status(topic_id)['total_articles'],
         'note': f'To undo this pull, use: remove_by_source("{source_label}")',
-    }, indent=2, ensure_ascii=False)
+    }
+
+    # Noisy-pull warning: large pull with no word-level overlap between the
+    # category name and the topic name is a strong signal of scope drift
+    # (e.g. topic="educational psychology", category="Cognition").
+    _, topic_name = _get_topic(ctx)
+    if added > 500 and topic_name:
+        STOPWORDS = {"a", "an", "and", "of", "in", "on", "for", "to", "the", "by"}
+        cat_words = {w for w in re.findall(r"\w+", category.lower()) if w not in STOPWORDS}
+        topic_words = {w for w in re.findall(r"\w+", topic_name.lower()) if w not in STOPWORDS}
+        if cat_words and topic_words and not (cat_words & topic_words):
+            result['warning'] = (
+                f"This pull added {added} articles and the category '{category}' "
+                f"has no word-level overlap with the topic '{topic_name}'. "
+                f"It may be too broad or off-scope. If most of it turns out to be "
+                f"noise, use remove_by_source(\"{source_label}\", "
+                f"keep_if_other_sources=True) to drop everything that isn't also "
+                f"found via a more on-topic source."
+            )
+
+    log_usage(ctx, "get_category_articles", {"category": category, "depth": depth}, f"{len(articles)} articles, {len(visited_cats)} categories")
+    return json.dumps(result, indent=2, ensure_ascii=False)
 
 
 @mcp.tool()
@@ -767,6 +809,38 @@ def browse_edges(seed_titles: list[str], min_links: int = 3,
 # ── List management ───────────────────────────────────────────────────────
 
 @mcp.tool()
+def list_sources(topic: str | None = None, ctx: Context = None) -> str:
+    """List every source label currently attached to articles in the working list,
+    with counts. Call this before remove_by_source to see exactly what labels
+    you can target. Each gather tool (get_category_articles, get_wikiproject_articles,
+    harvest_list_page, search_articles) records a specific source label like
+    "category:Cognition" or "wikiproject:Climate change".
+
+    Args:
+        topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
+    """
+    topic_id, err = _require_topic(ctx, topic)
+    if err:
+        return err
+
+    all_articles = db.get_all_articles_dict(topic_id)
+    counts = collections.Counter()
+    for article in all_articles.values():
+        for s in article.get('sources', []):
+            counts[s] += 1
+
+    sources = [{'source': s, 'count': c} for s, c in counts.most_common()]
+    return json.dumps({
+        'sources': sources,
+        'total_distinct_sources': len(sources),
+        'note': ('To drop a noisy source while keeping articles that also appear '
+                 'under another source, use remove_by_source(source, '
+                 'keep_if_other_sources=True). To drop a source entirely, set '
+                 'keep_if_other_sources=False.'),
+    }, indent=2, ensure_ascii=False)
+
+
+@mcp.tool()
 def add_articles(titles: list[str], source: str = "manual", score: int | None = None,
                  topic: str | None = None, ctx: Context = None) -> str:
     """Add articles to the working list. Use this when you want to add articles
@@ -921,6 +995,11 @@ def remove_by_pattern(pattern: str, below_score: int | None = None, source: str 
     topic_id, err = _require_topic(ctx, topic)
     if err:
         return err
+
+    if not pattern or len(pattern.strip()) < 2:
+        return ("Pattern must be at least 2 characters. An empty or trivial pattern "
+                "would match every article — if you want to clear a whole source, use "
+                "remove_by_source instead, or reset_topic to clear the entire working list.")
 
     all_articles = db.get_all_articles_dict(topic_id)
     pattern_lower = pattern.lower()

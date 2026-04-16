@@ -522,7 +522,9 @@
             <h2>Available tools</h2>
             <p>The AI drives these directly &mdash; you don't need to call them by hand.</p>
             <div class="tools-grid">
-                <div class="tool"><span class="tool-name">start_topic</span><span class="tool-desc">Begin a new topic build or resume an existing one.</span></div>
+                <div class="tool"><span class="tool-name">start_topic</span><span class="tool-desc">Begin a new topic build; pass fresh=True to clear an existing topic.</span></div>
+                <div class="tool"><span class="tool-name">resume_topic</span><span class="tool-desc">Resume an existing topic by name.</span></div>
+                <div class="tool"><span class="tool-name">list_topics</span><span class="tool-desc">List all saved topics with their article counts.</span></div>
                 <div class="tool"><span class="tool-name">reset_topic</span><span class="tool-desc">Clear the current topic's working list and start over.</span></div>
                 <div class="tool"><span class="tool-name">survey_categories</span><span class="tool-desc">Survey Wikipedia's category tree without collecting yet.</span></div>
                 <div class="tool"><span class="tool-name">check_wikiproject</span><span class="tool-desc">Check if a WikiProject exists for the topic.</span></div>
@@ -533,16 +535,21 @@
                 <div class="tool"><span class="tool-name">search_articles</span><span class="tool-desc">Search Wikipedia using CirrusSearch operators.</span></div>
                 <div class="tool"><span class="tool-name">search_similar</span><span class="tool-desc">Find articles similar to a given one &mdash; great for gaps.</span></div>
                 <div class="tool"><span class="tool-name">browse_edges</span><span class="tool-desc">Follow outgoing links from confirmed articles.</span></div>
+                <div class="tool"><span class="tool-name">add_articles</span><span class="tool-desc">Manually add articles the AI identifies outside the gather tools.</span></div>
                 <div class="tool"><span class="tool-name">score_by_extract</span><span class="tool-desc">Fetch article introductions so the AI can score relevance.</span></div>
                 <div class="tool"><span class="tool-name">set_scores</span><span class="tool-desc">Save relevance scores (1&ndash;10) for articles.</span></div>
                 <div class="tool"><span class="tool-name">auto_score_by_title</span><span class="tool-desc">Quick title-match scoring pass for obvious cases.</span></div>
                 <div class="tool"><span class="tool-name">score_all_unscored</span><span class="tool-desc">Mark everything remaining after pruning as scored.</span></div>
+                <div class="tool"><span class="tool-name">list_sources</span><span class="tool-desc">Show every source label attached to articles, with counts.</span></div>
+                <div class="tool"><span class="tool-name">get_articles_by_source</span><span class="tool-desc">List articles from a source, optionally excluding overlap.</span></div>
                 <div class="tool"><span class="tool-name">remove_by_source</span><span class="tool-desc">Undo a noisy pull by its source label.</span></div>
                 <div class="tool"><span class="tool-name">remove_by_pattern</span><span class="tool-desc">Bulk-remove articles by title pattern, with dry run.</span></div>
+                <div class="tool"><span class="tool-name">remove_articles</span><span class="tool-desc">Remove a specific list of articles by title.</span></div>
                 <div class="tool"><span class="tool-name">filter_articles</span><span class="tool-desc">Resolve redirects; drop disambiguation and list pages.</span></div>
                 <div class="tool"><span class="tool-name">get_status</span><span class="tool-desc">Article count, score distribution, source breakdown.</span></div>
                 <div class="tool"><span class="tool-name">get_articles</span><span class="tool-desc">List articles with filters (score, source, unscored).</span></div>
                 <div class="tool"><span class="tool-name">export_csv</span><span class="tool-desc">Export the final list as a downloadable CSV.</span></div>
+                <div class="tool"><span class="tool-name">submit_feedback</span><span class="tool-desc">Submit a retrospective at the end of a session.</span></div>
             </div>
         </section>
 
