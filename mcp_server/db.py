@@ -65,6 +65,26 @@ def create_or_get_topic(name):
         return topic_id, True, 0
 
 
+def get_topic_by_name(name):
+    """Look up a topic by name. Returns (topic_id, canonical_name) or (None, None) if missing."""
+    slug = _slugify(name)
+    conn = _connect()
+    row = conn.execute("SELECT id, name FROM topics WHERE slug = ?", (slug,)).fetchone()
+    conn.close()
+    if row:
+        return row['id'], row['name']
+    return None, None
+
+
+def append_feedback(entry):
+    """Append a feedback record (dict) as JSON Lines to the feedback log."""
+    log_dir = os.environ.get("LOG_DIR", "/opt/topic-builder/logs")
+    os.makedirs(log_dir, exist_ok=True)
+    path = os.path.join(log_dir, "feedback.jsonl")
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
 def list_topics():
     """List all topics with article counts."""
     conn = _connect()

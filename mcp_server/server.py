@@ -80,23 +80,57 @@ identify all Wikipedia articles belonging to a topic. The workflow is:
 6. Clean up and export: filter_articles, export_csv
 
 IMPORTANT GUIDELINES:
-- Always call start_topic or resume_topic before using any other tools.
+- Always call start_topic before using any other tools.
 - Topics are persisted — users can leave and return to continue a topic build later.
-- If the user asks to "start fresh" / "start over" / "clear and rebuild" on an existing
-  topic, call start_topic with fresh=True (or call reset_topic after start_topic). Do not
-  try to clear the list by bulk-removing articles one page at a time.
-- Before pulling a large category tree, use survey_categories with count_articles=True to check the size. If >2000 articles, discuss with the user whether to pull specific subcategories instead.
-- Each gather operation records a specific source label (e.g., "category:Learning methods"). If a pull turns out to be too noisy, use remove_by_source to undo it cleanly.
-- After pruning is done, use score_all_unscored to mark everything as scored for export, rather than paging through and scoring individually.
-- export_csv with default min_score=0 exports all articles in the working list. No need to score first unless the user wants score-based filtering."""
+- SESSION-STATE WARNING: some MCP clients (notably ChatGPT) open a fresh session
+  for every tool call, so the server's idea of a "current topic" does not persist
+  between your calls. If you call start_topic and then a later tool returns
+  "No active topic", pass topic=<name> on EVERY subsequent call — every tool
+  that operates on a topic accepts an optional topic=<name> parameter that
+  overrides the session state. When in doubt, pass topic=<name> always.
+- If the user asks to "start fresh" / "start over" / "clear and rebuild" on an
+  existing topic, call start_topic with fresh=True (or reset_topic). Do not try
+  to clear the list by bulk-removing articles one page at a time.
+- Before pulling a large category tree, use survey_categories with
+  count_articles=True to check the size. If >2000 articles, discuss with the
+  user whether to pull specific subcategories instead.
+- Each gather operation records a specific source label (e.g., "category:Learning
+  methods"). If a pull turns out to be too noisy, use remove_by_source to undo it cleanly.
+- After pruning is done, use score_all_unscored to mark everything as scored for
+  export, rather than paging through and scoring individually.
+- export_csv with default min_score=0 exports all articles in the working list.
+  No need to score first unless the user wants score-based filtering.
+- WRAP-UP: when a session reaches a natural end (after export_csv, or when the
+  user signals they're done), offer to submit_feedback so the Wiki Education
+  team can learn from this session. Ask first — don't call it unprompted.
+  Be candid in what_didnt: the honest pain points are the most useful signal."""
 )
 
 
-def _require_topic(ctx: Context) -> tuple[int | None, str | None]:
-    topic_id, topic_name = _get_topic(ctx)
-    if not topic_id:
-        return None, "No active topic. Use start_topic to create one or resume_topic to continue an existing one."
-    return topic_id, None
+def _require_topic(ctx: Context, topic_name: str | None = None) -> tuple[int | None, str | None]:
+    """Resolve the topic for this call. Returns (topic_id, error).
+
+    If topic_name is passed explicitly (for stateless clients like ChatGPT that
+    don't persist MCP sessions), look it up by name — creating if missing — and
+    bind it to this session. Otherwise fall back to the session's current topic
+    (set by start_topic).
+    """
+    if topic_name:
+        tid, canonical = db.get_topic_by_name(topic_name)
+        if tid is None:
+            tid, _, _ = db.create_or_get_topic(topic_name)
+            canonical = topic_name
+        _set_topic(ctx, tid, canonical)
+        return tid, None
+
+    tid, _ = _get_topic(ctx)
+    if not tid:
+        return None, (
+            "No active topic. Call start_topic first, or pass topic=<name> to this tool. "
+            "If your MCP client doesn't persist sessions between tool calls (e.g. ChatGPT), "
+            "pass topic=<name> on every call."
+        )
+    return tid, None
 
 
 # ── Topic management ───────────────────────────────────────────────────────
@@ -134,12 +168,17 @@ def start_topic(name: str, fresh: bool = False, ctx: Context = None) -> str:
 
 
 @mcp.tool()
-def reset_topic(ctx: Context = None) -> str:
+def reset_topic(topic: str | None = None, ctx: Context = None) -> str:
     """Clear all articles from the current topic and start over.
     The topic itself is kept (so the name is preserved), but all articles,
     scores, and sources are wiped.
+
+    Args:
+        topic: Optional topic name. Pass if your client doesn't maintain
+               an MCP session (e.g. ChatGPT); otherwise uses the session's
+               current topic.
     """
-    topic_id, err = _require_topic(ctx)
+    topic_id, err = _require_topic(ctx, topic)
     if err:
         return err
 
@@ -171,9 +210,13 @@ def resume_topic(name: str, ctx: Context = None) -> str:
 
 
 @mcp.tool()
-def get_status(ctx: Context = None) -> str:
-    """Get current status of the topic build: article count, score distribution, source breakdown."""
-    topic_id, err = _require_topic(ctx)
+def get_status(topic: str | None = None, ctx: Context = None) -> str:
+    """Get current status of the topic build: article count, score distribution, source breakdown.
+
+    Args:
+        topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
+    """
+    topic_id, err = _require_topic(ctx, topic)
     if err:
         return err
 
@@ -276,17 +319,17 @@ def check_wikiproject(project_name: str) -> str:
 
 
 @mcp.tool()
-def find_list_pages(topic: str) -> str:
-    """Search for Index/List/Outline/Glossary pages about the topic.
+def find_list_pages(subject: str) -> str:
+    """Search for Index/List/Outline/Glossary pages about a subject.
 
     Args:
-        topic: Topic to search for
+        subject: Subject to search for (free text, e.g. "climate change")
     """
     pages = []
     for prefix in ['Index of', 'List of', 'Outline of', 'Glossary of']:
         params = {
             'list': 'search',
-            'srsearch': f'intitle:"{prefix}" intitle:"{topic}"',
+            'srsearch': f'intitle:"{prefix}" intitle:"{subject}"',
             'srnamespace': '0',
             'srlimit': '20',
             'srinfo': '',
@@ -296,7 +339,7 @@ def find_list_pages(topic: str) -> str:
             pages.append(item['title'])
 
     return json.dumps({
-        'topic': topic,
+        'subject': subject,
         'list_pages': pages,
         'count': len(pages),
     }, indent=2)
@@ -305,15 +348,17 @@ def find_list_pages(topic: str) -> str:
 # ── Gathering tools ───────────────────────────────────────────────────────
 
 @mcp.tool()
-def get_wikiproject_articles(project_name: str, max_articles: int = 50000, ctx: Context = None) -> str:
+def get_wikiproject_articles(project_name: str, max_articles: int = 50000,
+                              topic: str | None = None, ctx: Context = None) -> str:
     """Get all articles tagged by a WikiProject. Adds them to the working list
     with source 'wikiproject'.
 
     Args:
         project_name: WikiProject name (e.g., "Climate change")
         max_articles: Maximum articles to fetch (default 50000)
+        topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
-    topic_id, err = _require_topic(ctx)
+    topic_id, err = _require_topic(ctx, topic)
     if err:
         return err
 
@@ -349,7 +394,9 @@ def get_wikiproject_articles(project_name: str, max_articles: int = 50000, ctx: 
 
 
 @mcp.tool()
-def get_category_articles(category: str, depth: int = 3, exclude: list[str] | None = None, max_articles: int = 50000, ctx: Context = None) -> str:
+def get_category_articles(category: str, depth: int = 3, exclude: list[str] | None = None,
+                          max_articles: int = 50000,
+                          topic: str | None = None, ctx: Context = None) -> str:
     """Crawl a category tree and collect all articles. Adds them to the working list
     with source 'category'.
 
@@ -358,8 +405,9 @@ def get_category_articles(category: str, depth: int = 3, exclude: list[str] | No
         depth: Maximum depth to crawl (default 3, max 5)
         exclude: Category names to skip (prune entire branches)
         max_articles: Maximum articles to collect (default 50000)
+        topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
-    topic_id, err = _require_topic(ctx)
+    topic_id, err = _require_topic(ctx, topic)
     if err:
         return err
 
@@ -421,14 +469,15 @@ def get_category_articles(category: str, depth: int = 3, exclude: list[str] | No
 
 
 @mcp.tool()
-def harvest_list_page(title: str, ctx: Context = None) -> str:
+def harvest_list_page(title: str, topic: str | None = None, ctx: Context = None) -> str:
     """Extract all article links from a List/Index/Glossary page. Adds them
     to the working list with source 'list_page'.
 
     Args:
         title: Page title (e.g., "Index of climate change articles")
+        topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
-    topic_id, err = _require_topic(ctx)
+    topic_id, err = _require_topic(ctx, topic)
     if err:
         return err
 
@@ -469,15 +518,17 @@ def harvest_list_page(title: str, ctx: Context = None) -> str:
 
 
 @mcp.tool()
-def search_articles(query: str, limit: int = 500, ctx: Context = None) -> str:
+def search_articles(query: str, limit: int = 500,
+                    topic: str | None = None, ctx: Context = None) -> str:
     """Search Wikipedia using CirrusSearch. Supports operators like intitle:,
     morelike:, hastemplate:, incategory:. Adds results to working list with source 'search'.
 
     Args:
         query: Search query (e.g., 'intitle:"climate change"', 'morelike:Effects of climate change')
         limit: Maximum results (default 500)
+        topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
-    topic_id, err = _require_topic(ctx)
+    topic_id, err = _require_topic(ctx, topic)
     if err:
         return err
 
@@ -507,30 +558,35 @@ def search_articles(query: str, limit: int = 500, ctx: Context = None) -> str:
 
 
 @mcp.tool()
-def search_similar(seed_article: str, limit: int = 50, ctx: Context = None) -> str:
+def search_similar(seed_article: str, limit: int = 50,
+                   topic: str | None = None, ctx: Context = None) -> str:
     """Find articles similar to a given article using CirrusSearch morelike:.
     Great for finding thematic clusters the other strategies miss.
 
     Args:
         seed_article: Article title to find similar articles to
         limit: Maximum results (default 50)
+        topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
-    return search_articles(f'morelike:{seed_article}', limit=limit, ctx=ctx)
+    return search_articles(f'morelike:{seed_article}', limit=limit, topic=topic, ctx=ctx)
 
 
 # ── Scoring tools ─────────────────────────────────────────────────────────
 
 @mcp.tool()
-def score_by_extract(titles: list[str] | None = None, unscored_batch: bool = False, batch_size: int = 50, ctx: Context = None) -> str:
+def score_by_extract(titles: list[str] | None = None, unscored_batch: bool = False,
+                     batch_size: int = 50,
+                     topic: str | None = None, ctx: Context = None) -> str:
     """Fetch article extracts (first 5 sentences) from Wikipedia for scoring.
-    Returns the extracts so you (Claude) can judge relevance on a 1-10 scale.
+    Returns the extracts so you can judge relevance on a 1-10 scale.
 
     Args:
         titles: Specific titles to score. If None and unscored_batch=True, fetches unscored articles.
         unscored_batch: If True and titles is None, fetch a batch of unscored articles
         batch_size: How many articles to fetch (default 50, max 50)
+        topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
-    topic_id, err = _require_topic(ctx)
+    topic_id, err = _require_topic(ctx, topic)
     if err:
         return err
 
@@ -582,13 +638,15 @@ def score_by_extract(titles: list[str] | None = None, unscored_batch: bool = Fal
 
 
 @mcp.tool()
-def set_scores(scores: dict[str, int], ctx: Context = None) -> str:
+def set_scores(scores: dict[str, int],
+               topic: str | None = None, ctx: Context = None) -> str:
     """Set relevance scores for articles. Scores should be 1-10.
 
     Args:
         scores: Dict mapping article title to score (e.g., {"Article Name": 8, "Other Article": 3})
+        topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
-    topic_id, err = _require_topic(ctx)
+    topic_id, err = _require_topic(ctx, topic)
     if err:
         return err
 
@@ -597,14 +655,16 @@ def set_scores(scores: dict[str, int], ctx: Context = None) -> str:
 
 
 @mcp.tool()
-def auto_score_by_title(threshold: int = 7, ctx: Context = None) -> str:
+def auto_score_by_title(threshold: int = 7,
+                        topic: str | None = None, ctx: Context = None) -> str:
     """Quick title-based scoring pass for obvious cases. Articles with clear topic
     keywords in the title get auto-scored.
 
     Args:
         threshold: Score to assign to keyword-matched articles (default 7)
+        topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
-    topic_id, err = _require_topic(ctx)
+    topic_id, err = _require_topic(ctx, topic)
     if err:
         return err
 
@@ -627,15 +687,17 @@ def auto_score_by_title(threshold: int = 7, ctx: Context = None) -> str:
 
 
 @mcp.tool()
-def score_all_unscored(score: int = 8, ctx: Context = None) -> str:
+def score_all_unscored(score: int = 8,
+                       topic: str | None = None, ctx: Context = None) -> str:
     """Set a score for ALL currently unscored articles in one operation.
     Use this after you've already pruned the list down to on-topic articles
     and just need to mark everything as scored for export.
 
     Args:
         score: Score to assign to all unscored articles (default 8)
+        topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
-    topic_id, err = _require_topic(ctx)
+    topic_id, err = _require_topic(ctx, topic)
     if err:
         return err
 
@@ -652,15 +714,17 @@ def score_all_unscored(score: int = 8, ctx: Context = None) -> str:
 # ── Edge browsing ─────────────────────────────────────────────────────────
 
 @mcp.tool()
-def browse_edges(seed_titles: list[str], min_links: int = 3, ctx: Context = None) -> str:
+def browse_edges(seed_titles: list[str], min_links: int = 3,
+                 topic: str | None = None, ctx: Context = None) -> str:
     """Browse outgoing links from seed articles to find related articles not yet
     in the working list. Articles linked by multiple seeds are most likely relevant.
 
     Args:
         seed_titles: Articles to browse from (pick peripheral/edge articles for best results)
         min_links: Minimum seed articles that must link to a candidate (default 3)
+        topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
-    topic_id, err = _require_topic(ctx)
+    topic_id, err = _require_topic(ctx, topic)
     if err:
         return err
 
@@ -703,15 +767,18 @@ def browse_edges(seed_titles: list[str], min_links: int = 3, ctx: Context = None
 # ── List management ───────────────────────────────────────────────────────
 
 @mcp.tool()
-def add_articles(titles: list[str], source: str = "manual", score: int | None = None, ctx: Context = None) -> str:
-    """Add articles to the working list.
+def add_articles(titles: list[str], source: str = "manual", score: int | None = None,
+                 topic: str | None = None, ctx: Context = None) -> str:
+    """Add articles to the working list. Use this when you want to add articles
+    you've discovered or identified yourself, outside of the other gather tools.
 
     Args:
         titles: Article titles to add
         source: Source label (e.g., "manual", "edge_browse", "search")
         score: Optional relevance score to assign (1-10)
+        topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
-    topic_id, err = _require_topic(ctx)
+    topic_id, err = _require_topic(ctx, topic)
     if err:
         return err
 
@@ -723,7 +790,8 @@ def add_articles(titles: list[str], source: str = "manual", score: int | None = 
 
 @mcp.tool()
 def get_articles_by_source(source: str, exclude_sources: list[str] | None = None,
-                           limit: int = 100, offset: int = 0, ctx: Context = None) -> str:
+                           limit: int = 100, offset: int = 0,
+                           topic: str | None = None, ctx: Context = None) -> str:
     """Get articles that came from a specific source, optionally excluding articles
     that also came from other sources. Useful for reviewing noisy sources like list page harvests.
 
@@ -735,8 +803,9 @@ def get_articles_by_source(source: str, exclude_sources: list[str] | None = None
         exclude_sources: If set, exclude articles that also have any of these sources
         limit: Max articles to return (default 100)
         offset: Pagination offset
+        topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
-    topic_id, err = _require_topic(ctx)
+    topic_id, err = _require_topic(ctx, topic)
     if err:
         return err
 
@@ -765,13 +834,15 @@ def get_articles_by_source(source: str, exclude_sources: list[str] | None = None
 
 
 @mcp.tool()
-def remove_articles(titles: list[str], ctx: Context = None) -> str:
+def remove_articles(titles: list[str],
+                    topic: str | None = None, ctx: Context = None) -> str:
     """Remove articles from the working list.
 
     Args:
         titles: Article titles to remove
+        topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
-    topic_id, err = _require_topic(ctx)
+    topic_id, err = _require_topic(ctx, topic)
     if err:
         return err
 
@@ -781,7 +852,8 @@ def remove_articles(titles: list[str], ctx: Context = None) -> str:
 
 
 @mcp.tool()
-def remove_by_source(source: str, keep_if_other_sources: bool = True, dry_run: bool = True, ctx: Context = None) -> str:
+def remove_by_source(source: str, keep_if_other_sources: bool = True, dry_run: bool = True,
+                     topic: str | None = None, ctx: Context = None) -> str:
     """Remove all articles that came from a specific source. Use this to undo a bad
     category pull or noisy list harvest.
 
@@ -790,8 +862,9 @@ def remove_by_source(source: str, keep_if_other_sources: bool = True, dry_run: b
         keep_if_other_sources: If True (default), keep articles that also have OTHER sources.
                                If False, remove all articles with this source regardless.
         dry_run: If True (default), preview what would be removed without actually removing.
+        topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
-    topic_id, err = _require_topic(ctx)
+    topic_id, err = _require_topic(ctx, topic)
     if err:
         return err
 
@@ -832,7 +905,9 @@ def remove_by_source(source: str, keep_if_other_sources: bool = True, dry_run: b
 
 
 @mcp.tool()
-def remove_by_pattern(pattern: str, below_score: int | None = None, source: str | None = None, dry_run: bool = True, ctx: Context = None) -> str:
+def remove_by_pattern(pattern: str, below_score: int | None = None, source: str | None = None,
+                      dry_run: bool = True,
+                      topic: str | None = None, ctx: Context = None) -> str:
     """Remove articles matching a pattern (case-insensitive substring match on title).
     Use dry_run=True first to preview what would be removed.
 
@@ -841,8 +916,9 @@ def remove_by_pattern(pattern: str, below_score: int | None = None, source: str 
         below_score: Only remove articles with score below this value (or unscored)
         source: Only remove articles from this source
         dry_run: If True (default), just preview — don't actually remove
+        topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
-    topic_id, err = _require_topic(ctx)
+    topic_id, err = _require_topic(ctx, topic)
     if err:
         return err
 
@@ -879,7 +955,8 @@ def remove_by_pattern(pattern: str, below_score: int | None = None, source: str 
 def get_articles(min_score: int | None = None, max_score: int | None = None,
                  source: str | None = None, unscored_only: bool = False,
                  titles_only: bool = False,
-                 limit: int = 100, offset: int = 0, ctx: Context = None) -> str:
+                 limit: int = 100, offset: int = 0,
+                 topic: str | None = None, ctx: Context = None) -> str:
     """Get articles from the working list with optional filters.
 
     Args:
@@ -890,8 +967,9 @@ def get_articles(min_score: int | None = None, max_score: int | None = None,
         titles_only: If True, return just titles (saves tokens). Default False.
         limit: Max articles to return (default 100)
         offset: Skip this many articles (for pagination)
+        topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
-    topic_id, err = _require_topic(ctx)
+    topic_id, err = _require_topic(ctx, topic)
     if err:
         return err
 
@@ -918,7 +996,8 @@ def get_articles(min_score: int | None = None, max_score: int | None = None,
 
 @mcp.tool()
 def filter_articles(resolve_redirects: bool = True, remove_disambig: bool = True,
-                    remove_lists: bool = True, ctx: Context = None) -> str:
+                    remove_lists: bool = True,
+                    topic: str | None = None, ctx: Context = None) -> str:
     """Clean up the working list: resolve redirects, remove disambiguation pages,
     remove list/index pages.
 
@@ -926,8 +1005,9 @@ def filter_articles(resolve_redirects: bool = True, remove_disambig: bool = True
         resolve_redirects: Resolve redirect titles to canonical titles
         remove_disambig: Remove disambiguation pages
         remove_lists: Remove "List of...", "Index of...", etc.
+        topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
-    topic_id, err = _require_topic(ctx)
+    topic_id, err = _require_topic(ctx, topic)
     if err:
         return err
 
@@ -1007,7 +1087,8 @@ def filter_articles(resolve_redirects: bool = True, remove_disambig: bool = True
 
 
 @mcp.tool()
-def export_csv(min_score: int = 0, scored_only: bool = False, ctx: Context = None) -> str:
+def export_csv(min_score: int = 0, scored_only: bool = False,
+               topic: str | None = None, ctx: Context = None) -> str:
     """Export the final article list as a downloadable CSV file.
 
     Returns a download link — give this URL to the user so they can download the CSV directly.
@@ -1016,8 +1097,9 @@ def export_csv(min_score: int = 0, scored_only: bool = False, ctx: Context = Non
         min_score: Minimum score to include (default 0 = export all articles).
                    Set to 7 to export only scored-and-relevant articles.
         scored_only: If True, only export articles that have been scored. Default False.
+        topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
-    topic_id, err = _require_topic(ctx)
+    topic_id, err = _require_topic(ctx, topic)
     if err:
         return err
 
@@ -1067,6 +1149,66 @@ def export_csv(min_score: int = 0, scored_only: bool = False, ctx: Context = Non
         'filename': filename,
         'note': 'Give the user the download link above. The CSV has one article title per line, ready for the Impact Visualizer.',
     }, indent=2, ensure_ascii=False)
+
+
+# ── Feedback ──────────────────────────────────────────────────────────────
+
+@mcp.tool()
+def submit_feedback(summary: str, what_worked: str = "", what_didnt: str = "",
+                    rating: int | None = None,
+                    topic: str | None = None, ctx: Context = None) -> str:
+    """Submit a brief retrospective on this topic-building session so the
+    Wiki Education team can improve the tool. Offer to call this at the end
+    of a session (before or after export_csv), or whenever the user signals
+    they're done. Don't call it without the user's okay.
+
+    Args:
+        summary: 2-5 sentence plain-language account of how the session went —
+                 topic, final article count, overall flow.
+        what_worked: What helped — tools that were effective, strategies that
+                     fit this topic, places the AI/user collaboration felt smooth.
+        what_didnt: Pain points — missing tools, confusing output, noisy sources,
+                    places the AI got stuck or had to work around the API.
+                    Be specific; this is the most useful field for us.
+        rating: Optional 1-10 rating of the overall experience.
+        topic: The topic name this feedback is about. Pass explicitly if your
+               client doesn't maintain an MCP session.
+    """
+    tid, name = _get_topic(ctx)
+    resolved_topic = topic or name or "(unknown)"
+
+    client_id = None
+    try:
+        client_id = ctx.client_id
+    except Exception:
+        pass
+
+    entry = {
+        "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "topic": resolved_topic,
+        "client_id": client_id,
+        "rating": rating,
+        "summary": summary,
+        "what_worked": what_worked,
+        "what_didnt": what_didnt,
+    }
+    if tid or topic:
+        try:
+            lookup_id = tid
+            if not lookup_id and topic:
+                lookup_id, _ = db.get_topic_by_name(topic)
+            if lookup_id:
+                status = db.get_status(lookup_id)
+                entry["articles_count"] = status["total_articles"]
+                entry["scored_count"] = status["scored"]
+        except Exception:
+            pass
+
+    db.append_feedback(entry)
+    log_usage(ctx, "submit_feedback", {"topic": resolved_topic, "rating": rating},
+              f"feedback recorded ({len(summary)} chars)")
+    return ("Thanks — feedback recorded. The Wiki Education team will review it. "
+            "Tell the user their feedback was submitted.")
 
 
 if __name__ == "__main__":
