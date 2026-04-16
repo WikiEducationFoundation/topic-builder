@@ -3,300 +3,563 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Wikipedia Topic Builder</title>
+    <title>Wikipedia Topic Builder &mdash; Wiki Education</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@400;600;700&display=swap" rel="stylesheet">
     <style>
+        :root {
+            --brand: #676eb4;
+            --brand-dark: #5248af;
+            --brand-light: #878dcd;
+            --accent: #40ad90;
+            --accent-dark: #368e76;
+            --text: #2c2c2c;
+            --text-muted: #6a6a6a;
+            --text-soft: #878787;
+            --bg: #f5f5f5;
+            --bg-card: #ffffff;
+            --bg-inset: #fafafa;
+            --border: #e2e2e2;
+            --border-soft: #ececec;
+        }
+
+        * { box-sizing: border-box; }
+
         body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-            max-width: 720px;
-            margin: 40px auto;
-            padding: 0 20px;
-            color: #333;
-            line-height: 1.6;
+            font-family: "Open Sans", Arial, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            font-size: 16px;
+            line-height: 1.56;
+            margin: 0;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
         }
-        h1 { margin-bottom: 0.2em; }
-        .subtitle { color: #666; margin-top: 0; font-size: 1.1em; }
-        code {
-            background: #f4f4f4;
-            padding: 2px 6px;
+
+        /* ── Header ─────────────────────────────────────────────── */
+        .site-header {
+            background: #fff;
+            border-bottom: 1px solid var(--border);
+        }
+        .site-header-inner {
+            max-width: 960px;
+            margin: 0 auto;
+            padding: 18px 24px;
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+        .site-header img {
+            height: 44px;
+            width: auto;
+        }
+        .site-header .wordmark {
+            font-weight: 600;
+            color: var(--text);
+            font-size: 15px;
+            letter-spacing: 0.01em;
+            border-left: 1px solid var(--border);
+            padding-left: 16px;
+            line-height: 1.2;
+        }
+        .site-header .wordmark small {
+            display: block;
+            font-weight: 400;
+            color: var(--text-muted);
+            font-size: 13px;
+            margin-top: 2px;
+        }
+        .site-header a {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            text-decoration: none;
+            color: inherit;
+        }
+
+        /* ── Hero ───────────────────────────────────────────────── */
+        .hero {
+            background: #fff;
+            border-bottom: 1px solid var(--border);
+            padding: 56px 24px 48px;
+        }
+        .hero-inner {
+            max-width: 960px;
+            margin: 0 auto;
+        }
+        .hero h1 {
+            color: var(--brand);
+            font-weight: 400;
+            font-size: 2.5rem;
+            line-height: 1.15;
+            margin: 0 0 16px;
+        }
+        .hero .lede {
+            font-size: 1.125rem;
+            color: var(--text);
+            margin: 0 0 28px;
+            max-width: 640px;
+        }
+        .hero-cta {
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+        .url-pill {
+            background: var(--bg-inset);
+            border: 1px solid var(--border);
             border-radius: 3px;
-            font-size: 0.95em;
-        }
-        .url-box {
-            background: #f0f7ff;
-            border: 1px solid #c0d8f0;
-            border-radius: 6px;
-            padding: 12px 16px;
-            font-family: monospace;
-            font-size: 1.05em;
-            margin: 12px 0;
+            padding: 9px 14px;
+            font-family: Monaco, Menlo, "Ubuntu Mono", monospace;
+            font-size: 14px;
+            color: var(--text);
             user-select: all;
         }
-        .step {
-            margin: 16px 0;
-            padding-left: 0;
+        .hero-meta {
+            color: var(--text-muted);
+            font-size: 14px;
+            margin-top: 20px;
         }
-        .step-num {
-            display: inline-block;
-            background: #2563eb;
-            color: white;
-            width: 26px;
-            height: 26px;
-            border-radius: 50%;
-            text-align: center;
-            line-height: 26px;
-            font-weight: bold;
-            font-size: 0.85em;
-            margin-right: 8px;
-        }
-        .tools-list {
-            background: #fafafa;
-            border: 1px solid #e0e0e0;
-            border-radius: 6px;
-            padding: 16px 20px;
-            margin: 16px 0;
-        }
-        .tools-list dt { font-weight: 600; margin-top: 8px; }
-        .tools-list dd { margin-left: 0; margin-bottom: 4px; color: #555; }
-        hr { border: none; border-top: 1px solid #e0e0e0; margin: 32px 0; }
-        .footer { color: #999; font-size: 0.85em; }
+        .hero-meta strong { color: var(--text); font-weight: 600; }
 
-        /* Accordion */
+        /* ── Main layout ────────────────────────────────────────── */
+        main {
+            max-width: 960px;
+            margin: 0 auto;
+            padding: 48px 24px 64px;
+        }
+        section {
+            margin-bottom: 48px;
+        }
+        section:last-child { margin-bottom: 0; }
+
+        h2 {
+            color: var(--brand);
+            font-weight: 400;
+            font-size: 1.75rem;
+            line-height: 1.2;
+            margin: 0 0 12px;
+        }
+        h3 {
+            color: var(--text);
+            font-weight: 600;
+            font-size: 1rem;
+            margin: 0 0 4px;
+        }
+        p { margin: 0 0 14px; }
+        a { color: var(--brand); text-decoration: underline; text-decoration-color: rgba(103,110,180,0.35); text-underline-offset: 2px; }
+        a:hover { color: var(--brand-dark); text-decoration-color: var(--brand-dark); }
+
+        code {
+            background: var(--bg-inset);
+            border: 1px solid var(--border-soft);
+            padding: 1px 6px;
+            border-radius: 3px;
+            font-family: Monaco, Menlo, "Ubuntu Mono", monospace;
+            font-size: 0.9em;
+            color: var(--text);
+        }
+
+        /* ── Accordions ─────────────────────────────────────────── */
+        .accordion { margin-top: 16px; }
         details {
-            border: 1px solid #e0e0e0;
-            border-radius: 6px;
-            margin: 8px 0;
-            background: #fff;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 3px;
+            margin-bottom: 8px;
+            transition: box-shadow 0.15s ease;
         }
-        details + details {
-            margin-top: -1px;
-            border-top-left-radius: 0;
-            border-top-right-radius: 0;
-        }
-        details:first-of-type {
-            border-top-left-radius: 6px;
-            border-top-right-radius: 6px;
-        }
-        details:last-of-type {
-            border-bottom-left-radius: 6px;
-            border-bottom-right-radius: 6px;
-        }
-        details + details:not([open]) {
-            border-top: none;
+        details[open] {
+            box-shadow: 0 1px 3px rgba(44,44,44,0.06);
         }
         summary {
-            padding: 12px 16px;
+            padding: 14px 18px;
             cursor: pointer;
             font-weight: 600;
+            color: var(--text);
             list-style: none;
             display: flex;
             align-items: center;
-            gap: 8px;
+            gap: 10px;
         }
         summary::-webkit-details-marker { display: none; }
         summary::before {
-            content: '\25B6';
-            font-size: 0.7em;
-            transition: transform 0.2s;
+            content: '';
+            display: inline-block;
+            width: 0; height: 0;
+            border-left: 5px solid var(--brand);
+            border-top: 4px solid transparent;
+            border-bottom: 4px solid transparent;
+            transition: transform 0.15s ease;
             flex-shrink: 0;
         }
-        details[open] > summary::before {
-            transform: rotate(90deg);
-        }
-        .accordion-body {
-            padding: 0 16px 16px 16px;
-        }
-        .account-type-label {
+        details[open] > summary::before { transform: rotate(90deg); }
+        summary:hover { background: var(--bg-inset); }
+        .accordion-body { padding: 4px 20px 20px 20px; border-top: 1px solid var(--border-soft); }
+
+        /* Account-type pills */
+        .pill {
             display: inline-block;
-            font-size: 0.75em;
+            font-size: 11px;
             font-weight: 600;
             text-transform: uppercase;
-            letter-spacing: 0.05em;
-            padding: 2px 8px;
+            letter-spacing: 0.06em;
+            padding: 3px 9px;
             border-radius: 3px;
             margin-left: auto;
+            border: 1px solid transparent;
         }
-        .label-individual { background: #e0f2fe; color: #0369a1; }
-        .label-admin { background: #fef3c7; color: #92400e; }
-        .label-member { background: #d1fae5; color: #065f46; }
+        .pill-individual { background: #eef0fa; color: var(--brand-dark); border-color: #d8dcee; }
+        .pill-admin { background: #fff4dc; color: #8a6a1f; border-color: #f1dfb2; }
+        .pill-member { background: #e3f4ec; color: var(--accent-dark); border-color: #cde7dc; }
+        .pill-chatgpt { background: #e3f4ec; color: var(--accent-dark); border-color: #cde7dc; }
+
+        /* Step blocks */
+        .step {
+            display: flex;
+            gap: 14px;
+            margin: 18px 0;
+        }
+        .step:first-child { margin-top: 10px; }
+        .step-num {
+            flex-shrink: 0;
+            width: 28px;
+            height: 28px;
+            border-radius: 50%;
+            background: var(--brand);
+            color: #fff;
+            font-weight: 600;
+            font-size: 13px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            line-height: 1;
+        }
+        .step-body { flex: 1; min-width: 0; }
+        .step-body strong { display: block; color: var(--text); margin-bottom: 4px; }
+        .step-body .url-pill { margin: 10px 0; display: inline-block; max-width: 100%; overflow-wrap: anywhere; }
+        .step-body blockquote {
+            margin: 12px 0 0;
+            padding: 10px 14px;
+            background: var(--bg-inset);
+            border-left: 3px solid var(--brand-light);
+            color: var(--text-muted);
+            font-style: italic;
+            border-radius: 0 3px 3px 0;
+        }
+        .step-body .note {
+            color: var(--text-muted);
+            font-size: 13px;
+            margin-top: 10px;
+        }
+
+        /* ── Workflow cards ─────────────────────────────────────── */
+        .workflow {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+            gap: 12px;
+            margin-top: 20px;
+        }
+        .workflow-step {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 3px;
+            padding: 16px 18px;
+            display: flex;
+            gap: 14px;
+        }
+        .workflow-step .num {
+            font-weight: 400;
+            color: var(--brand-light);
+            font-size: 1.75rem;
+            line-height: 1;
+            flex-shrink: 0;
+        }
+        .workflow-step strong { display: block; color: var(--text); margin-bottom: 4px; font-size: 15px; }
+        .workflow-step span { color: var(--text-muted); font-size: 14px; }
+
+        /* ── Tools grid ─────────────────────────────────────────── */
+        .tools-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+            gap: 0;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 3px;
+            overflow: hidden;
+        }
+        .tool {
+            padding: 12px 16px;
+            border-right: 1px solid var(--border-soft);
+            border-bottom: 1px solid var(--border-soft);
+        }
+        .tool-name {
+            font-family: Monaco, Menlo, "Ubuntu Mono", monospace;
+            font-size: 13px;
+            color: var(--brand-dark);
+            font-weight: 600;
+            display: block;
+            margin-bottom: 3px;
+        }
+        .tool-desc { color: var(--text-muted); font-size: 13px; line-height: 1.45; }
+
+        /* ── Footer ─────────────────────────────────────────────── */
+        footer {
+            border-top: 1px solid var(--border);
+            background: #fff;
+            padding: 24px;
+            color: var(--text-muted);
+            font-size: 13px;
+        }
+        .footer-inner {
+            max-width: 960px;
+            margin: 0 auto;
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            flex-wrap: wrap;
+        }
+        .footer-inner img { height: 28px; width: auto; opacity: 0.85; }
+        .footer-inner a { color: var(--text-muted); }
+        .footer-spacer { flex: 1; }
+
+        /* ── Responsive ─────────────────────────────────────────── */
+        @media (max-width: 560px) {
+            .hero { padding: 36px 20px 32px; }
+            .hero h1 { font-size: 2rem; }
+            main { padding: 32px 20px 48px; }
+            .site-header-inner { padding: 14px 20px; }
+            .site-header img { height: 36px; }
+            .site-header .wordmark { font-size: 14px; }
+        }
     </style>
 </head>
 <body>
-    <h1>Wikipedia Topic Builder</h1>
-    <p class="subtitle">An MCP server for building comprehensive Wikipedia article lists</p>
-
-    <p>This server provides tools that help Claude identify all Wikipedia articles belonging to a topic. Connect it to Claude on the web and have a conversation to build your topic.</p>
-
-    <hr>
-
-    <h2>Connect to Claude</h2>
-
-    <p>Choose the setup that matches your account type:</p>
-
-    <details>
-        <summary>
-            Individual Claude account
-            <span class="account-type-label label-individual">Personal / Pro</span>
-        </summary>
-        <div class="accordion-body">
-            <div class="step">
-                <span class="step-num">1</span>
-                <strong>Open Settings</strong><br>
-                Go to <a href="https://claude.ai">claude.ai</a>. Click your profile icon (bottom-left), then <strong>Settings</strong>.
-            </div>
-            <div class="step">
-                <span class="step-num">2</span>
-                <strong>Add the integration</strong><br>
-                Go to the <strong>Integrations</strong> tab. Click <strong>Add More</strong>, then <strong>Add custom integration</strong>. Enter this URL:
-                <div class="url-box">https://topic-builder.wikiedu.org/mcp</div>
-                Name it <strong>Wikipedia Topic Builder</strong>. Set authentication to <strong>None</strong>.
-            </div>
-            <div class="step">
-                <span class="step-num">3</span>
-                <strong>Start a conversation</strong><br>
-                Start a new chat. Click the <strong>Integrations</strong> icon (plug icon) in the message bar and toggle <strong>Wikipedia Topic Builder</strong> on. Then try:
-                <blockquote><em>"I want to build a list of all Wikipedia articles about human trafficking. Let's start with reconnaissance."</em></blockquote>
-            </div>
+    <header class="site-header">
+        <div class="site-header-inner">
+            <a href="https://wikiedu.org">
+                <img src="https://wikiedu.org/wp-content/uploads/2014/10/Wiki_Education_Foundation_logo.svg_.png" alt="Wiki Education">
+                <div class="wordmark">
+                    Wiki Education
+                    <small>Topic Builder</small>
+                </div>
+            </a>
         </div>
-    </details>
+    </header>
 
-    <details>
-        <summary>
-            Organization account &mdash; admin setup
-            <span class="account-type-label label-admin">Admin</span>
-        </summary>
-        <div class="accordion-body">
-            <p>As an org admin, you add the connector once and it becomes available to all members.</p>
-            <div class="step">
-                <span class="step-num">1</span>
-                <strong>Open Organization Settings</strong><br>
-                Go to <a href="https://claude.ai">claude.ai</a>. Click your profile icon, then <strong>Settings</strong>, then navigate to your organization's admin settings.
+    <section class="hero">
+        <div class="hero-inner">
+            <h1>Build a Wikipedia topic, together with an AI.</h1>
+            <p class="lede">
+                Topic Builder is an MCP server that helps an AI assistant map out every Wikipedia article belonging to a subject &mdash; categories, WikiProjects, index pages, and the edges in between &mdash; and export the result as a CSV for the Wiki Education <a href="https://github.com/WikiEducationFoundation/impact-visualizer">Impact Visualizer</a>.
+            </p>
+            <div class="hero-cta">
+                <span class="url-pill">https://topic-builder.wikiedu.org/mcp</span>
             </div>
-            <div class="step">
-                <span class="step-num">2</span>
-                <strong>Add a connector</strong><br>
-                Find the <strong>Connectors</strong> section. Click <strong>Add Connector</strong>. Enter:
-                <div class="url-box">https://topic-builder.wikiedu.org/mcp</div>
-                Name it <strong>Wikipedia Topic Builder</strong>. Set authentication to <strong>None</strong>.
-            </div>
-            <div class="step">
-                <span class="step-num">3</span>
-                <strong>Done</strong><br>
-                The connector is now available to all members of your organization. They can enable it from the Connectors menu in any chat.
-            </div>
+            <p class="hero-meta">
+                Works with any <a href="https://modelcontextprotocol.io">MCP</a>-compatible client &mdash; <strong>Claude</strong>, <strong>ChatGPT</strong>, and others. No authentication required.
+            </p>
         </div>
-    </details>
+    </section>
 
-    <details>
-        <summary>
-            Organization account &mdash; using an enabled connector
-            <span class="account-type-label label-member">Member</span>
-        </summary>
-        <div class="accordion-body">
-            <p>Your admin has already added the Wikipedia Topic Builder connector. You just need to enable it in a chat.</p>
-            <div class="step">
-                <span class="step-num">1</span>
-                <strong>Start a new chat</strong><br>
-                Go to <a href="https://claude.ai">claude.ai</a> and start a new conversation.
+    <main>
+
+        <section>
+            <h2>How it works</h2>
+            <p>You describe a topic; the AI runs the workflow and checks in with you along the way. Topics are saved automatically &mdash; you can leave a conversation and pick it back up later.</p>
+            <div class="workflow">
+                <div class="workflow-step"><div class="num">1</div><div><strong>Scope</strong><span>Agree on how broadly to define the topic.</span></div></div>
+                <div class="workflow-step"><div class="num">2</div><div><strong>Reconnaissance</strong><span>Survey categories, WikiProjects, and index pages.</span></div></div>
+                <div class="workflow-step"><div class="num">3</div><div><strong>Gather</strong><span>Collect candidate articles from multiple strategies.</span></div></div>
+                <div class="workflow-step"><div class="num">4</div><div><strong>Score &amp; review</strong><span>The AI rates relevance; you review borderline cases.</span></div></div>
+                <div class="workflow-step"><div class="num">5</div><div><strong>Edge browse</strong><span>Surface articles that structured strategies missed.</span></div></div>
+                <div class="workflow-step"><div class="num">6</div><div><strong>Export</strong><span>Download the final CSV for the Impact Visualizer.</span></div></div>
             </div>
-            <div class="step">
-                <span class="step-num">2</span>
-                <strong>Enable the connector</strong><br>
-                Click the <strong>Connectors</strong> menu (plug icon, or look for it below the message input). Find <strong>Wikipedia Topic Builder</strong> and toggle it on.
+        </section>
+
+        <section>
+            <h2>Connect to Claude</h2>
+            <p>Detailed setup for Claude on the web. Choose the path that matches your account.</p>
+
+            <div class="accordion">
+                <details>
+                    <summary>Individual Claude account <span class="pill pill-individual">Personal / Pro</span></summary>
+                    <div class="accordion-body">
+                        <div class="step">
+                            <div class="step-num">1</div>
+                            <div class="step-body">
+                                <strong>Open Settings</strong>
+                                Go to <a href="https://claude.ai">claude.ai</a>. Click your profile icon (bottom-left), then <strong>Settings</strong>.
+                            </div>
+                        </div>
+                        <div class="step">
+                            <div class="step-num">2</div>
+                            <div class="step-body">
+                                <strong>Add the integration</strong>
+                                Go to the <strong>Integrations</strong> tab. Click <strong>Add More</strong>, then <strong>Add custom integration</strong>. Enter this URL:
+                                <div><span class="url-pill">https://topic-builder.wikiedu.org/mcp</span></div>
+                                Name it <strong>Wikipedia Topic Builder</strong>. Set authentication to <strong>None</strong>.
+                            </div>
+                        </div>
+                        <div class="step">
+                            <div class="step-num">3</div>
+                            <div class="step-body">
+                                <strong>Start a conversation</strong>
+                                Start a new chat. Click the <strong>Integrations</strong> icon (plug) in the message bar and toggle <strong>Wikipedia Topic Builder</strong> on. Then try:
+                                <blockquote>"I want to build a list of all Wikipedia articles about human trafficking. Let's start with reconnaissance."</blockquote>
+                            </div>
+                        </div>
+                    </div>
+                </details>
+
+                <details>
+                    <summary>Organization account &mdash; admin setup <span class="pill pill-admin">Admin</span></summary>
+                    <div class="accordion-body">
+                        <p>As an org admin, you add the connector once and it becomes available to all members.</p>
+                        <div class="step">
+                            <div class="step-num">1</div>
+                            <div class="step-body">
+                                <strong>Open Organization Settings</strong>
+                                Go to <a href="https://claude.ai">claude.ai</a>. Click your profile icon, then <strong>Settings</strong>, then navigate to your organization's admin settings.
+                            </div>
+                        </div>
+                        <div class="step">
+                            <div class="step-num">2</div>
+                            <div class="step-body">
+                                <strong>Add a connector</strong>
+                                Find the <strong>Connectors</strong> section. Click <strong>Add Connector</strong>. Enter:
+                                <div><span class="url-pill">https://topic-builder.wikiedu.org/mcp</span></div>
+                                Name it <strong>Wikipedia Topic Builder</strong>. Set authentication to <strong>None</strong>.
+                            </div>
+                        </div>
+                        <div class="step">
+                            <div class="step-num">3</div>
+                            <div class="step-body">
+                                <strong>Done</strong>
+                                The connector is now available to all members of your organization. They can enable it from the Connectors menu in any chat.
+                            </div>
+                        </div>
+                    </div>
+                </details>
+
+                <details>
+                    <summary>Organization account &mdash; using an enabled connector <span class="pill pill-member">Member</span></summary>
+                    <div class="accordion-body">
+                        <p>Your admin has already added the Wikipedia Topic Builder connector. You just need to enable it in a chat.</p>
+                        <div class="step">
+                            <div class="step-num">1</div>
+                            <div class="step-body">
+                                <strong>Start a new chat</strong>
+                                Go to <a href="https://claude.ai">claude.ai</a> and start a new conversation.
+                            </div>
+                        </div>
+                        <div class="step">
+                            <div class="step-num">2</div>
+                            <div class="step-body">
+                                <strong>Enable the connector</strong>
+                                Click the <strong>Connectors</strong> menu (plug icon, or look for it below the message input). Find <strong>Wikipedia Topic Builder</strong> and toggle it on.
+                            </div>
+                        </div>
+                        <div class="step">
+                            <div class="step-num">3</div>
+                            <div class="step-body">
+                                <strong>Start building</strong>
+                                Tell Claude what topic you want to explore:
+                                <blockquote>"I want to build a list of all Wikipedia articles about human trafficking. Let's start with reconnaissance."</blockquote>
+                            </div>
+                        </div>
+                    </div>
+                </details>
             </div>
-            <div class="step">
-                <span class="step-num">3</span>
-                <strong>Start building</strong><br>
-                Tell Claude what topic you want to explore:
-                <blockquote><em>"I want to build a list of all Wikipedia articles about human trafficking. Let's start with reconnaissance."</em></blockquote>
+        </section>
+
+        <section>
+            <h2>Connect to ChatGPT</h2>
+            <p>ChatGPT supports remote MCP servers as custom connectors. Availability and menu names vary by plan (Plus / Pro / Business / Enterprise / Edu) and have shifted as OpenAI has rolled out MCP support &mdash; if any step below doesn't match your UI, check OpenAI's <a href="https://platform.openai.com/docs/mcp">MCP documentation</a>.</p>
+
+            <div class="accordion">
+                <details>
+                    <summary>ChatGPT custom connector <span class="pill pill-chatgpt">ChatGPT</span></summary>
+                    <div class="accordion-body">
+                        <div class="step">
+                            <div class="step-num">1</div>
+                            <div class="step-body">
+                                <strong>Enable developer / connector mode</strong>
+                                Go to <a href="https://chatgpt.com">chatgpt.com</a>. Open <strong>Settings</strong> &rarr; <strong>Connectors</strong> (or <strong>Apps &amp; connectors</strong>). If custom connectors aren't visible, look under <strong>Advanced</strong> for a <strong>Developer mode</strong> toggle and turn it on. On Business/Enterprise, a workspace admin must enable custom connectors first.
+                            </div>
+                        </div>
+                        <div class="step">
+                            <div class="step-num">2</div>
+                            <div class="step-body">
+                                <strong>Add a custom connector</strong>
+                                Click <strong>Add custom connector</strong> (or <strong>Create</strong>). Enter:
+                                <div><span class="url-pill">https://topic-builder.wikiedu.org/mcp</span></div>
+                                Name it <strong>Wikipedia Topic Builder</strong>. Set authentication to <strong>No authentication</strong>. Save.
+                            </div>
+                        </div>
+                        <div class="step">
+                            <div class="step-num">3</div>
+                            <div class="step-body">
+                                <strong>Use it in a chat</strong>
+                                Start a new chat. Open the tools / connectors menu in the composer and enable <strong>Wikipedia Topic Builder</strong>. Then try:
+                                <blockquote>"I want to build a list of all Wikipedia articles about human trafficking. Let's start with reconnaissance."</blockquote>
+                                <p class="note">Tool-calling quality depends on the model you pick. For long multi-step topic builds, use a reasoning-capable model.</p>
+                            </div>
+                        </div>
+                    </div>
+                </details>
             </div>
+        </section>
+
+        <section>
+            <h2>Other MCP clients</h2>
+            <p>Any MCP-capable client (Cursor, Zed, Continue, custom agents built on the protocol) can connect to the URL above. Consult your client's documentation for how to add a remote MCP server with no authentication.</p>
+        </section>
+
+        <section>
+            <h2>Available tools</h2>
+            <p>The AI drives these directly &mdash; you don't need to call them by hand.</p>
+            <div class="tools-grid">
+                <div class="tool"><span class="tool-name">start_topic</span><span class="tool-desc">Begin a new topic build or resume an existing one.</span></div>
+                <div class="tool"><span class="tool-name">reset_topic</span><span class="tool-desc">Clear the current topic's working list and start over.</span></div>
+                <div class="tool"><span class="tool-name">survey_categories</span><span class="tool-desc">Survey Wikipedia's category tree without collecting yet.</span></div>
+                <div class="tool"><span class="tool-name">check_wikiproject</span><span class="tool-desc">Check if a WikiProject exists for the topic.</span></div>
+                <div class="tool"><span class="tool-name">find_list_pages</span><span class="tool-desc">Search for Index, List, Outline, and Glossary pages.</span></div>
+                <div class="tool"><span class="tool-name">get_wikiproject_articles</span><span class="tool-desc">Fetch all articles tagged by a WikiProject.</span></div>
+                <div class="tool"><span class="tool-name">get_category_articles</span><span class="tool-desc">Crawl a category tree and collect articles.</span></div>
+                <div class="tool"><span class="tool-name">harvest_list_page</span><span class="tool-desc">Extract article links from an Index or List page.</span></div>
+                <div class="tool"><span class="tool-name">search_articles</span><span class="tool-desc">Search Wikipedia using CirrusSearch operators.</span></div>
+                <div class="tool"><span class="tool-name">search_similar</span><span class="tool-desc">Find articles similar to a given one &mdash; great for gaps.</span></div>
+                <div class="tool"><span class="tool-name">browse_edges</span><span class="tool-desc">Follow outgoing links from confirmed articles.</span></div>
+                <div class="tool"><span class="tool-name">score_by_extract</span><span class="tool-desc">Fetch article introductions so the AI can score relevance.</span></div>
+                <div class="tool"><span class="tool-name">set_scores</span><span class="tool-desc">Save relevance scores (1&ndash;10) for articles.</span></div>
+                <div class="tool"><span class="tool-name">auto_score_by_title</span><span class="tool-desc">Quick title-match scoring pass for obvious cases.</span></div>
+                <div class="tool"><span class="tool-name">score_all_unscored</span><span class="tool-desc">Mark everything remaining after pruning as scored.</span></div>
+                <div class="tool"><span class="tool-name">remove_by_source</span><span class="tool-desc">Undo a noisy pull by its source label.</span></div>
+                <div class="tool"><span class="tool-name">remove_by_pattern</span><span class="tool-desc">Bulk-remove articles by title pattern, with dry run.</span></div>
+                <div class="tool"><span class="tool-name">filter_articles</span><span class="tool-desc">Resolve redirects; drop disambiguation and list pages.</span></div>
+                <div class="tool"><span class="tool-name">get_status</span><span class="tool-desc">Article count, score distribution, source breakdown.</span></div>
+                <div class="tool"><span class="tool-name">get_articles</span><span class="tool-desc">List articles with filters (score, source, unscored).</span></div>
+                <div class="tool"><span class="tool-name">export_csv</span><span class="tool-desc">Export the final list as a downloadable CSV.</span></div>
+            </div>
+        </section>
+
+        <section>
+            <h2>Output format</h2>
+            <p>A plain CSV, one article title per line, no header &mdash; ready to feed into the <a href="https://github.com/WikiEducationFoundation/impact-visualizer">Wiki Education Impact Visualizer</a>.</p>
+        </section>
+
+    </main>
+
+    <footer>
+        <div class="footer-inner">
+            <a href="https://wikiedu.org"><img src="https://wikiedu.org/wp-content/uploads/2014/10/Wiki_Education_Foundation_logo.svg_.png" alt="Wiki Education"></a>
+            <span>Built by <a href="https://wikiedu.org">Wiki Education</a>.</span>
+            <span class="footer-spacer"></span>
+            <span>Source: <a href="https://github.com/WikiEducationFoundation/topic-builder">GitHub</a></span>
         </div>
-    </details>
-
-    <hr>
-
-    <h2>What it does</h2>
-
-    <p>You describe a topic, and Claude uses Wikipedia's APIs to systematically find all relevant articles. The workflow is:</p>
-
-    <ol>
-        <li><strong>Scope</strong> &mdash; Discuss how broadly to define the topic</li>
-        <li><strong>Reconnaissance</strong> &mdash; Survey how Wikipedia organizes the topic (categories, WikiProjects, index pages)</li>
-        <li><strong>Gather</strong> &mdash; Collect candidate articles from multiple strategies</li>
-        <li><strong>Score &amp; Review</strong> &mdash; Claude scores articles for relevance; you review borderline cases</li>
-        <li><strong>Edge Browse</strong> &mdash; Find articles that structured strategies missed</li>
-        <li><strong>Export</strong> &mdash; Download a CSV of the final article list</li>
-    </ol>
-
-    <p>Topics are saved automatically. You can leave a conversation and come back later to continue where you left off.</p>
-
-    <h2>Available tools</h2>
-
-    <div class="tools-list">
-        <dl>
-            <dt>start_topic / resume_topic</dt>
-            <dd>Begin a new topic build or resume an existing one</dd>
-
-            <dt>survey_categories</dt>
-            <dd>Survey Wikipedia's category tree for a topic (without collecting articles yet)</dd>
-
-            <dt>check_wikiproject</dt>
-            <dd>Check if a WikiProject exists (the best single source of curated articles)</dd>
-
-            <dt>find_list_pages</dt>
-            <dd>Search for Index/List/Glossary pages about the topic</dd>
-
-            <dt>get_wikiproject_articles</dt>
-            <dd>Fetch all articles tagged by a WikiProject</dd>
-
-            <dt>get_category_articles</dt>
-            <dd>Crawl a category tree and collect articles</dd>
-
-            <dt>harvest_list_page</dt>
-            <dd>Extract article links from an Index or List page</dd>
-
-            <dt>search_articles</dt>
-            <dd>Search Wikipedia using CirrusSearch operators</dd>
-
-            <dt>search_similar</dt>
-            <dd>Find articles similar to a given article (great for finding gaps)</dd>
-
-            <dt>score_by_extract</dt>
-            <dd>Fetch article introductions for Claude to judge relevance</dd>
-
-            <dt>set_scores</dt>
-            <dd>Save relevance scores (1&ndash;10) for articles</dd>
-
-            <dt>browse_edges</dt>
-            <dd>Find related articles by browsing outgoing links from confirmed articles</dd>
-
-            <dt>remove_by_pattern</dt>
-            <dd>Bulk-remove articles matching a pattern (with dry-run preview)</dd>
-
-            <dt>get_status</dt>
-            <dd>See current article count, score distribution, source breakdown</dd>
-
-            <dt>get_articles</dt>
-            <dd>List articles with optional filters (by score, source, etc.)</dd>
-
-            <dt>filter_articles</dt>
-            <dd>Clean up: resolve redirects, remove disambiguation and list pages</dd>
-
-            <dt>export_csv</dt>
-            <dd>Export the final article list as a downloadable CSV</dd>
-        </dl>
-    </div>
-
-    <hr>
-
-    <h2>Output format</h2>
-
-    <p>The final CSV has one article title per line, no header &mdash; ready for the <a href="https://github.com/WikiEducationFoundation/impact-visualizer">Wiki Education Impact Visualizer</a>.</p>
-
-    <hr>
-
-    <p class="footer">
-        Built by <a href="https://wikiedu.org">Wiki Education</a>.
-        Source: <a href="https://github.com/WikiEducationFoundation/topic-builder">GitHub</a> (coming soon).
-    </p>
+    </footer>
 </body>
 </html>

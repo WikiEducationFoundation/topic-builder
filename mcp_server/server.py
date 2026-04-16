@@ -9,7 +9,8 @@ import collections
 import datetime
 import logging
 import os
-from mcp.server.fastmcp import FastMCP
+import threading
+from mcp.server.fastmcp import FastMCP, Context
 
 from wikipedia_api import (
     api_query, api_query_all, api_get, normalize_title, WIKIPEDIA_API,
@@ -28,19 +29,36 @@ usage_handler = logging.FileHandler(os.path.join(LOG_DIR, "usage.jsonl"))
 usage_handler.setFormatter(logging.Formatter("%(message)s"))
 usage_logger.addHandler(usage_handler)
 
-# Current session topic (the DB persists the data, this just tracks which topic is active)
-_current_topic_id: int | None = None
-_current_topic_name: str = ""
+# Per-session current topic. Each MCP session (one client connection) has its
+# own "current topic" so concurrent clients don't clobber each other's state.
+# Keyed by id(ctx.session); value is (topic_id, topic_name).
+_session_topics: dict[int, tuple[int, str]] = {}
+_session_lock = threading.Lock()
 
 
-def log_usage(tool_name: str, params: dict | None = None, result_summary: str = ""):
+def _session_key(ctx: Context) -> int:
+    return id(ctx.session)
+
+
+def _get_topic(ctx: Context) -> tuple[int | None, str]:
+    with _session_lock:
+        return _session_topics.get(_session_key(ctx), (None, ""))
+
+
+def _set_topic(ctx: Context, topic_id: int, name: str) -> None:
+    with _session_lock:
+        _session_topics[_session_key(ctx)] = (topic_id, name)
+
+
+def log_usage(ctx: Context, tool_name: str, params: dict | None = None, result_summary: str = ""):
+    topic_id, topic_name = _get_topic(ctx)
     entry = {
         "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-        "topic": _current_topic_name or "(none)",
+        "topic": topic_name or "(none)",
         "tool": tool_name,
     }
-    if _current_topic_id:
-        status = db.get_status(_current_topic_id)
+    if topic_id:
+        status = db.get_status(topic_id)
         entry["articles_count"] = status['total_articles']
     if params:
         entry["params"] = {k: v for k, v in params.items()
@@ -64,6 +82,9 @@ identify all Wikipedia articles belonging to a topic. The workflow is:
 IMPORTANT GUIDELINES:
 - Always call start_topic or resume_topic before using any other tools.
 - Topics are persisted — users can leave and return to continue a topic build later.
+- If the user asks to "start fresh" / "start over" / "clear and rebuild" on an existing
+  topic, call start_topic with fresh=True (or call reset_topic after start_topic). Do not
+  try to clear the list by bulk-removing articles one page at a time.
 - Before pulling a large category tree, use survey_categories with count_articles=True to check the size. If >2000 articles, discuss with the user whether to pull specific subcategories instead.
 - Each gather operation records a specific source label (e.g., "category:Learning methods"). If a pull turns out to be too noisy, use remove_by_source to undo it cleanly.
 - After pruning is done, use score_all_unscored to mark everything as scored for export, rather than paging through and scoring individually.
@@ -71,49 +92,63 @@ IMPORTANT GUIDELINES:
 )
 
 
-def _require_topic():
-    if not _current_topic_id:
-        return "No active topic. Use start_topic to create one or resume_topic to continue an existing one."
-    return None
+def _require_topic(ctx: Context) -> tuple[int | None, str | None]:
+    topic_id, topic_name = _get_topic(ctx)
+    if not topic_id:
+        return None, "No active topic. Use start_topic to create one or resume_topic to continue an existing one."
+    return topic_id, None
 
 
 # ── Topic management ───────────────────────────────────────────────────────
 
 @mcp.tool()
-def start_topic(name: str) -> str:
+def start_topic(name: str, fresh: bool = False, ctx: Context = None) -> str:
     """Start a new topic build or resume an existing one with the same name.
     Topics are persisted — if a topic with this name already exists, it will
-    be resumed with all its articles intact.
+    be resumed with all its articles intact UNLESS you pass fresh=True.
 
     Args:
         name: The topic name (e.g., "climate change", "women in STEM")
+        fresh: If True and the topic already exists, wipe all its articles
+               before starting. Use this when the user asks to "start over"
+               or "start fresh" on an existing topic. Defaults to False.
     """
-    global _current_topic_id, _current_topic_name
     topic_id, is_new, article_count = db.create_or_get_topic(name)
-    _current_topic_id = topic_id
-    _current_topic_name = name
-    log_usage("start_topic", {"name": name, "is_new": is_new})
+    _set_topic(ctx, topic_id, name)
+
     if is_new:
+        log_usage(ctx, "start_topic", {"name": name, "is_new": True})
         return f"Started new topic build: '{name}'. Working list is empty."
-    else:
-        return f"Resumed existing topic: '{name}'. Working list has {article_count} articles."
+
+    if fresh:
+        db.replace_all_articles(topic_id, {})
+        log_usage(ctx, "start_topic", {"name": name, "fresh": True},
+                  f"cleared {article_count} articles")
+        return (f"Resumed existing topic '{name}' and cleared its {article_count} "
+                f"previous articles (fresh=True). Working list is now empty.")
+
+    log_usage(ctx, "start_topic", {"name": name, "is_new": False})
+    return (f"Resumed existing topic: '{name}'. Working list has {article_count} articles. "
+            f"If you want to start over with a fresh empty list instead, call "
+            f"reset_topic now (or re-call start_topic with fresh=True).")
 
 
 @mcp.tool()
-def reset_topic() -> str:
+def reset_topic(ctx: Context = None) -> str:
     """Clear all articles from the current topic and start over.
     The topic itself is kept (so the name is preserved), but all articles,
     scores, and sources are wiped.
     """
-    err = _require_topic()
+    topic_id, err = _require_topic(ctx)
     if err:
         return err
 
-    all_articles = db.get_all_articles_dict(_current_topic_id)
+    _, topic_name = _get_topic(ctx)
+    all_articles = db.get_all_articles_dict(topic_id)
     count = len(all_articles)
-    db.replace_all_articles(_current_topic_id, {})
-    log_usage("reset_topic", {}, f"cleared {count} articles")
-    return f"Reset topic '{_current_topic_name}'. Removed all {count} articles. Working list is now empty."
+    db.replace_all_articles(topic_id, {})
+    log_usage(ctx, "reset_topic", {}, f"cleared {count} articles")
+    return f"Reset topic '{topic_name}'. Removed all {count} articles. Working list is now empty."
 
 
 @mcp.tool()
@@ -126,24 +161,25 @@ def list_topics() -> str:
 
 
 @mcp.tool()
-def resume_topic(name: str) -> str:
+def resume_topic(name: str, ctx: Context = None) -> str:
     """Resume an existing topic build.
 
     Args:
         name: The topic name to resume
     """
-    return start_topic(name)
+    return start_topic(name, ctx=ctx)
 
 
 @mcp.tool()
-def get_status() -> str:
+def get_status(ctx: Context = None) -> str:
     """Get current status of the topic build: article count, score distribution, source breakdown."""
-    err = _require_topic()
+    topic_id, err = _require_topic(ctx)
     if err:
         return err
 
-    status = db.get_status(_current_topic_id)
-    status['topic'] = _current_topic_name
+    _, topic_name = _get_topic(ctx)
+    status = db.get_status(topic_id)
+    status['topic'] = topic_name
     status['rate_limits'] = get_rate_limit_stats()
     return json.dumps(status, indent=2, default=str)
 
@@ -151,7 +187,7 @@ def get_status() -> str:
 # ── Reconnaissance tools ──────────────────────────────────────────────────
 
 @mcp.tool()
-def survey_categories(category: str, depth: int = 2, count_articles: bool = False) -> str:
+def survey_categories(category: str, depth: int = 2, count_articles: bool = False, ctx: Context = None) -> str:
     """Survey the subcategory tree of a Wikipedia category WITHOUT collecting articles.
     Use this first to understand how Wikipedia organizes a topic before committing to a pull.
 
@@ -210,7 +246,7 @@ def survey_categories(category: str, depth: int = 2, count_articles: bool = Fals
         if total_articles > 2000:
             result['warning'] = f'This tree contains ~{total_articles} articles. Consider pulling specific subcategories rather than the whole tree.'
 
-    log_usage("survey_categories", {"category": category, "depth": depth}, f"{len(visited)} categories")
+    log_usage(ctx, "survey_categories", {"category": category, "depth": depth}, f"{len(visited)} categories")
     return json.dumps(result, indent=2, ensure_ascii=False)
 
 
@@ -269,7 +305,7 @@ def find_list_pages(topic: str) -> str:
 # ── Gathering tools ───────────────────────────────────────────────────────
 
 @mcp.tool()
-def get_wikiproject_articles(project_name: str, max_articles: int = 50000) -> str:
+def get_wikiproject_articles(project_name: str, max_articles: int = 50000, ctx: Context = None) -> str:
     """Get all articles tagged by a WikiProject. Adds them to the working list
     with source 'wikiproject'.
 
@@ -277,7 +313,7 @@ def get_wikiproject_articles(project_name: str, max_articles: int = 50000) -> st
         project_name: WikiProject name (e.g., "Climate change")
         max_articles: Maximum articles to fetch (default 50000)
     """
-    err = _require_topic()
+    topic_id, err = _require_topic(ctx)
     if err:
         return err
 
@@ -299,21 +335,21 @@ def get_wikiproject_articles(project_name: str, max_articles: int = 50000) -> st
 
     source_label = f"wikiproject:{project_name}"
     batch = [(title, source_label, None) for title in articles]
-    added, updated = db.add_articles(_current_topic_id, batch)
+    added, updated = db.add_articles(topic_id, batch)
 
-    log_usage("get_wikiproject_articles", {"project": project_name}, f"{len(articles)} articles")
+    log_usage(ctx, "get_wikiproject_articles", {"project": project_name}, f"{len(articles)} articles")
     return json.dumps({
         'project': project_name,
         'articles_found': len(articles),
         'new_articles_added': added,
         'existing_updated': updated,
         'source_label': source_label,
-        'total_in_working_list': db.get_status(_current_topic_id)['total_articles'],
+        'total_in_working_list': db.get_status(topic_id)['total_articles'],
     }, indent=2, ensure_ascii=False)
 
 
 @mcp.tool()
-def get_category_articles(category: str, depth: int = 3, exclude: list[str] | None = None, max_articles: int = 50000) -> str:
+def get_category_articles(category: str, depth: int = 3, exclude: list[str] | None = None, max_articles: int = 50000, ctx: Context = None) -> str:
     """Crawl a category tree and collect all articles. Adds them to the working list
     with source 'category'.
 
@@ -323,7 +359,7 @@ def get_category_articles(category: str, depth: int = 3, exclude: list[str] | No
         exclude: Category names to skip (prune entire branches)
         max_articles: Maximum articles to collect (default 50000)
     """
-    err = _require_topic()
+    topic_id, err = _require_topic(ctx)
     if err:
         return err
 
@@ -368,9 +404,9 @@ def get_category_articles(category: str, depth: int = 3, exclude: list[str] | No
 
     source_label = f"category:{category}"
     batch = [(title, source_label, None) for title in articles]
-    added, updated = db.add_articles(_current_topic_id, batch)
+    added, updated = db.add_articles(topic_id, batch)
 
-    log_usage("get_category_articles", {"category": category, "depth": depth}, f"{len(articles)} articles, {len(visited_cats)} categories")
+    log_usage(ctx, "get_category_articles", {"category": category, "depth": depth}, f"{len(articles)} articles, {len(visited_cats)} categories")
     return json.dumps({
         'root_category': category,
         'depth': depth,
@@ -379,20 +415,20 @@ def get_category_articles(category: str, depth: int = 3, exclude: list[str] | No
         'categories_visited': len(visited_cats),
         'new_articles_added': added,
         'source_label': source_label,
-        'total_in_working_list': db.get_status(_current_topic_id)['total_articles'],
+        'total_in_working_list': db.get_status(topic_id)['total_articles'],
         'note': f'To undo this pull, use: remove_by_source("{source_label}")',
     }, indent=2, ensure_ascii=False)
 
 
 @mcp.tool()
-def harvest_list_page(title: str) -> str:
+def harvest_list_page(title: str, ctx: Context = None) -> str:
     """Extract all article links from a List/Index/Glossary page. Adds them
     to the working list with source 'list_page'.
 
     Args:
         title: Page title (e.g., "Index of climate change articles")
     """
-    err = _require_topic()
+    topic_id, err = _require_topic(ctx)
     if err:
         return err
 
@@ -420,20 +456,20 @@ def harvest_list_page(title: str) -> str:
 
     source_label = f"list_page:{title}"
     batch = [(t, source_label, None) for t in links]
-    added, updated = db.add_articles(_current_topic_id, batch)
+    added, updated = db.add_articles(topic_id, batch)
 
     return json.dumps({
         'source_page': title,
         'links_found': len(links),
         'new_articles_added': added,
         'source_label': source_label,
-        'total_in_working_list': db.get_status(_current_topic_id)['total_articles'],
+        'total_in_working_list': db.get_status(topic_id)['total_articles'],
         'note': f'To undo this harvest, use: remove_by_source("{source_label}")',
     }, indent=2)
 
 
 @mcp.tool()
-def search_articles(query: str, limit: int = 500) -> str:
+def search_articles(query: str, limit: int = 500, ctx: Context = None) -> str:
     """Search Wikipedia using CirrusSearch. Supports operators like intitle:,
     morelike:, hastemplate:, incategory:. Adds results to working list with source 'search'.
 
@@ -441,7 +477,7 @@ def search_articles(query: str, limit: int = 500) -> str:
         query: Search query (e.g., 'intitle:"climate change"', 'morelike:Effects of climate change')
         limit: Maximum results (default 500)
     """
-    err = _require_topic()
+    topic_id, err = _require_topic(ctx)
     if err:
         return err
 
@@ -459,19 +495,19 @@ def search_articles(query: str, limit: int = 500) -> str:
         results.append(item['title'])
 
     batch = [(title, 'search', None) for title in results]
-    added, updated = db.add_articles(_current_topic_id, batch)
+    added, updated = db.add_articles(topic_id, batch)
 
-    log_usage("search_articles", {"query": query}, f"{len(results)} results")
+    log_usage(ctx, "search_articles", {"query": query}, f"{len(results)} results")
     return json.dumps({
         'query': query,
         'results_found': len(results),
         'new_articles_added': added,
-        'total_in_working_list': db.get_status(_current_topic_id)['total_articles'],
+        'total_in_working_list': db.get_status(topic_id)['total_articles'],
     }, indent=2, ensure_ascii=False)
 
 
 @mcp.tool()
-def search_similar(seed_article: str, limit: int = 50) -> str:
+def search_similar(seed_article: str, limit: int = 50, ctx: Context = None) -> str:
     """Find articles similar to a given article using CirrusSearch morelike:.
     Great for finding thematic clusters the other strategies miss.
 
@@ -479,13 +515,13 @@ def search_similar(seed_article: str, limit: int = 50) -> str:
         seed_article: Article title to find similar articles to
         limit: Maximum results (default 50)
     """
-    return search_articles(f'morelike:{seed_article}', limit=limit)
+    return search_articles(f'morelike:{seed_article}', limit=limit, ctx=ctx)
 
 
 # ── Scoring tools ─────────────────────────────────────────────────────────
 
 @mcp.tool()
-def score_by_extract(titles: list[str] | None = None, unscored_batch: bool = False, batch_size: int = 50) -> str:
+def score_by_extract(titles: list[str] | None = None, unscored_batch: bool = False, batch_size: int = 50, ctx: Context = None) -> str:
     """Fetch article extracts (first 5 sentences) from Wikipedia for scoring.
     Returns the extracts so you (Claude) can judge relevance on a 1-10 scale.
 
@@ -494,7 +530,7 @@ def score_by_extract(titles: list[str] | None = None, unscored_batch: bool = Fal
         unscored_batch: If True and titles is None, fetch a batch of unscored articles
         batch_size: How many articles to fetch (default 50, max 50)
     """
-    err = _require_topic()
+    topic_id, err = _require_topic(ctx)
     if err:
         return err
 
@@ -503,7 +539,7 @@ def score_by_extract(titles: list[str] | None = None, unscored_batch: bool = Fal
     if titles:
         to_score = titles[:batch_size]
     elif unscored_batch:
-        articles, _ = db.get_articles(_current_topic_id, unscored_only=True, limit=batch_size)
+        articles, _ = db.get_articles(topic_id, unscored_only=True, limit=batch_size)
         to_score = [a['title'] for a in articles]
     else:
         return "Provide titles or set unscored_batch=True"
@@ -526,7 +562,7 @@ def score_by_extract(titles: list[str] | None = None, unscored_batch: bool = Fal
             if not page.get('missing', False):
                 extracts[normalize_title(page['title'])] = page.get('extract', '')
 
-    all_articles = db.get_all_articles_dict(_current_topic_id)
+    all_articles = db.get_all_articles_dict(topic_id)
     results = []
     for title in to_score:
         extract = extracts.get(title, '')
@@ -546,34 +582,35 @@ def score_by_extract(titles: list[str] | None = None, unscored_batch: bool = Fal
 
 
 @mcp.tool()
-def set_scores(scores: dict[str, int]) -> str:
+def set_scores(scores: dict[str, int], ctx: Context = None) -> str:
     """Set relevance scores for articles. Scores should be 1-10.
 
     Args:
         scores: Dict mapping article title to score (e.g., {"Article Name": 8, "Other Article": 3})
     """
-    err = _require_topic()
+    topic_id, err = _require_topic(ctx)
     if err:
         return err
 
-    updated = db.set_scores(_current_topic_id, scores)
+    updated = db.set_scores(topic_id, scores)
     return f"Updated scores for {updated} articles."
 
 
 @mcp.tool()
-def auto_score_by_title(threshold: int = 7) -> str:
+def auto_score_by_title(threshold: int = 7, ctx: Context = None) -> str:
     """Quick title-based scoring pass for obvious cases. Articles with clear topic
     keywords in the title get auto-scored.
 
     Args:
         threshold: Score to assign to keyword-matched articles (default 7)
     """
-    err = _require_topic()
+    topic_id, err = _require_topic(ctx)
     if err:
         return err
 
-    topic_phrase = _current_topic_name.lower()
-    all_articles = db.get_all_articles_dict(_current_topic_id)
+    _, topic_name = _get_topic(ctx)
+    topic_phrase = topic_name.lower()
+    all_articles = db.get_all_articles_dict(topic_id)
 
     scores = {}
     for title, article in all_articles.items():
@@ -583,14 +620,14 @@ def auto_score_by_title(threshold: int = 7) -> str:
             scores[title] = min(threshold + 2, 10)
 
     if scores:
-        db.set_scores(_current_topic_id, scores)
+        db.set_scores(topic_id, scores)
 
     unscored = sum(1 for a in all_articles.values() if a.get('score') is None) - len(scores)
     return f"Auto-scored {len(scores)} articles containing '{topic_phrase}' in title. ~{unscored} still unscored."
 
 
 @mcp.tool()
-def score_all_unscored(score: int = 8) -> str:
+def score_all_unscored(score: int = 8, ctx: Context = None) -> str:
     """Set a score for ALL currently unscored articles in one operation.
     Use this after you've already pruned the list down to on-topic articles
     and just need to mark everything as scored for export.
@@ -598,16 +635,16 @@ def score_all_unscored(score: int = 8) -> str:
     Args:
         score: Score to assign to all unscored articles (default 8)
     """
-    err = _require_topic()
+    topic_id, err = _require_topic(ctx)
     if err:
         return err
 
-    all_articles = db.get_all_articles_dict(_current_topic_id)
+    all_articles = db.get_all_articles_dict(topic_id)
     scores = {title: score for title, article in all_articles.items()
               if article.get('score') is None}
 
     if scores:
-        db.set_scores(_current_topic_id, scores)
+        db.set_scores(topic_id, scores)
 
     return f"Scored {len(scores)} previously unscored articles at {score}. All articles are now scored."
 
@@ -615,7 +652,7 @@ def score_all_unscored(score: int = 8) -> str:
 # ── Edge browsing ─────────────────────────────────────────────────────────
 
 @mcp.tool()
-def browse_edges(seed_titles: list[str], min_links: int = 3) -> str:
+def browse_edges(seed_titles: list[str], min_links: int = 3, ctx: Context = None) -> str:
     """Browse outgoing links from seed articles to find related articles not yet
     in the working list. Articles linked by multiple seeds are most likely relevant.
 
@@ -623,12 +660,12 @@ def browse_edges(seed_titles: list[str], min_links: int = 3) -> str:
         seed_titles: Articles to browse from (pick peripheral/edge articles for best results)
         min_links: Minimum seed articles that must link to a candidate (default 3)
     """
-    err = _require_topic()
+    topic_id, err = _require_topic(ctx)
     if err:
         return err
 
     link_counts = collections.Counter()
-    existing = db.get_all_titles(_current_topic_id)
+    existing = db.get_all_titles(topic_id)
 
     for seed in seed_titles:
         params = {
@@ -666,7 +703,7 @@ def browse_edges(seed_titles: list[str], min_links: int = 3) -> str:
 # ── List management ───────────────────────────────────────────────────────
 
 @mcp.tool()
-def add_articles(titles: list[str], source: str = "manual", score: int | None = None) -> str:
+def add_articles(titles: list[str], source: str = "manual", score: int | None = None, ctx: Context = None) -> str:
     """Add articles to the working list.
 
     Args:
@@ -674,19 +711,19 @@ def add_articles(titles: list[str], source: str = "manual", score: int | None = 
         source: Source label (e.g., "manual", "edge_browse", "search")
         score: Optional relevance score to assign (1-10)
     """
-    err = _require_topic()
+    topic_id, err = _require_topic(ctx)
     if err:
         return err
 
     batch = [(normalize_title(t), source, score) for t in titles]
-    added, updated = db.add_articles(_current_topic_id, batch)
-    total = db.get_status(_current_topic_id)['total_articles']
+    added, updated = db.add_articles(topic_id, batch)
+    total = db.get_status(topic_id)['total_articles']
     return f"Added {added} new articles, updated {updated} (source: {source}). Total: {total}"
 
 
 @mcp.tool()
 def get_articles_by_source(source: str, exclude_sources: list[str] | None = None,
-                           limit: int = 100, offset: int = 0) -> str:
+                           limit: int = 100, offset: int = 0, ctx: Context = None) -> str:
     """Get articles that came from a specific source, optionally excluding articles
     that also came from other sources. Useful for reviewing noisy sources like list page harvests.
 
@@ -699,11 +736,11 @@ def get_articles_by_source(source: str, exclude_sources: list[str] | None = None
         limit: Max articles to return (default 100)
         offset: Pagination offset
     """
-    err = _require_topic()
+    topic_id, err = _require_topic(ctx)
     if err:
         return err
 
-    all_articles = db.get_all_articles_dict(_current_topic_id)
+    all_articles = db.get_all_articles_dict(topic_id)
     exclude = set(exclude_sources or [])
 
     matches = []
@@ -728,23 +765,23 @@ def get_articles_by_source(source: str, exclude_sources: list[str] | None = None
 
 
 @mcp.tool()
-def remove_articles(titles: list[str]) -> str:
+def remove_articles(titles: list[str], ctx: Context = None) -> str:
     """Remove articles from the working list.
 
     Args:
         titles: Article titles to remove
     """
-    err = _require_topic()
+    topic_id, err = _require_topic(ctx)
     if err:
         return err
 
-    removed = db.remove_articles(_current_topic_id, titles)
-    total = db.get_status(_current_topic_id)['total_articles']
+    removed = db.remove_articles(topic_id, titles)
+    total = db.get_status(topic_id)['total_articles']
     return f"Removed {removed} articles. Total: {total}"
 
 
 @mcp.tool()
-def remove_by_source(source: str, keep_if_other_sources: bool = True, dry_run: bool = True) -> str:
+def remove_by_source(source: str, keep_if_other_sources: bool = True, dry_run: bool = True, ctx: Context = None) -> str:
     """Remove all articles that came from a specific source. Use this to undo a bad
     category pull or noisy list harvest.
 
@@ -754,11 +791,11 @@ def remove_by_source(source: str, keep_if_other_sources: bool = True, dry_run: b
                                If False, remove all articles with this source regardless.
         dry_run: If True (default), preview what would be removed without actually removing.
     """
-    err = _require_topic()
+    topic_id, err = _require_topic(ctx)
     if err:
         return err
 
-    all_articles = db.get_all_articles_dict(_current_topic_id)
+    all_articles = db.get_all_articles_dict(topic_id)
 
     to_remove = []
     to_keep = []
@@ -782,20 +819,20 @@ def remove_by_source(source: str, keep_if_other_sources: bool = True, dry_run: b
             'note': 'Set dry_run=False to actually remove.',
         }, indent=2, ensure_ascii=False)
 
-    removed = db.remove_articles(_current_topic_id, to_remove)
+    removed = db.remove_articles(topic_id, to_remove)
     # Also strip this source from articles we kept
     if to_keep:
         for title in to_keep:
             article = all_articles[title]
             new_sources = [s for s in article['sources'] if s != source]
-            db.update_article_sources(_current_topic_id, title, new_sources)
+            db.update_article_sources(topic_id, title, new_sources)
 
-    total = db.get_status(_current_topic_id)['total_articles']
+    total = db.get_status(topic_id)['total_articles']
     return f"Removed {removed} articles from source '{source}' (kept {len(to_keep)} that had other sources). Total: {total}"
 
 
 @mcp.tool()
-def remove_by_pattern(pattern: str, below_score: int | None = None, source: str | None = None, dry_run: bool = True) -> str:
+def remove_by_pattern(pattern: str, below_score: int | None = None, source: str | None = None, dry_run: bool = True, ctx: Context = None) -> str:
     """Remove articles matching a pattern (case-insensitive substring match on title).
     Use dry_run=True first to preview what would be removed.
 
@@ -805,11 +842,11 @@ def remove_by_pattern(pattern: str, below_score: int | None = None, source: str 
         source: Only remove articles from this source
         dry_run: If True (default), just preview — don't actually remove
     """
-    err = _require_topic()
+    topic_id, err = _require_topic(ctx)
     if err:
         return err
 
-    all_articles = db.get_all_articles_dict(_current_topic_id)
+    all_articles = db.get_all_articles_dict(topic_id)
     pattern_lower = pattern.lower()
 
     matches = []
@@ -833,8 +870,8 @@ def remove_by_pattern(pattern: str, below_score: int | None = None, source: str 
             'note': 'Set dry_run=False to actually remove these articles.',
         }, indent=2, ensure_ascii=False)
 
-    removed = db.remove_articles(_current_topic_id, matches)
-    total = db.get_status(_current_topic_id)['total_articles']
+    removed = db.remove_articles(topic_id, matches)
+    total = db.get_status(topic_id)['total_articles']
     return f"Removed {removed} articles matching '{pattern}'. Total: {total}"
 
 
@@ -842,7 +879,7 @@ def remove_by_pattern(pattern: str, below_score: int | None = None, source: str 
 def get_articles(min_score: int | None = None, max_score: int | None = None,
                  source: str | None = None, unscored_only: bool = False,
                  titles_only: bool = False,
-                 limit: int = 100, offset: int = 0) -> str:
+                 limit: int = 100, offset: int = 0, ctx: Context = None) -> str:
     """Get articles from the working list with optional filters.
 
     Args:
@@ -854,12 +891,12 @@ def get_articles(min_score: int | None = None, max_score: int | None = None,
         limit: Max articles to return (default 100)
         offset: Skip this many articles (for pagination)
     """
-    err = _require_topic()
+    topic_id, err = _require_topic(ctx)
     if err:
         return err
 
     articles, total = db.get_articles(
-        _current_topic_id, min_score=min_score, max_score=max_score,
+        topic_id, min_score=min_score, max_score=max_score,
         source=source, unscored_only=unscored_only, limit=limit, offset=offset
     )
 
@@ -881,7 +918,7 @@ def get_articles(min_score: int | None = None, max_score: int | None = None,
 
 @mcp.tool()
 def filter_articles(resolve_redirects: bool = True, remove_disambig: bool = True,
-                    remove_lists: bool = True) -> str:
+                    remove_lists: bool = True, ctx: Context = None) -> str:
     """Clean up the working list: resolve redirects, remove disambiguation pages,
     remove list/index pages.
 
@@ -890,11 +927,11 @@ def filter_articles(resolve_redirects: bool = True, remove_disambig: bool = True
         remove_disambig: Remove disambiguation pages
         remove_lists: Remove "List of...", "Index of...", etc.
     """
-    err = _require_topic()
+    topic_id, err = _require_topic(ctx)
     if err:
         return err
 
-    all_articles = db.get_all_articles_dict(_current_topic_id)
+    all_articles = db.get_all_articles_dict(topic_id)
     stats = {'before': len(all_articles)}
 
     # Resolve redirects
@@ -964,13 +1001,13 @@ def filter_articles(resolve_redirects: bool = True, remove_disambig: bool = True
     stats['final'] = len(all_articles)
 
     # Write back to DB
-    db.replace_all_articles(_current_topic_id, all_articles)
+    db.replace_all_articles(topic_id, all_articles)
 
     return json.dumps(stats, indent=2)
 
 
 @mcp.tool()
-def export_csv(min_score: int = 0, scored_only: bool = False) -> str:
+def export_csv(min_score: int = 0, scored_only: bool = False, ctx: Context = None) -> str:
     """Export the final article list as a downloadable CSV file.
 
     Returns a download link — give this URL to the user so they can download the CSV directly.
@@ -980,11 +1017,12 @@ def export_csv(min_score: int = 0, scored_only: bool = False) -> str:
                    Set to 7 to export only scored-and-relevant articles.
         scored_only: If True, only export articles that have been scored. Default False.
     """
-    err = _require_topic()
+    topic_id, err = _require_topic(ctx)
     if err:
         return err
 
-    all_articles = db.get_all_articles_dict(_current_topic_id)
+    _, topic_name = _get_topic(ctx)
+    all_articles = db.get_all_articles_dict(topic_id)
 
     titles = []
     for title, article in sorted(all_articles.items()):
@@ -1010,7 +1048,7 @@ def export_csv(min_score: int = 0, scored_only: bool = False) -> str:
     csv_content = '\n'.join(lines) + '\n'
 
     # Save to a downloadable file
-    slug = _current_topic_name.lower().replace(' ', '_').replace("'", '').replace('"', '')
+    slug = topic_name.lower().replace(' ', '_').replace("'", '').replace('"', '')
     export_dir = os.path.join(os.environ.get("EXPORT_DIR", "/opt/topic-builder/exports"))
     os.makedirs(export_dir, exist_ok=True)
     filename = f"topic-articles-{slug}.csv"
@@ -1021,7 +1059,7 @@ def export_csv(min_score: int = 0, scored_only: bool = False) -> str:
 
     download_url = f"https://topic-builder.wikiedu.org/exports/{filename}"
 
-    log_usage("export_csv", {"min_score": min_score}, f"{len(titles)} articles exported")
+    log_usage(ctx, "export_csv", {"min_score": min_score}, f"{len(titles)} articles exported")
     return json.dumps({
         'article_count': len(titles),
         'min_score': min_score,
