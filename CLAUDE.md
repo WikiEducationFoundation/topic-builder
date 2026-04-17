@@ -1,129 +1,110 @@
 # Wikipedia Topic Builder
 
-You are a Wikipedia topic mapping assistant. Your job is to help users identify all Wikipedia articles that belong to an arbitrary topic, producing a CSV article list for the Wiki Education Foundation's Impact Visualizer.
+## What this project is
 
-## Output Format
+An MCP server that helps an AI assistant identify every Wikipedia article belonging to an arbitrary subject, ending with a downloadable CSV ready for the Wiki Education [Impact Visualizer](https://github.com/WikiEducationFoundation/impact-visualizer). The AI drives the workflow; users steer it through conversation.
 
-CSV file: one article title per line, no header row. Titles use spaces (not underscores), no URL encoding. If a title contains a comma, wrap it in double quotes.
+The server runs at `https://topic-builder.wikiedu.org/mcp` and exposes ~27 tools (start/reset a topic, reconnaissance, gathering, scoring, cleanup, export, feedback). Two MCP clients matter right now: **Claude** (stateful sessions) and **ChatGPT** (stateless — opens a new session per tool call).
 
-## Workflow
-
-### 1. Scope the Topic
-
-Ask the user:
-- What is the topic?
-- How broadly or narrowly should it be defined?
-- Are there known exclusions (subtopics that should NOT be included)?
-
-Propose a plain-language definition of what "belongs" to this topic. Get user agreement before proceeding.
-
-### 2. Reconnaissance
-
-Before running bulk queries, do quick exploratory probes:
-
-- **Category check**: Survey the top-level category and its immediate subcategories
-  ```
-  python scripts/category_tree.py -c "<Topic>" -d 1 --subcats-only
-  ```
-- **Deeper category survey**: Check depth 2 to understand the tree shape
-  ```
-  python scripts/category_tree.py -c "<Topic>" -d 2 --subcats-only
-  ```
-- **WikiProject check**: Search for a relevant WikiProject (if one exists, it may tag thousands of articles)
-- **List/Outline pages**: Search for "List of..." and "Outline of..." articles
-- **Navbox templates**: Look for navigation templates that group related articles
-
-Report findings to the user: "Here's how Wikipedia organizes this topic. I recommend these strategies..."
-
-### 3. Execute Strategies
-
-Run selected exploration strategies. Each one writes results to a working file. Available strategies:
-
-**Category tree crawl** (usually the primary strategy):
-```
-python scripts/category_tree.py -c "<Topic>" -d <depth> --exclude "<branch1>" "<branch2>"
-```
-
-**WikiProject articles** (comprehensive for well-organized topics):
-```
-python scripts/wikiproject_articles.py --project "<WikiProject name>"
-```
-
-**PetScan queries** (compound: categories + templates + Wikidata):
-```
-python scripts/petscan_query.py --categories "<Cat1>|<Cat2>" --depth 4
-```
-
-**CirrusSearch** (full-text and structured search):
-```
-python scripts/search_articles.py --query '<CirrusSearch query>'
-```
-
-**List/Outline harvesting**:
-```
-python scripts/list_harvester.py --title "<List page title>"
-```
-
-**Navbox parsing**:
-```
-python scripts/navbox_parser.py --template "<Template name>"
-```
-
-### 4. Merge and Filter
-
-After executing strategies, merge all results and clean up:
-```
-python scripts/article_filter.py --input results.json --resolve-redirects --filter-disambig --filter-lists
-```
-
-This handles:
-- Deduplication (after title normalization)
-- Redirect resolution (follows redirects to canonical titles)
-- Disambiguation page removal
-- List/Index/Outline page removal (these are tools, not topic articles)
-
-### 5. Quality Review
-
-Review the merged list for:
-- **Off-topic articles**: Articles that snuck in via broad categories but don't truly belong
-- **Missing articles**: Articles the user might expect that weren't found
-- **Category drift**: Deep category branches that led outside the topic
-- **Stub assessment**: Note if many articles are stubs (may indicate exhaustive but low-quality coverage)
-
-Present flagged items to the user for decision.
-
-### 6. Refine
-
-Based on user feedback:
-- Remove confirmed off-topic articles
-- Run additional targeted searches for gaps
-- Adjust scope if needed
-
-### 7. Export
-
-Write the final CSV to `topics/<slug>/articles.csv`.
-
-## Strategy Selection Heuristics
-
-- **Well-organized academic topics** (climate change, quantum mechanics): Category tree + WikiProject is usually comprehensive
-- **Biographical/demographic topics** (women in STEM, Black scientists): PetScan with Wikidata properties (gender, occupation, nationality) is powerful
-- **Emerging/niche topics**: Search-based discovery may be the primary strategy
-- **Cross-domain topics**: Multiple WikiProjects, combine with intersection logic
-- **Geographic topics**: Categories "by country/region" branches are usually well-structured
-
-## Common Pitfalls
-
-- **Category explosion**: Some categories lead to millions of articles (e.g., "Science"). Always survey with `--subcats-only` first before committing to a deep crawl
-- **Tangential WikiProject tags**: WikiProject banners with importance=Low may indicate articles only tangentially related
-- **"By country" branches**: These can massively expand a topic. Ask the user if geographic breakdown is desired
-- **Fiction and cultural references**: Categories like "X in fiction" or "X in popular culture" may or may not belong depending on scope
-- **PetScan timeouts**: Very large queries can time out. Break into smaller sub-queries if needed
-- **Stubs**: Category trees often contain many stubs. These are real articles but may indicate over-coverage of minor subtopics
-
-## Project Structure
+## Repository layout
 
 ```
-topics/<slug>/
-  articles.csv       # Final output (one title per line)
-  provenance.json    # Which strategy found each article
+mcp_server/          # production code
+├── server.py        # all MCP tools + per-session state + server instructions
+├── db.py            # SQLite persistence layer
+├── wikipedia_api.py # thin wrapper around api.php with rate limiting
+├── landing.html     # static landing page at topic-builder.wikiedu.org/
+├── deploy.sh        # full deploy (syncs code, restarts systemd)
+└── deploy_landing.sh# landing-only deploy (no service restart)
+
+docs/                # plans and operational reference
+├── operations-and-backlog.md  # host layout, admin one-liners, backlog
+├── auth-plan.md               # deferred: Wikipedia OAuth + paste-in-chat token
+├── impact-visualizer-handoff.md # deferred: handle → IV import
+└── development-narrative.md   # historical context
+
+scripts/             # standalone helper scripts (category_tree.py, etc.).
+                     # Pre-MCP; kept around for ad-hoc use. New primary path
+                     # is the MCP tools, not these scripts.
+
+topics/              # legacy CSV outputs from the script-based workflow.
+                     # Current exports live at /opt/topic-builder/exports/
+                     # on the server, served via /exports/<filename>.
 ```
+
+## Architecture at a glance
+
+- The MCP server is a FastMCP app (`mcp.server.fastmcp`) speaking the streamable-HTTP transport.
+- SQLite holds topics, articles, sources, and scores. Durable across restarts.
+- A dict keyed by `id(ctx.session)` holds the session's "current topic" so a stateful client doesn't have to pass the topic on every call. Stateless clients (ChatGPT) pass `topic=<name>` on every call.
+- nginx fronts the service: `/` serves `landing.html`, `/exports/*` serves generated CSVs, `/mcp` proxies to the Python service on `127.0.0.1:8000`.
+- systemd unit `topic-builder.service` supervises the process.
+
+See `docs/operations-and-backlog.md` for the host layout, log locations, and administration recipes.
+
+## Deployment
+
+Two scripts, both in `mcp_server/`:
+
+- **`bash mcp_server/deploy.sh`** — full deploy. Syncs server code, rewrites systemd + nginx config, restarts the service. Drops in-flight MCP sessions; clients reconnect. ~10 seconds.
+- **`bash mcp_server/deploy_landing.sh`** — landing-page-only deploy. Just SCPs the HTML. No service restart.
+
+Both read `.env` for `DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_KEY`. The deploy key is checked in at `deploy_key` (repo root).
+
+Before a full deploy, sanity check: `python3 -c "import ast; ast.parse(open('mcp_server/server.py').read())"`.
+
+## How to add a new tool
+
+Tools follow a consistent shape so stateless clients keep working and usage is logged correctly. Copy from an existing tool as the template (`get_category_articles` is a good one).
+
+**Required patterns:**
+
+1. **Parameters end with `ctx: Context = None`.** FastMCP auto-injects `ctx` and excludes it from the client-visible schema. Keep it as the last parameter.
+2. **If the tool reads or writes topic state, it accepts `topic: str | None = None`.** Call `topic_id, err = _require_topic(ctx, topic)` and early-return `err` if set. This makes the tool work for both stateful sessions (topic comes from `_get_topic(ctx)`) and stateless clients (topic comes from the explicit argument).
+3. **Log interesting calls.** Use `log_usage(ctx, "tool_name", {params}, "result summary")`. Reserve logging for gather / mutation / export-shaped tools; don't log paging or read-only queries.
+4. **Return JSON as a string** (`json.dumps(..., indent=2, ensure_ascii=False)`). The AI reads it.
+5. **Include an `undo` hint** if the tool adds articles under a source label. Pattern: `"note": f'To undo this pull, use: remove_by_source("{source_label}")'`.
+
+**Document new behavior in BOTH places:**
+
+- The tool's docstring — FastMCP publishes it in the schema.
+- The server instructions prompt (the `instructions=` string on `FastMCP(...)` near the top of `server.py`).
+
+Why both: **ChatGPT's MCP client caches tool schemas and doesn't reliably refresh them on server deploys.** If a new parameter lives only in the schema, ChatGPT may never see it. The server instructions are re-sent on every session init, so information there reliably reaches the AI regardless of client caching. This is load-bearing — don't skip the instructions update for non-obvious tool behavior.
+
+## Workflow principles the server enforces
+
+The `instructions=` prompt on the FastMCP app is where we encode workflow decisions. Current principles, each derived from specific dogfood observations (see feedback memories):
+
+- **Scoping is iterative dialogue, not a one-shot clarification.** The AI confirms scope with the user in plain language *before* calling any gather tool. Don't accept a quick-pick answer and immediately start pulling categories.
+- **Don't ask for a target article count.** The tool's value is helping the user *discover* the natural size of a topic given their scope; a target makes the AI fit the result to an arbitrary number.
+- **Probe scope edges explicitly.** Biographies, `List of…` / `Outline of…` pages, "X in popular culture", geographic breakdowns, stubs. Ask about these — they're where topics unexpectedly explode or shrink.
+- **"Start fresh" means `start_topic(name, fresh=True)`.** Not bulk-remove-by-page.
+- **Use `list_sources` then `remove_by_source(..., keep_if_other_sources=True)`** to prune noisy pulls, instead of iterating titles.
+- **GAP CHECK before wrap-up.** Before final export, ask the user what other angles might find missed articles (Wikidata properties, SPARQL, PetScan, reading lists, awards, bibliographies, non-English wikis). Act on what's actionable; route the rest into `submit_feedback`'s `missed_strategies`.
+- **Offer feedback at the end.** `submit_feedback` is how we learn. Ask first; never call unprompted.
+
+When changing any of these, update `instructions=` in `server.py` and redeploy — behavior changes don't take effect until the server restarts.
+
+## Testing and verification
+
+The project has no automated test suite. Verification is via:
+
+- **Syntax:** `python3 -c "import ast; ast.parse(open('mcp_server/server.py').read())"`.
+- **Tool schema check on the server:** copy the edited `server.py` to `/tmp/` on the host and run it through `mcp.list_tools()` to inspect what schemas the clients will see. See `docs/operations-and-backlog.md` for the one-liner.
+- **Live dogfood.** Build a small topic end-to-end in Claude and ChatGPT after a deploy. The Seattle / educational psychology topics are useful known shapes.
+
+## Pointers for future work
+
+- `docs/operations-and-backlog.md` — admin reference + running backlog of ideas.
+- `docs/auth-plan.md` — deferred Wikipedia OAuth plan; paste-in-chat token flow.
+- `docs/impact-visualizer-handoff.md` — deferred integration ending a session with a pasteable handle that IV imports directly.
+- `docs/development-narrative.md` — historical context from the early (pre-MCP) phase.
+
+## Legacy pieces still in the tree
+
+- **`scripts/*.py`** — the original local-workflow tools (`category_tree.py`, `wikiproject_articles.py`, `petscan_query.py`, etc.). They work, but nothing in the current server depends on them. Useful as one-off probing tools when you want to run a query from a shell without going through an MCP client.
+- **`topics/<slug>/articles.csv`** — old outputs from that workflow. Current CSV output lives on the server at `/opt/topic-builder/exports/`.
+- **`skill.md`** — an early draft of the Claude skill we eventually want to publish. Not authoritative; the current server instructions (`instructions=` in `server.py`) are the real prompt.
+
+These are kept around for reference; don't build new features on them.
