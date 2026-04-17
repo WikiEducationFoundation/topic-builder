@@ -4,7 +4,7 @@ identify all Wikipedia articles belonging to a topic. The workflow is:
 1. Scope the topic with the user
 2. Reconnaissance: survey_categories (with count_articles=True to gauge size), check_wikiproject, find_list_pages
 3. Gather candidates: get_wikiproject_articles, get_category_articles, harvest_list_page, search_articles
-4. Score and review: score_by_extract, get_status, get_articles
+4. Review and score: fetch_descriptions, get_articles, score_by_extract, get_status
 5. Edge browse: browse_edges, search_similar
 6. Clean up and export: filter_articles, export_csv
 
@@ -79,6 +79,13 @@ identify all Wikipedia articles belonging to a topic. The workflow is:
 
 - After pruning is done, use score_all_unscored to mark everything as scored for
   export, rather than paging through and scoring individually.
+
+- After gather and before heavy review, call fetch_descriptions so each
+  article's Wikidata short description is stored and shows up in
+  get_articles / get_articles_by_source / export_csv output. This makes
+  mid-flow filtering far faster — you can judge relevance from
+  "title + one-line description" without fetching extracts per article.
+  Batches of 500 titles per call; call it again if more remain.
 
 - export_csv with default min_score=0 exports all articles in the working list.
   No need to score first unless the user wants score-based filtering.

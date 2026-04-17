@@ -580,6 +580,55 @@ def search_similar(seed_article: str, limit: int = 50,
     return search_articles(f'morelike:{seed_article}', limit=limit, topic=topic, ctx=ctx)
 
 
+# ── Review aids ───────────────────────────────────────────────────────────
+
+@mcp.tool()
+def fetch_descriptions(limit: int = 500,
+                       topic: str | None = None, ctx: Context = None) -> str:
+    """Fetch Wikidata short descriptions for articles in the current topic
+    that don't have one yet, and persist them. Descriptions show up in
+    get_articles / get_articles_by_source output so the AI or user can judge
+    relevance while paging or reviewing a source. export_csv also reuses them.
+
+    Batches of 50 titles per API call. An article with no short-desc on
+    Wikipedia is stored as an empty string (so we don't re-ask next time).
+
+    Args:
+        limit: Max titles to fetch in this call (default 500). If more
+               articles are undescribed afterward, call again to continue.
+        topic: Optional topic name. Pass if your client doesn't maintain an
+               MCP session.
+    """
+    topic_id, err = _require_topic(ctx, topic)
+    if err:
+        return err
+
+    titles = db.get_undescribed_titles(topic_id, limit=limit)
+    if not titles:
+        return json.dumps({
+            'fetched': 0,
+            'remaining_undescribed': 0,
+            'note': 'All articles in this topic already have descriptions (or were checked).',
+        }, indent=2, ensure_ascii=False)
+
+    desc_map = fetch_short_descriptions(titles)
+    db.set_descriptions(topic_id, desc_map)
+
+    non_empty = sum(1 for v in desc_map.values() if v)
+    remaining = db.count_undescribed(topic_id)
+
+    log_usage(ctx, "fetch_descriptions", {"limit": limit},
+              f"fetched {len(titles)} ({non_empty} non-empty), {remaining} still undescribed")
+    return json.dumps({
+        'fetched': len(titles),
+        'non_empty': non_empty,
+        'remaining_undescribed': remaining,
+        'note': ('Descriptions now available in get_articles / get_articles_by_source / export_csv. '
+                 'Call fetch_descriptions again to continue.' if remaining
+                 else 'All articles in this topic now have descriptions (or were checked).'),
+    }, indent=2, ensure_ascii=False)
+
+
 # ── Scoring tools ─────────────────────────────────────────────────────────
 
 @mcp.tool()
@@ -860,7 +909,7 @@ def get_articles_by_source(source: str, exclude_sources: list[str] | None = None
             continue
         if exclude and any(s in exclude for s in sources):
             continue
-        matches.append(title)
+        matches.append({'title': title, 'description': article.get('description') or ''})
 
     total = len(matches)
     page = matches[offset:offset + limit]
@@ -868,9 +917,10 @@ def get_articles_by_source(source: str, exclude_sources: list[str] | None = None
     return json.dumps({
         'source': source,
         'excluding': sorted(exclude) if exclude else None,
-        'titles': page,
+        'articles': page,
         'showing': f"{offset + 1}-{offset + len(page)} of {total}",
         'total_matching': total,
+        'note': 'Descriptions come from stored Wikidata short-descs. Call fetch_descriptions if they are blank and you want them populated.',
     }, indent=2, ensure_ascii=False)
 
 
@@ -1086,6 +1136,9 @@ def filter_articles(resolve_redirects: bool = True, remove_disambig: bool = True
             resolved = normalize_title(resolved)
             if resolved != title:
                 redirected += 1
+                # Title changed — the stored description was for the old title
+                # and may be stale. Invalidate so fetch_descriptions refreshes it.
+                article = {**article, 'description': None}
             if resolved not in new_articles:
                 new_articles[resolved] = article
             else:
@@ -1166,9 +1219,21 @@ def export_csv(min_score: int = 0, scored_only: bool = False,
 
         titles.append(title)
 
-    # Fetch short descriptions for post-export review (the user asked for
-    # this — otherwise they'd have to look up each title to judge relevance).
-    descriptions = fetch_short_descriptions(titles) if titles else {}
+    # Use stored descriptions from the DB where available; fetch any that
+    # are still NULL (not-yet-fetched) and persist them for next time.
+    # Empty-string description = "no short-desc exists for this page" — use as-is.
+    descriptions = {}
+    missing = []
+    for title in titles:
+        stored = all_articles.get(title, {}).get('description')
+        if stored is None:
+            missing.append(title)
+        else:
+            descriptions[title] = stored
+    if missing:
+        fetched = fetch_short_descriptions(missing)
+        db.set_descriptions(topic_id, fetched)
+        descriptions.update(fetched)
 
     # Save to a downloadable file. utf-8-sig prepends a BOM so Excel detects
     # UTF-8 (otherwise accented characters get mojibaked to Windows-1252).

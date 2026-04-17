@@ -126,6 +126,26 @@ def score_distribution(conn, topic_id: int):
     ).fetchall()
 
 
+def description_coverage(conn, topic_id: int):
+    """Return (described, empty, not_fetched). 'empty' = fetched-but-no-desc."""
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(articles)")]
+    if 'description' not in cols:
+        return None
+    described = conn.execute(
+        "SELECT COUNT(*) FROM articles WHERE topic_id = ? AND description IS NOT NULL AND description != ''",
+        (topic_id,),
+    ).fetchone()[0]
+    empty = conn.execute(
+        "SELECT COUNT(*) FROM articles WHERE topic_id = ? AND description = ''",
+        (topic_id,),
+    ).fetchone()[0]
+    not_fetched = conn.execute(
+        "SELECT COUNT(*) FROM articles WHERE topic_id = ? AND description IS NULL",
+        (topic_id,),
+    ).fetchone()[0]
+    return described, empty, not_fetched
+
+
 def usage_entries_for_topic(topic_name: str, limit: int):
     matches = [e for e in iter_jsonl(USAGE_LOG) if e.get("topic") == topic_name]
     return matches[-limit:]
@@ -214,6 +234,15 @@ def print_topic_detail(conn, tid: int, name: str, recent: int):
         label = "unscored" if s is None else f"score {s}"
         print(f"  {label:>10}  {n:>5}")
     print()
+
+    cov = description_coverage(conn, tid)
+    if cov is not None:
+        described, empty, not_fetched = cov
+        print(f"--- description coverage ---")
+        print(f"  with description    {described:>5}")
+        print(f"  fetched, no desc    {empty:>5}")
+        print(f"  not yet fetched     {not_fetched:>5}")
+        print()
 
     sources = source_breakdown(conn, tid)
     print(f"--- top sources ({len(sources)} distinct) ---")

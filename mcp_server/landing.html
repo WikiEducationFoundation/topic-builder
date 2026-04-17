@@ -527,7 +527,7 @@
                 <div class="tool"><span class="tool-name">list_topics</span><span class="tool-desc">List all saved topics with their article counts.</span></div>
                 <div class="tool"><span class="tool-name">reset_topic</span><span class="tool-desc">Clear the current topic's working list and start over.</span></div>
                 <div class="tool"><span class="tool-name">survey_categories</span><span class="tool-desc">Survey Wikipedia's category tree without collecting yet.</span></div>
-                <div class="tool"><span class="tool-name">check_wikiproject</span><span class="tool-desc">Check if a WikiProject exists for the topic.</span></div>
+                <div class="tool"><span class="tool-name">check_wikiproject</span><span class="tool-desc">Check whether a given WikiProject exists on Wikipedia.</span></div>
                 <div class="tool"><span class="tool-name">find_list_pages</span><span class="tool-desc">Search for Index, List, Outline, and Glossary pages.</span></div>
                 <div class="tool"><span class="tool-name">get_wikiproject_articles</span><span class="tool-desc">Fetch all articles tagged by a WikiProject.</span></div>
                 <div class="tool"><span class="tool-name">get_category_articles</span><span class="tool-desc">Crawl a category tree and collect articles.</span></div>
@@ -536,6 +536,7 @@
                 <div class="tool"><span class="tool-name">search_similar</span><span class="tool-desc">Find articles similar to a given one &mdash; great for gaps.</span></div>
                 <div class="tool"><span class="tool-name">browse_edges</span><span class="tool-desc">Follow outgoing links from confirmed articles.</span></div>
                 <div class="tool"><span class="tool-name">add_articles</span><span class="tool-desc">Manually add articles the AI identifies outside the gather tools.</span></div>
+                <div class="tool"><span class="tool-name">fetch_descriptions</span><span class="tool-desc">Pull one-line Wikidata short descriptions for articles in the working list.</span></div>
                 <div class="tool"><span class="tool-name">score_by_extract</span><span class="tool-desc">Fetch article introductions so the AI can score relevance.</span></div>
                 <div class="tool"><span class="tool-name">set_scores</span><span class="tool-desc">Save relevance scores (1&ndash;10) for articles.</span></div>
                 <div class="tool"><span class="tool-name">auto_score_by_title</span><span class="tool-desc">Quick title-match scoring pass for obvious cases.</span></div>
@@ -548,14 +549,14 @@
                 <div class="tool"><span class="tool-name">filter_articles</span><span class="tool-desc">Resolve redirects; drop disambiguation and list pages.</span></div>
                 <div class="tool"><span class="tool-name">get_status</span><span class="tool-desc">Article count, score distribution, source breakdown.</span></div>
                 <div class="tool"><span class="tool-name">get_articles</span><span class="tool-desc">List articles with filters (score, source, unscored).</span></div>
-                <div class="tool"><span class="tool-name">export_csv</span><span class="tool-desc">Export the final list as a downloadable CSV.</span></div>
+                <div class="tool"><span class="tool-name">export_csv</span><span class="tool-desc">Export the final list as a CSV: title and short description per row.</span></div>
                 <div class="tool"><span class="tool-name">submit_feedback</span><span class="tool-desc">Submit a retrospective at the end of a session.</span></div>
             </div>
         </section>
 
         <section>
             <h2>Output format</h2>
-            <p>A plain CSV, one article title per line, no header &mdash; ready to feed into the <a href="https://github.com/WikiEducationFoundation/impact-visualizer">Wiki Education Impact Visualizer</a>.</p>
+            <p>A plain CSV with two columns per row &mdash; article title and its Wikidata short description &mdash; ready to feed into the <a href="https://github.com/WikiEducationFoundation/impact-visualizer">Wiki Education Impact Visualizer</a>, which reads the title column.</p>
         </section>
 
     </main>

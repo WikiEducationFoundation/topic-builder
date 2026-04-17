@@ -32,12 +32,18 @@ def init_db():
             title TEXT NOT NULL,
             score INTEGER,
             sources TEXT NOT NULL DEFAULT '[]',
+            description TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             UNIQUE(topic_id, title)
         );
         CREATE INDEX IF NOT EXISTS idx_articles_topic ON articles(topic_id);
         CREATE INDEX IF NOT EXISTS idx_articles_score ON articles(topic_id, score);
     """)
+    # Migrate existing DBs that predate the description column. NULL means
+    # "not fetched yet"; empty string means "fetched, no short-desc on Wikipedia".
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(articles)")]
+    if 'description' not in cols:
+        conn.execute("ALTER TABLE articles ADD COLUMN description TEXT")
     conn.commit()
     conn.close()
 
@@ -180,13 +186,15 @@ def get_articles(topic_id, min_score=None, max_score=None, source=None,
     total = conn.execute(f"SELECT COUNT(*) as c FROM articles WHERE {where}", params).fetchone()['c']
 
     rows = conn.execute(
-        f"SELECT title, score, sources FROM articles WHERE {where} ORDER BY title LIMIT ? OFFSET ?",
+        f"SELECT title, score, sources, description FROM articles WHERE {where} ORDER BY title LIMIT ? OFFSET ?",
         params + [limit, offset]
     ).fetchall()
 
     articles = []
     for r in rows:
-        a = {'title': r['title'], 'score': r['score'], 'sources': json.loads(r['sources'])}
+        a = {'title': r['title'], 'score': r['score'],
+             'sources': json.loads(r['sources']),
+             'description': r['description'] or ''}
         if source and source not in a['sources']:
             continue
         articles.append(a)
@@ -210,12 +218,14 @@ def get_all_titles(topic_id):
 
 
 def get_all_articles_dict(topic_id):
-    """Get all articles as a dict of title -> {sources, score}."""
+    """Get all articles as a dict of title -> {sources, score, description}.
+    description is '' when fetched-but-empty and None when not-yet-fetched."""
     conn = _connect()
-    rows = conn.execute("SELECT title, score, sources FROM articles WHERE topic_id = ?",
+    rows = conn.execute("SELECT title, score, sources, description FROM articles WHERE topic_id = ?",
                         (topic_id,)).fetchall()
     conn.close()
-    return {r['title']: {'score': r['score'], 'sources': json.loads(r['sources'])} for r in rows}
+    return {r['title']: {'score': r['score'], 'sources': json.loads(r['sources']),
+                          'description': r['description']} for r in rows}
 
 
 def get_status(topic_id):
@@ -242,6 +252,17 @@ def get_status(topic_id):
         for s in json.loads(r['sources']):
             source_counts[s] += 1
 
+    # Description coverage
+    described = conn.execute(
+        "SELECT COUNT(*) as c FROM articles WHERE topic_id = ? AND description IS NOT NULL AND description != ''",
+        (topic_id,)).fetchone()['c']
+    desc_empty = conn.execute(
+        "SELECT COUNT(*) as c FROM articles WHERE topic_id = ? AND description = ''",
+        (topic_id,)).fetchone()['c']
+    desc_unfetched = conn.execute(
+        "SELECT COUNT(*) as c FROM articles WHERE topic_id = ? AND description IS NULL",
+        (topic_id,)).fetchone()['c']
+
     conn.close()
     return {
         'total_articles': total,
@@ -249,6 +270,11 @@ def get_status(topic_id):
         'unscored': total - scored,
         'score_distribution': dist,
         'source_breakdown': dict(source_counts.most_common()),
+        'description_coverage': {
+            'with_desc': described,
+            'empty_desc': desc_empty,
+            'not_fetched': desc_unfetched,
+        },
     }
 
 
@@ -263,15 +289,57 @@ def update_article_sources(topic_id, title, new_sources):
 
 def replace_all_articles(topic_id, articles_dict):
     """Replace all articles for a topic (used by filter_articles).
-    articles_dict: {title: {sources: [...], score: int|None}}"""
+    articles_dict: {title: {sources: [...], score: int|None, description: str|None}}"""
     conn = _connect()
     conn.execute("DELETE FROM articles WHERE topic_id = ?", (topic_id,))
     for title, data in articles_dict.items():
-        conn.execute("INSERT INTO articles (topic_id, title, score, sources) VALUES (?, ?, ?, ?)",
-                     (topic_id, title, data.get('score'), json.dumps(data.get('sources', []))))
+        conn.execute(
+            "INSERT INTO articles (topic_id, title, score, sources, description) VALUES (?, ?, ?, ?, ?)",
+            (topic_id, title, data.get('score'), json.dumps(data.get('sources', [])),
+             data.get('description'))
+        )
     conn.execute("UPDATE topics SET updated_at = datetime('now') WHERE id = ?", (topic_id,))
     conn.commit()
     conn.close()
+
+
+def set_descriptions(topic_id, desc_map):
+    """Store short descriptions for articles. desc_map: {title: description}.
+    Empty strings are stored as-is (distinct from NULL = not-yet-fetched).
+    Returns count updated."""
+    conn = _connect()
+    updated = 0
+    for title, desc in desc_map.items():
+        cur = conn.execute(
+            "UPDATE articles SET description = ? WHERE topic_id = ? AND title = ?",
+            (desc, topic_id, title))
+        updated += cur.rowcount
+    conn.commit()
+    conn.close()
+    return updated
+
+
+def get_undescribed_titles(topic_id, limit=500):
+    """Return titles that don't have a description yet (description IS NULL).
+    Empty-string descriptions count as 'already fetched' and are excluded."""
+    conn = _connect()
+    rows = conn.execute(
+        "SELECT title FROM articles WHERE topic_id = ? AND description IS NULL ORDER BY title LIMIT ?",
+        (topic_id, limit)
+    ).fetchall()
+    conn.close()
+    return [r['title'] for r in rows]
+
+
+def count_undescribed(topic_id):
+    """Count articles without a description (NULL, not empty)."""
+    conn = _connect()
+    count = conn.execute(
+        "SELECT COUNT(*) as c FROM articles WHERE topic_id = ? AND description IS NULL",
+        (topic_id,)
+    ).fetchone()['c']
+    conn.close()
+    return count
 
 
 # Initialize on import
