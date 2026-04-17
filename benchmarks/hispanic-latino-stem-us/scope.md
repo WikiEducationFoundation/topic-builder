@@ -33,10 +33,13 @@ in STEM fields, with a meaningful affiliation to the United States.
   regardless of US affiliation or STEM field.
 - **Peninsular Spanish.** People from Spain (not Latin American heritage)
   are NOT in scope.
-- **Clinical medicine.** Most physicians are OUT — there are many bios of
-  doctors whose notability is as clinicians, authors of popular books,
-  etc. rather than as researchers. **Biomedical engineers are IN.** Other
-  medical-adjacent bios: default OUT.
+- **Clinical medicine.** Physicians whose notability is primarily clinical
+  practice, medical administration, authorship of popular books, or
+  medical education are OUT. **Physician-scientists whose notability is
+  primarily research (lab work, clinical research programs, publication
+  record) are IN,** including MDs and MD/PhDs. Biomedical engineers are
+  IN. Other medical-adjacent bios whose notability isn't research:
+  default OUT.
 - **Social sciences.** Economists, psychologists, sociologists,
   anthropologists, political scientists — OUT, even if they use
   quantitative / statistical methods.
@@ -49,9 +52,10 @@ in STEM fields, with a meaningful affiliation to the United States.
 
 ## Ambiguity rulings (default decisions)
 
-- **Physician-scientists (MD/PhDs doing primarily research).** Default
-  OUT, unless clearly a biomedical engineer. Rationale: consistent with
-  the clinical-medicine exclusion.
+- **Physician-scientists (MD or MD/PhDs doing primarily research).** IN.
+  The clinical-medicine exclusion targets practicing physicians notable
+  for clinical work or popular writing; research-primary physicians fall
+  on the STEM side of the line.
 - **Entrepreneurs with STEM credentials.** IN if their notability is
   rooted in engineering / invention / research. OUT if primarily a
   businessperson whose company happens to be in tech.
