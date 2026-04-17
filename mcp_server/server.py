@@ -554,15 +554,22 @@ def search_articles(query: str, limit: int = 500,
     for item in api_query_all(params, 'search', max_items=limit):
         results.append(item['title'])
 
-    batch = [(title, 'search', None) for title in results]
+    # Tag with the specific query so remove_by_source / get_articles_by_source
+    # can target one bad pull without blanket-touching all search-added articles.
+    # Use prefix_match=True on remove_by_source to clear a family of queries
+    # (e.g. "search:morelike:" drops every similarity pull at once).
+    source_label = f"search:{query}"
+    batch = [(title, source_label, None) for title in results]
     added, updated = db.add_articles(topic_id, batch)
 
     log_usage(ctx, "search_articles", {"query": query}, f"{len(results)} results")
     return json.dumps({
         'query': query,
+        'source_label': source_label,
         'results_found': len(results),
         'new_articles_added': added,
         'total_in_working_list': db.get_status(topic_id)['total_articles'],
+        'note': f'To undo this pull, use: remove_by_source("{source_label}")',
     }, indent=2, ensure_ascii=False)
 
 
@@ -901,9 +908,9 @@ def browse_edges(seed_titles: list[str], min_links: int = 3,
 def list_sources(topic: str | None = None, ctx: Context = None) -> str:
     """List every source label currently attached to articles in the working list,
     with counts. Call this before remove_by_source to see exactly what labels
-    you can target. Each gather tool (get_category_articles, get_wikiproject_articles,
-    harvest_list_page, search_articles) records a specific source label like
-    "category:Cognition" or "wikiproject:Climate change".
+    you can target. Each gather tool records a specific source label:
+    "category:Cognition", "wikiproject:Climate change", "list_page:List of X",
+    "search:morelike:Mario Molina", "search:incategory:American women chemists".
 
     Args:
         topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
@@ -922,10 +929,11 @@ def list_sources(topic: str | None = None, ctx: Context = None) -> str:
     return json.dumps({
         'sources': sources,
         'total_distinct_sources': len(sources),
-        'note': ('To drop a noisy source while keeping articles that also appear '
+        'note': ('To drop a noisy pull while keeping articles that also appear '
                  'under another source, use remove_by_source(source, '
-                 'keep_if_other_sources=True). To drop a source entirely, set '
-                 'keep_if_other_sources=False.'),
+                 'keep_if_other_sources=True). To drop a family of labels at '
+                 'once (e.g. every morelike: search), use '
+                 'remove_by_source("search:morelike:", prefix_match=True).'),
     }, indent=2, ensure_ascii=False)
 
 
@@ -1016,15 +1024,27 @@ def remove_articles(titles: list[str],
 
 
 @mcp.tool()
-def remove_by_source(source: str, keep_if_other_sources: bool = True, dry_run: bool = True,
+def remove_by_source(source: str, keep_if_other_sources: bool = True,
+                     prefix_match: bool = False, dry_run: bool = True,
                      topic: str | None = None, ctx: Context = None) -> str:
     """Remove all articles that came from a specific source. Use this to undo a bad
-    category pull or noisy list harvest.
+    category pull, noisy list harvest, or noisy search query.
+
+    With prefix_match=True, matches every source label starting with the given
+    string — e.g. `remove_by_source("search:morelike:", prefix_match=True)`
+    clears every similarity search at once, and `remove_by_source("search:",
+    prefix_match=True)` clears everything that came via search_articles.
 
     Args:
-        source: Source label to remove (e.g., "category:Learning methods", "list_page:List of printmakers")
-        keep_if_other_sources: If True (default), keep articles that also have OTHER sources.
-                               If False, remove all articles with this source regardless.
+        source: Source label to remove (e.g., "category:Learning methods",
+                "list_page:List of printmakers", "search:morelike:Mario Molina").
+                With prefix_match=True, any source label starting with this
+                string is matched.
+        keep_if_other_sources: If True (default), keep articles that also have OTHER sources
+                               (under the matched label, or any non-matching label).
+                               If False, remove all matching articles regardless.
+        prefix_match: If True, match source labels that START WITH `source`.
+                      Default False (exact match).
         dry_run: If True (default), preview what would be removed without actually removing.
         topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
@@ -1034,13 +1054,19 @@ def remove_by_source(source: str, keep_if_other_sources: bool = True, dry_run: b
 
     all_articles = db.get_all_articles_dict(topic_id)
 
+    def matches(s: str) -> bool:
+        return s.startswith(source) if prefix_match else s == source
+
     to_remove = []
     to_keep = []
+    matched_labels = set()  # for reporting
     for title, article in all_articles.items():
         sources = article.get('sources', [])
-        if source not in sources:
+        article_matches = [s for s in sources if matches(s)]
+        if not article_matches:
             continue
-        other_sources = [s for s in sources if s != source]
+        matched_labels.update(article_matches)
+        other_sources = [s for s in sources if s not in article_matches]
         if keep_if_other_sources and other_sources:
             to_keep.append(title)
         else:
@@ -1049,6 +1075,8 @@ def remove_by_source(source: str, keep_if_other_sources: bool = True, dry_run: b
     if dry_run:
         return json.dumps({
             'source': source,
+            'prefix_match': prefix_match,
+            'matched_labels': sorted(matched_labels),
             'would_remove': len(to_remove),
             'would_keep_(other_sources)': len(to_keep),
             'sample_remove': to_remove[:20],
@@ -1057,15 +1085,16 @@ def remove_by_source(source: str, keep_if_other_sources: bool = True, dry_run: b
         }, indent=2, ensure_ascii=False)
 
     removed = db.remove_articles(topic_id, to_remove)
-    # Also strip this source from articles we kept
+    # Also strip matching sources from articles we kept
     if to_keep:
         for title in to_keep:
             article = all_articles[title]
-            new_sources = [s for s in article['sources'] if s != source]
+            new_sources = [s for s in article['sources'] if not matches(s)]
             db.update_article_sources(topic_id, title, new_sources)
 
     total = db.get_status(topic_id)['total_articles']
-    return f"Removed {removed} articles from source '{source}' (kept {len(to_keep)} that had other sources). Total: {total}"
+    desc = f"{len(matched_labels)} source label(s)" if prefix_match else f"source '{source}'"
+    return f"Removed {removed} articles from {desc} (kept {len(to_keep)} that had other sources). Total: {total}"
 
 
 @mcp.tool()

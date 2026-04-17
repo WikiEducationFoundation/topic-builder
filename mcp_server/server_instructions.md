@@ -74,8 +74,14 @@ identify all Wikipedia articles belonging to a topic. The workflow is:
   count_articles=True to check the size. If >2000 articles, discuss with the
   user whether to pull specific subcategories instead.
 
-- Each gather operation records a specific source label (e.g., "category:Learning
-  methods"). If a pull turns out to be too noisy, use remove_by_source to undo it cleanly.
+- Each gather operation records a specific source label: "category:<name>",
+  "wikiproject:<name>", "list_page:<title>", "search:<query>" (for
+  search_articles / search_similar — the full query, e.g.
+  "search:morelike:Mario Molina"). If a pull turns out to be noisy, use
+  remove_by_source to undo it cleanly. To drop a family of pulls at once —
+  e.g. "all morelike: searches" — pass prefix_match=True:
+  `remove_by_source("search:morelike:", prefix_match=True)`. `list_sources`
+  shows everything you can target.
 
 - INTERSECTIONAL TOPICS — topics defined by a demographic crossed with a
   discipline (e.g. "Hispanic and Latino people in STEM", "Women
