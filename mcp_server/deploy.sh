@@ -24,7 +24,7 @@ REMOTE_DIR="/opt/topic-builder"
 
 echo "==> Syncing mcp_server/ to $DEPLOY_HOST:$REMOTE_DIR/app/"
 $SSH_CMD "mkdir -p $REMOTE_DIR/app $REMOTE_DIR/static"
-$SCP_CMD "$SCRIPT_DIR/server.py" "$SCRIPT_DIR/wikipedia_api.py" "$SCRIPT_DIR/db.py" "$SCRIPT_DIR/requirements.txt" "$DEPLOY_USER@$DEPLOY_HOST:$REMOTE_DIR/app/"
+$SCP_CMD "$SCRIPT_DIR/server.py" "$SCRIPT_DIR/wikipedia_api.py" "$SCRIPT_DIR/db.py" "$SCRIPT_DIR/server_instructions.md" "$SCRIPT_DIR/requirements.txt" "$DEPLOY_USER@$DEPLOY_HOST:$REMOTE_DIR/app/"
 $SCP_CMD "$SCRIPT_DIR/landing.html" "$DEPLOY_USER@$DEPLOY_HOST:$REMOTE_DIR/static/index.html"
 
 echo "==> Installing dependencies"

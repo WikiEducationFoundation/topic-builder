@@ -10,7 +10,8 @@ The server runs at `https://topic-builder.wikiedu.org/mcp` and exposes ~27 tools
 
 ```
 mcp_server/          # production code
-├── server.py        # all MCP tools + per-session state + server instructions
+├── server.py        # all MCP tools + per-session state
+├── server_instructions.md  # the AI-facing workflow prompt (Markdown)
 ├── db.py            # SQLite persistence layer
 ├── wikipedia_api.py # thin wrapper around api.php with rate limiting
 ├── landing.html     # static landing page at topic-builder.wikiedu.org/
@@ -68,13 +69,13 @@ Tools follow a consistent shape so stateless clients keep working and usage is l
 **Document new behavior in BOTH places:**
 
 - The tool's docstring — FastMCP publishes it in the schema.
-- The server instructions prompt (the `instructions=` string on `FastMCP(...)` near the top of `server.py`).
+- `mcp_server/server_instructions.md` — the AI-facing workflow prompt, loaded by `server.py` at startup and passed to FastMCP as `instructions=`. Edit the Markdown file directly; a deploy + restart picks it up.
 
 Why both: **ChatGPT's MCP client caches tool schemas and doesn't reliably refresh them on server deploys.** If a new parameter lives only in the schema, ChatGPT may never see it. The server instructions are re-sent on every session init, so information there reliably reaches the AI regardless of client caching. This is load-bearing — don't skip the instructions update for non-obvious tool behavior.
 
 ## Workflow principles the server enforces
 
-The `instructions=` prompt on the FastMCP app is where we encode workflow decisions. Current principles, each derived from specific dogfood observations (see feedback memories):
+`server_instructions.md` is where we encode workflow decisions for the AI. Current principles, each derived from specific dogfood observations (see feedback memories):
 
 - **Scoping is iterative dialogue, not a one-shot clarification.** The AI confirms scope with the user in plain language *before* calling any gather tool. Don't accept a quick-pick answer and immediately start pulling categories.
 - **Don't ask for a target article count.** The tool's value is helping the user *discover* the natural size of a topic given their scope; a target makes the AI fit the result to an arbitrary number.
@@ -85,7 +86,7 @@ The `instructions=` prompt on the FastMCP app is where we encode workflow decisi
 - **GAP CHECK after SPOT CHECK.** Ask what other angles might have caught missed articles (Wikidata, SPARQL, PetScan, reading lists, awards, bibliographies, non-English wikis). Act on actionable suggestions; route the rest into `submit_feedback`'s `missed_strategies`.
 - **Offer feedback at the end.** `submit_feedback` is how we learn. Ask first; never call unprompted.
 
-When changing any of these, update `instructions=` in `server.py` and redeploy — behavior changes don't take effect until the server restarts.
+When changing any of these, edit `mcp_server/server_instructions.md` and redeploy — behavior changes don't take effect until the server restarts.
 
 ## Testing and verification
 
