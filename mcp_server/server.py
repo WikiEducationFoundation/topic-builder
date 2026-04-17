@@ -580,6 +580,79 @@ def search_similar(seed_article: str, limit: int = 50,
     return search_articles(f'morelike:{seed_article}', limit=limit, topic=topic, ctx=ctx)
 
 
+@mcp.tool()
+def preview_search(query: str, limit: int = 50,
+                   topic: str | None = None, ctx: Context = None) -> str:
+    """Run a Wikipedia search and return titles + short descriptions WITHOUT
+    adding anything to the working list. Use this before committing broad
+    searches (morelike:, keyword searches without a demographic anchor) — the
+    AI/user can review titles+descriptions and then commit a filtered subset
+    via add_articles(titles=[...]), or skip entirely if the query was noisy.
+
+    Each previewed result is flagged `already_in_topic: true` if the title
+    is already in the working list, so the AI can focus on what's new.
+
+    Args:
+        query: Same syntax as search_articles (intitle:, morelike:,
+               incategory:, hastemplate:, etc.)
+        limit: Max results to preview (default 50, capped at 100).
+        topic: Optional topic name. Pass if your client doesn't maintain an
+               MCP session.
+    """
+    topic_id, err = _require_topic(ctx, topic)
+    if err:
+        return err
+
+    limit = min(limit, 100)
+    params = {
+        'list': 'search',
+        'srsearch': query,
+        'srnamespace': '0',
+        'srlimit': str(limit),
+        'srinfo': '',
+        'srprop': '',
+    }
+
+    titles = []
+    for item in api_query_all(params, 'search', max_items=limit):
+        titles.append(item['title'])
+
+    if not titles:
+        return json.dumps({
+            'query': query,
+            'results_found': 0,
+            'results': [],
+        }, indent=2, ensure_ascii=False)
+
+    descriptions = fetch_short_descriptions(titles)
+    existing = db.get_all_titles(topic_id)
+
+    results = []
+    new_count = 0
+    for t in titles:
+        in_topic = t in existing
+        if not in_topic:
+            new_count += 1
+        results.append({
+            'title': t,
+            'description': descriptions.get(t, ''),
+            'already_in_topic': in_topic,
+        })
+
+    log_usage(ctx, "preview_search", {"query": query, "limit": limit},
+              f"{len(titles)} results ({new_count} new)")
+    return json.dumps({
+        'query': query,
+        'results_found': len(titles),
+        'new_to_topic': new_count,
+        'already_in_topic': len(titles) - new_count,
+        'results': results,
+        'note': ('Nothing added to the working list. Review the titles + '
+                 'descriptions, then call add_articles(titles=[...]) with a '
+                 'filtered subset. Skip entirely if the query is too noisy.'),
+    }, indent=2, ensure_ascii=False)
+
+
 # ── Review aids ───────────────────────────────────────────────────────────
 
 @mcp.tool()

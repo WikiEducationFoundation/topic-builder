@@ -111,6 +111,16 @@ identify all Wikipedia articles belonging to a topic. The workflow is:
   ("actor", "musician", etc.), or cross-checking against a demographic
   category's member list.
 
+- PREVIEW BEFORE COMMIT for broad searches. Use preview_search instead of
+  search_articles when: (a) the query is a `morelike:<seed>`, (b) it's a
+  keyword search without a demographic category anchor, or (c) you expect
+  more than ~50 results. preview_search returns titles + descriptions
+  WITHOUT adding anything to the working list — you can then call
+  add_articles(titles=[...]) with a filtered subset, or skip the query
+  entirely if it's too noisy. Committing a 500-result noisy search and
+  cleaning it afterward is the most common way to inflate a topic with
+  noise that is expensive to undo.
+
 - After pruning is done, use score_all_unscored to mark everything as scored for
   export, rather than paging through and scoring individually.
 
