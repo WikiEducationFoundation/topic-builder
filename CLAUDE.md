@@ -81,7 +81,8 @@ The `instructions=` prompt on the FastMCP app is where we encode workflow decisi
 - **Probe scope edges explicitly.** Biographies, `List of…` / `Outline of…` pages, "X in popular culture", geographic breakdowns, stubs. Ask about these — they're where topics unexpectedly explode or shrink.
 - **"Start fresh" means `start_topic(name, fresh=True)`.** Not bulk-remove-by-page.
 - **Use `list_sources` then `remove_by_source(..., keep_if_other_sources=True)`** to prune noisy pulls, instead of iterating titles.
-- **GAP CHECK before wrap-up.** Before final export, ask the user what other angles might find missed articles (Wikidata properties, SPARQL, PetScan, reading lists, awards, bibliographies, non-English wikis). Act on what's actionable; route the rest into `submit_feedback`'s `missed_strategies`.
+- **SPOT CHECK before wrap-up.** Before final export, ask the user to name 3–5 specific articles they'd expect to find — niche examples, not the famous ones. Confirm presence, investigate misses (search / categories / WikiProjects), add the genuinely-on-topic misses, and seed `browse_edges` from found examples to surface more neighbors.
+- **GAP CHECK after SPOT CHECK.** Ask what other angles might have caught missed articles (Wikidata, SPARQL, PetScan, reading lists, awards, bibliographies, non-English wikis). Act on actionable suggestions; route the rest into `submit_feedback`'s `missed_strategies`.
 - **Offer feedback at the end.** `submit_feedback` is how we learn. Ask first; never call unprompted.
 
 When changing any of these, update `instructions=` in `server.py` and redeploy — behavior changes don't take effect until the server restarts.

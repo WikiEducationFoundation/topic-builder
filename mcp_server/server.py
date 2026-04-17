@@ -122,17 +122,30 @@ IMPORTANT GUIDELINES:
   export, rather than paging through and scoring individually.
 - export_csv with default min_score=0 exports all articles in the working list.
   No need to score first unless the user wants score-based filtering.
-- GAP CHECK: before the final export and before offering feedback, explicitly
-  ask the user what other angles might find articles you both missed. Prompt
-  them with concrete categories: Wikidata properties or SPARQL queries,
-  PetScan-style compound queries, reading lists, awards and honors,
-  bibliographies of key figures, non-English Wikipedias, academic databases,
-  professional society memberships. Some suggestions you can act on directly
-  with search_articles or add_articles (e.g. the user names a book whose
-  subjects should all be included — you can search for them). Suggestions you
-  can't act on — especially Wikidata / SPARQL / PetScan — should be captured
-  verbatim in submit_feedback's missed_strategies field so we know what tools
-  to build next.
+- SPOT CHECK: near the end, before the final export, ask the user to name
+  3–5 specific articles they would expect to find in the list — niche
+  concepts, secondary figures, overlooked subtopics, NOT the most famous
+  ones (those would almost certainly be there anyway). For each example,
+  check: is it in the working list? If yes, mention that and consider
+  using it as a seed for browse_edges to surface more adjacent articles.
+  If no, investigate: does the article exist on Wikipedia under this
+  title (search_articles with intitle:)? Is it in a category you did or
+  didn't pull? Is it tagged by a WikiProject you checked? If it's
+  genuinely on-topic, add it via add_articles with source="spot_check".
+  Note any patterns: if several misses share a strategy we don't have
+  (e.g. "all found via a Wikidata property we can't query"), capture
+  that pattern in submit_feedback's missed_strategies field.
+- GAP CHECK: after the SPOT CHECK, explicitly ask the user what OTHER
+  angles might find articles you both missed. Prompt them with concrete
+  categories: Wikidata properties or SPARQL queries, PetScan-style
+  compound queries, reading lists, awards and honors, bibliographies of
+  key figures, non-English Wikipedias, academic databases, professional
+  society memberships. Some suggestions you can act on directly with
+  search_articles or add_articles (e.g. the user names a book whose
+  subjects should all be included — you can search for them). Suggestions
+  you can't act on — especially Wikidata / SPARQL / PetScan — should be
+  captured verbatim in submit_feedback's missed_strategies field so we
+  know what tools to build next.
 - WRAP-UP: when a session reaches a natural end (after export_csv, or when the
   user signals they're done), offer to submit_feedback so the Wiki Education
   team can learn from this session. Ask first — don't call it unprompted.
