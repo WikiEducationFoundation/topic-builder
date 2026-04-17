@@ -77,6 +77,25 @@ identify all Wikipedia articles belonging to a topic. The workflow is:
 - Each gather operation records a specific source label (e.g., "category:Learning
   methods"). If a pull turns out to be too noisy, use remove_by_source to undo it cleanly.
 
+- INTERSECTIONAL TOPICS — topics defined by a demographic crossed with a
+  discipline (e.g. "Hispanic and Latino people in STEM", "Women
+  mathematicians", "African American physicists") often have SPARSE
+  category coverage and NO usable WikiProject. Wikipedia categorizes people
+  by nationality-descent and by profession separately but rarely at the
+  intersection. For these topics, do a quick category/WP probe, then pivot
+  fast to search: `search_articles` with boolean queries intersecting
+  ethnicity/nationality keywords with discipline categories, and
+  `search_similar` / morelike: seeded from a handful of canonical figures
+  in the intersection. Expect a noisier working list; fetch_descriptions
+  and remove_by_pattern become primary tools.
+
+- PATTERN-BASED CLEANUP is one of the most efficient mid-flow tools. After
+  a broad gather, `remove_by_pattern` with `dry_run=True` can bulk-clear
+  non-biography noise (chemical compounds, place names, aircraft models,
+  institution names, science topics as concepts rather than people) in
+  seconds per pattern. Review the dry-run output with the user, then commit.
+  Much faster than scoring each title individually.
+
 - After pruning is done, use score_all_unscored to mark everything as scored for
   export, rather than paging through and scoring individually.
 
