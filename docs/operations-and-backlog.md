@@ -67,7 +67,16 @@ ssh -i deploy_key root@$HOST "journalctl -u topic-builder -f"
 ssh -i deploy_key root@$HOST "/opt/topic-builder/venv/bin/python -c '
 import sqlite3; c=sqlite3.connect(\"/opt/topic-builder/data/topics.db\")
 [print(r) for r in c.execute(\"SELECT t.name, COUNT(a.title) FROM topics t LEFT JOIN articles a ON a.topic_id = t.id GROUP BY t.id ORDER BY t.id\")]'"
+
+# full session summary (overview of all topics + recent usage log tail)
+ssh -i deploy_key root@$HOST "/opt/topic-builder/venv/bin/python /opt/topic-builder/bin/status.py"
+
+# drill into one topic (by id or name substring)
+ssh -i deploy_key root@$HOST "/opt/topic-builder/venv/bin/python /opt/topic-builder/bin/status.py 6"
+ssh -i deploy_key root@$HOST "/opt/topic-builder/venv/bin/python /opt/topic-builder/bin/status.py hispanic --recent 30"
 ```
+
+`status.py` lives in `scripts/session_status.py` in the repo; `deploy.sh` copies it to `/opt/topic-builder/bin/status.py`. For ad-hoc use before a deploy, scp it to `/tmp/status.py` on the host and run from there — the script has the invocation in its docstring.
 
 ### Sessions / per-client state
 
@@ -104,6 +113,16 @@ Only some tools call `log_usage` (the "interesting" ones: gather, start, reset, 
 ## Backlog
 
 Roughly prioritized. Items live here until they ship or get explicitly dropped.
+
+### Next code-changes session — top priority
+
+- **Session-start user guidance.** After scope confirmation but before the first gather tool call, have the AI briefly set expectations with the user:
+  - This will be a long conversation with many tool calls; hitting a "max turns / continue" prompt is normal, just click Continue.
+  - If a tool errors or a response looks wrong, just keep talking — ask the AI to retry, try a different strategy, or explain what happened. Most errors are recoverable in-conversation.
+
+  Implementation: add a bullet (or new step between scope and recon) in `mcp_server/server_instructions.md`. Deploy picks it up on restart.
+
+  *Context:* during 2026-04-17 dogfood, user hit a "No approval received" prompt they didn't notice, and a scary red "has not been loaded yet" deferred-schema error. Both are transient and recoverable, but the user had no prior framing that either could happen. This fix is upstream of the specific errors — it's about setting the frame. Revisit / expand after the first feedback from users with this guidance in place.
 
 ### Planned — design docs exist
 

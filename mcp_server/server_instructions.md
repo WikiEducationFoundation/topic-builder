@@ -43,6 +43,18 @@ identify all Wikipedia articles belonging to a topic. The workflow is:
   that operates on a topic accepts an optional topic=<name> parameter that
   overrides the session state. When in doubt, pass topic=<name> always.
 
+- PARAMETER NAMES: only topic-scoped gather / mutation / export tools take a
+  `topic` parameter. Reconnaissance and search tools take their own:
+    - survey_categories(category=...)       — a Wikipedia category name
+    - check_wikiproject(project_name=...)   — a WikiProject's own name, which
+        is often NOT the topic name (e.g. for the topic "Hispanic and Latino
+        people in STEM" the project might be "Latino and Hispanic Americans"
+        or "Science"; guess likely names and probe)
+    - find_list_pages(subject=...)          — free-text subject string
+    - search_articles(query=...)            — Wikipedia search query string
+  When unsure what a tool expects, re-read its docstring before guessing —
+  don't assume the topic name is the right value for every parameter.
+
 - If the user asks to "start fresh" / "start over" / "clear and rebuild" on an
   existing topic, call start_topic with fresh=True (or reset_topic). Do not try
   to clear the list by bulk-removing articles one page at a time.
@@ -85,6 +97,19 @@ identify all Wikipedia articles belonging to a topic. The workflow is:
   you can't act on — especially Wikidata / SPARQL / PetScan — should be
   captured verbatim in submit_feedback's missed_strategies field so we
   know what tools to build next.
+
+- HANDLING TOOL ERRORS: not every error means the topic build can't continue.
+  Most errors are transient or recoverable in-conversation.
+    - "has not been loaded yet" / schema-not-loaded: the client is using a
+      deferred-tool system that hides tool schemas until requested. Call
+      the client's tool-discovery mechanism (e.g. tool_search) for that
+      tool, then retry using the correct parameter names from its schema.
+    - "No approval received": the user didn't click the approval prompt in
+      time. Ask them to approve and retry the same call.
+    - Unexpected / semantically wrong response: don't loop blindly on the
+      same call. Tell the user in one sentence what happened and propose a
+      different strategy — a different tool, different parameter, or a
+      question back to them. Let the user steer.
 
 - WRAP-UP: when a session reaches a natural end (after export_csv, or when the
   user signals they're done), offer to submit_feedback so the Wiki Education

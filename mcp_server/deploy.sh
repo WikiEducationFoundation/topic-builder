@@ -27,6 +27,10 @@ $SSH_CMD "mkdir -p $REMOTE_DIR/app $REMOTE_DIR/static"
 $SCP_CMD "$SCRIPT_DIR/server.py" "$SCRIPT_DIR/wikipedia_api.py" "$SCRIPT_DIR/db.py" "$SCRIPT_DIR/server_instructions.md" "$SCRIPT_DIR/requirements.txt" "$DEPLOY_USER@$DEPLOY_HOST:$REMOTE_DIR/app/"
 $SCP_CMD "$SCRIPT_DIR/landing.html" "$DEPLOY_USER@$DEPLOY_HOST:$REMOTE_DIR/static/index.html"
 
+echo "==> Syncing admin scripts to $REMOTE_DIR/bin/"
+$SSH_CMD "mkdir -p $REMOTE_DIR/bin"
+$SCP_CMD "$PROJECT_DIR/scripts/session_status.py" "$DEPLOY_USER@$DEPLOY_HOST:$REMOTE_DIR/bin/status.py"
+
 echo "==> Installing dependencies"
 $SSH_CMD "cd $REMOTE_DIR && python3 -m venv venv 2>/dev/null; $REMOTE_DIR/venv/bin/pip install -q -r $REMOTE_DIR/app/requirements.txt"
 

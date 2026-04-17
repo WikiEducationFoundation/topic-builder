@@ -278,11 +278,16 @@ def survey_categories(category: str, depth: int = 2, count_articles: bool = Fals
 
 @mcp.tool()
 def check_wikiproject(project_name: str) -> str:
-    """Check if a WikiProject exists for this topic. WikiProjects tag articles
-    with assessment banners — if one exists, it's usually the best single source.
+    """Check whether a given WikiProject exists on Wikipedia. WikiProjects
+    tag articles with assessment banners — if one exists for the topic, it's
+    usually the best single source of tagged articles.
 
     Args:
-        project_name: WikiProject name (e.g., "Climate change")
+        project_name: the WikiProject's own name, which is often not identical
+            to the topic name. For the topic "Climate change" the project
+            happens to also be "Climate change", but for "Hispanic and Latino
+            people in STEM" it might be "Latino and Hispanic Americans" or
+            "Science". Guess likely names and probe.
     """
     template_title = f"Template:WikiProject {project_name}"
     params = {'titles': template_title, 'prop': 'info'}
