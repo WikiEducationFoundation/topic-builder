@@ -24,9 +24,16 @@ docs/                # plans and operational reference
 ├── impact-visualizer-handoff.md # deferred: handle → IV import
 └── development-narrative.md   # historical context
 
-scripts/             # standalone helper scripts (category_tree.py, etc.).
-                     # Pre-MCP; kept around for ad-hoc use. New primary path
-                     # is the MCP tools, not these scripts.
+scripts/             # standalone helper scripts.
+                     # session_status.py and benchmark.py are current. The
+                     # older *.py files here are pre-MCP, kept for ad-hoc
+                     # use. New primary path is the MCP tools, not these
+                     # scripts.
+
+benchmarks/          # gold-standard topic audits + replay harness for
+                     # regression-testing tool/prompt changes. One
+                     # subdirectory per benchmark topic with frozen
+                     # scope.md, gold.csv, calls.jsonl. See benchmarks/README.md.
 
 topics/              # legacy CSV outputs from the script-based workflow.
                      # Current exports live at /opt/topic-builder/exports/

@@ -1,0 +1,6 @@
+# This file is pending. When gold.csv is populated, fill in an exemplar
+# session — the tool-call sequence a good AI run would execute to try to
+# hit every article in gold.csv. One JSON object per line:
+#   {"tool": "start_topic", "args": {"name": "hispanic-latino-stem-us", "fresh": true, "topic": "hispanic-latino-stem-us"}}
+# Every call must include topic=<slug> since the runner uses no MCP session.
+# Lines starting with # and blank lines are ignored.
