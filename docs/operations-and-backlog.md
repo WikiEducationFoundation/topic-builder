@@ -114,15 +114,12 @@ Only some tools call `log_usage` (the "interesting" ones: gather, start, reset, 
 
 Roughly prioritized. Items live here until they ship or get explicitly dropped.
 
-### Next code-changes session — top priority
+### Recently shipped
 
-- **Session-start user guidance.** After scope confirmation but before the first gather tool call, have the AI briefly set expectations with the user:
-  - This will be a long conversation with many tool calls; hitting a "max turns / continue" prompt is normal, just click Continue.
-  - If a tool errors or a response looks wrong, just keep talking — ask the AI to retry, try a different strategy, or explain what happened. Most errors are recoverable in-conversation.
-
-  Implementation: add a bullet (or new step between scope and recon) in `mcp_server/server_instructions.md`. Deploy picks it up on restart.
-
-  *Context:* during 2026-04-17 dogfood, user hit a "No approval received" prompt they didn't notice, and a scary red "has not been loaded yet" deferred-schema error. Both are transient and recoverable, but the user had no prior framing that either could happen. This fix is upstream of the specific errors — it's about setting the frame. Revisit / expand after the first feedback from users with this guidance in place.
+- **2026-04-17** — session-start user guidance added to `server_instructions.md` (SET EXPECTATIONS bullet, right after scope confirmation). Tells users continue-prompts and transient errors are routine. Revisit after first feedback with it live.
+- **2026-04-17** — CSV export: UTF-8 BOM, csv.writer + CRLF line endings, new second column with Wikidata short description. Fixes the mojibake-accents report and the review-friction feature request from dogfood feedback.
+- **2026-04-17** — server instructions: PARAMETER NAMES bullet (topic-scoped vs recon tools), HANDLING TOOL ERRORS bullet (schema-not-loaded, approval denied, unexpected responses), tightened `check_wikiproject` docstring.
+- **2026-04-17** — `scripts/session_status.py` + host-side deploy. Admin helper; invocation one-liners in the Monitoring section above.
 
 ### Planned — design docs exist
 

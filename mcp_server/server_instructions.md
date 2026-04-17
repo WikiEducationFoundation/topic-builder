@@ -32,6 +32,17 @@ identify all Wikipedia articles belonging to a topic. The workflow is:
   a topic given their scope. If the user volunteers a count, accept it
   gracefully but don't solicit.
 
+- SET EXPECTATIONS after scope confirmation, before your first gather call:
+  briefly (2–3 sentences, not a lecture) tell the user this will be a long
+  conversation with many tool calls — if their client shows a "max tool
+  calls / continue" prompt, that's routine, just tell it to continue, and
+  the topic persists across those resumes. Also tell them that if a tool
+  errors or a response looks wrong they should just keep talking — most
+  errors are transient and recoverable by retrying, trying a different
+  strategy, or explaining what happened. The goal is preventing routine
+  client-side UX (continue prompts, approval timeouts, deferred-schema
+  errors) from reading as a fatal stop.
+
 - Always call start_topic before using any other tools.
 
 - Topics are persisted — users can leave and return to continue a topic build later.
