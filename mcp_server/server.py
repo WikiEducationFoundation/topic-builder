@@ -4,6 +4,7 @@ Provides tools for exploring Wikipedia's content structure to build
 comprehensive article lists for any topic.
 """
 
+import csv
 import json
 import collections
 import datetime
@@ -1165,24 +1166,20 @@ def export_csv(min_score: int = 0, scored_only: bool = False,
 
         titles.append(title)
 
-    lines = []
-    for title in titles:
-        if ',' in title:
-            lines.append(f'"{title}"')
-        else:
-            lines.append(title)
-
-    csv_content = '\n'.join(lines) + '\n'
-
-    # Save to a downloadable file
+    # Save to a downloadable file. utf-8-sig prepends a BOM so Excel detects
+    # UTF-8 (otherwise accented characters get mojibaked to Windows-1252).
+    # csv.writer with newline='' emits RFC-4180 CRLF line endings and handles
+    # quote escaping for titles containing commas, quotes, or newlines.
     slug = topic_name.lower().replace(' ', '_').replace("'", '').replace('"', '')
     export_dir = os.path.join(os.environ.get("EXPORT_DIR", "/opt/topic-builder/exports"))
     os.makedirs(export_dir, exist_ok=True)
     filename = f"topic-articles-{slug}.csv"
     filepath = os.path.join(export_dir, filename)
 
-    with open(filepath, 'w', encoding='utf-8') as f:
-        f.write(csv_content)
+    with open(filepath, 'w', encoding='utf-8-sig', newline='') as f:
+        writer = csv.writer(f)
+        for title in titles:
+            writer.writerow([title])
 
     download_url = f"https://topic-builder.wikiedu.org/exports/{filename}"
 
