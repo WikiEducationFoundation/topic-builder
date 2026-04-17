@@ -117,3 +117,43 @@ def normalize_title(title):
     if title:
         title = title[0].upper() + title[1:]
     return title.strip()
+
+
+def fetch_short_descriptions(titles):
+    """Fetch Wikidata short descriptions for a list of article titles.
+
+    Returns a dict mapping each input title to its short description (empty
+    string if missing). Uses the pageprops API in batches of 50 and follows
+    title normalizations + redirects so titles stored in slightly different
+    form still get matched to the canonical page.
+    """
+    out = {t: '' for t in titles}
+    for i in range(0, len(titles), 50):
+        batch = titles[i:i + 50]
+        data = api_query({
+            'titles': '|'.join(batch),
+            'prop': 'pageprops',
+            'ppprop': 'wikibase-shortdesc',
+            'redirects': '1',
+        })
+        query = data.get('query', {}) if isinstance(data, dict) else {}
+        # Chain normalizations and redirects: original -> canonical page title.
+        chain = {t: t for t in batch}
+        for item in query.get('normalized', []):
+            for k, v in list(chain.items()):
+                if v == item.get('from'):
+                    chain[k] = item.get('to')
+        for item in query.get('redirects', []):
+            for k, v in list(chain.items()):
+                if v == item.get('from'):
+                    chain[k] = item.get('to')
+        descs = {}
+        for page in query.get('pages', []):
+            title = page.get('title')
+            desc = (page.get('pageprops') or {}).get('wikibase-shortdesc', '')
+            if title:
+                descs[title] = desc
+        for orig, target in chain.items():
+            if descs.get(target):
+                out[orig] = descs[target]
+    return out

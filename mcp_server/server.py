@@ -17,7 +17,7 @@ from mcp.server.fastmcp import FastMCP, Context
 
 from wikipedia_api import (
     api_query, api_query_all, api_get, normalize_title, WIKIPEDIA_API,
-    get_rate_limit_stats,
+    get_rate_limit_stats, fetch_short_descriptions,
 )
 import db
 
@@ -1166,6 +1166,10 @@ def export_csv(min_score: int = 0, scored_only: bool = False,
 
         titles.append(title)
 
+    # Fetch short descriptions for post-export review (the user asked for
+    # this — otherwise they'd have to look up each title to judge relevance).
+    descriptions = fetch_short_descriptions(titles) if titles else {}
+
     # Save to a downloadable file. utf-8-sig prepends a BOM so Excel detects
     # UTF-8 (otherwise accented characters get mojibaked to Windows-1252).
     # csv.writer with newline='' emits RFC-4180 CRLF line endings and handles
@@ -1179,7 +1183,7 @@ def export_csv(min_score: int = 0, scored_only: bool = False,
     with open(filepath, 'w', encoding='utf-8-sig', newline='') as f:
         writer = csv.writer(f)
         for title in titles:
-            writer.writerow([title])
+            writer.writerow([title, descriptions.get(title, '')])
 
     download_url = f"https://topic-builder.wikiedu.org/exports/{filename}"
 
@@ -1189,7 +1193,7 @@ def export_csv(min_score: int = 0, scored_only: bool = False,
         'min_score': min_score,
         'download_url': download_url,
         'filename': filename,
-        'note': 'Give the user the download link above. The CSV has one article title per line, ready for the Impact Visualizer.',
+        'note': 'Give the user the download link above. The CSV has two columns per row: article title and a Wikidata short description (empty if none). Impact Visualizer import reads the title column.',
     }, indent=2, ensure_ascii=False)
 
 
