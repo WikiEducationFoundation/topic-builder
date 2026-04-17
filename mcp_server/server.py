@@ -825,6 +825,189 @@ def auto_score_by_title(threshold: int = 7,
 
 
 @mcp.tool()
+def auto_score_by_description(
+    required_any: dict[str, list[str]],
+    disqualifying: list[str] | None = None,
+    overwrite_scored: bool = False,
+    dry_run: bool = True,
+    topic: str | None = None, ctx: Context = None,
+) -> str:
+    """Auto-score articles as 0 ("irrelevant") when their Wikidata short
+    description clearly disqualifies them. Use this after fetch_descriptions
+    to eliminate obvious noise without manual review, leaving a much smaller
+    ambiguous set to look at by hand.
+
+    TWO FAILURE MODES TO WATCH FOR:
+
+    1. Implicit-axis leakage. If the topic is intersectional and one axis
+       is often NOT stated in Wikipedia's shortdesc ("American
+       neuroscientist" for a Mexican-American scientist, where the shortdesc
+       elides the ethnicity), requiring that axis cuts genuine topic members.
+       Prefer to only require axes that shortdescs reliably contain, or run
+       with disqualifying markers alone and keep axes off. The tool surfaces
+       a warning when axes dominate the cut.
+    2. Over-broad markers. A marker like "artist" matches "martial artist";
+       "poll" matches "polling". Matching uses word boundaries to mitigate
+       this but not every case is safe — review samples_by_reason on the
+       dry-run before applying.
+
+    `required_any` is a dict of labeled axes. For each axis, the description
+    must match at least one marker from that axis's list. An article missing
+    a match on ANY axis is scored 0. Axis labels appear in the breakdown so
+    the AI can present cuts to the user in plain language (e.g. "450 had no
+    profession marker" rather than "axis 2"). Pass an empty dict to rely on
+    disqualifying markers alone (the safest mode).
+
+    `disqualifying` markers score the article 0 regardless of axis matches.
+    These tend to be the safest cutter for intersectional topics because
+    off-scope professions (actor, musician, footballer, politician) are
+    usually explicit in the shortdesc.
+
+    Matching is case-insensitive and word-boundary. Descriptions are
+    pre-normalized so hyphens become spaces ("Mexican-American chemist"
+    matches marker "mexican american" or "american").
+
+    Only writes score=0 — never positives. "Has matching markers" is
+    necessary but not sufficient evidence of relevance (e.g. Brazilian-
+    American physicists may or may not count depending on the user's
+    Latin/Hispanic scope). Positive scoring stays with humans.
+
+    Args:
+        required_any: Labeled axes, each a list of markers. Example for
+            "Hispanic/Latino people in STEM":
+              {
+                "demographic": ["hispanic","latino","latina","mexican",
+                                "puerto rican","cuban","colombian", ...],
+                "profession":  ["scientist","physicist","chemist","engineer",
+                                "mathematician","astronaut","inventor", ...],
+              }
+        disqualifying: Markers that force score=0 regardless, e.g.
+                       ["actor","musician","footballer","politician"].
+        overwrite_scored: If False (default), skip articles that already
+            have a score — don't clobber human judgment. If True, apply 0
+            even to articles with existing non-zero scores when they hit
+            disqualifying criteria.
+        dry_run: If True (default), preview counts + samples without
+                 applying. Set False to apply the score=0 writes.
+        topic: Optional topic name. Pass if your client doesn't maintain
+               an MCP session.
+
+    Articles with NULL descriptions (not yet fetched) are skipped, not
+    auto-zeroed — run fetch_descriptions first to include them.
+    """
+    topic_id, err = _require_topic(ctx, topic)
+    if err:
+        return err
+
+    disqualifying = disqualifying or []
+    if not required_any and not disqualifying:
+        return json.dumps({
+            'error': 'Provide required_any axes and/or disqualifying markers.',
+        })
+
+    def _compile(markers):
+        return [(m, re.compile(r'\b' + re.escape(m.lower()) + r'\b'))
+                for m in markers]
+
+    axis_patterns = {name: _compile(markers) for name, markers in required_any.items()}
+    disqual_patterns = _compile(disqualifying)
+
+    all_articles = db.get_all_articles_dict(topic_id)
+
+    would_zero = []  # (title, desc, reason)
+    survivors = []   # (title, desc)
+    skipped_already_scored = 0
+    skipped_no_description = 0
+    reason_counts = collections.Counter()
+
+    for title, article in all_articles.items():
+        score = article.get('score')
+        if score is not None and not overwrite_scored:
+            skipped_already_scored += 1
+            continue
+        desc = article.get('description')
+        if desc is None:
+            skipped_no_description += 1
+            continue
+
+        desc_norm = desc.lower().replace('-', ' ')
+
+        # Disqualifying markers take priority (clearer reason string).
+        disqual_hit = next((m for m, pat in disqual_patterns
+                            if pat.search(desc_norm)), None)
+        if disqual_hit:
+            reason = f'disqualifying:{disqual_hit}'
+            would_zero.append((title, desc, reason))
+            reason_counts[reason] += 1
+            continue
+
+        # Axis check: missing a match on any axis → 0.
+        missing_axis = None
+        for axis_name, patterns in axis_patterns.items():
+            if not any(pat.search(desc_norm) for _, pat in patterns):
+                missing_axis = axis_name
+                break
+        if missing_axis:
+            reason = f'missing_{missing_axis}'
+            would_zero.append((title, desc, reason))
+            reason_counts[reason] += 1
+        else:
+            survivors.append((title, desc))
+
+    if not dry_run and would_zero:
+        db.set_scores(topic_id, {t: 0 for t, _, _ in would_zero})
+        log_usage(ctx, "auto_score_by_description",
+                  {"axes": list(required_any.keys()),
+                   "disqualifying_count": len(disqualifying)},
+                  f"scored 0: {len(would_zero)}")
+
+    # Group samples by reason (up to 5 each) so the AI/user can spot patterns:
+    # e.g. if "missing_demographic: 1300" is accompanied by samples like
+    # "American neuroscientist" / "American engineer" / "American chemist",
+    # the axis is probably cutting through legitimate members whose shortdesc
+    # omits the demographic qualifier — a signal to drop that axis.
+    samples_by_reason = {}
+    for t, d, r in would_zero:
+        samples_by_reason.setdefault(r, [])
+        if len(samples_by_reason[r]) < 5:
+            samples_by_reason[r].append({'title': t, 'description': d})
+
+    result = {
+        'dry_run': dry_run,
+        ('would_score_zero' if dry_run else 'scored_zero'): len(would_zero),
+        'skipped_already_scored': skipped_already_scored,
+        'skipped_no_description': skipped_no_description,
+        'survivors_unscored': len(survivors),
+        'breakdown_by_reason': dict(reason_counts.most_common()),
+        'samples_by_reason': samples_by_reason,
+        'sample_survivors_unscored': [
+            {'title': t, 'description': d} for t, d in survivors[:10]
+        ],
+        'note': ('Set dry_run=False to apply the score=0 writes.' if dry_run
+                 else 'Scores applied. Sample survivors above still need review.'),
+    }
+    if skipped_no_description:
+        result['hint'] = (f'{skipped_no_description} articles have no '
+                          'description yet; call fetch_descriptions to include '
+                          'them in the next pass.')
+    # Warn when axes dominate — a common failure mode for intersectional
+    # topics where one axis (typically demographic) is often implicit in
+    # Wikipedia shortdescs ("American scientist" for a Mexican-American).
+    axis_cuts = sum(v for k, v in reason_counts.items() if k.startswith('missing_'))
+    if axis_cuts and axis_cuts > 2 * len(survivors) and axis_cuts > 200:
+        result['warning'] = (
+            'Axes are doing most of the cutting. If the missing-axis samples '
+            'look like genuine topic members whose description just omits that '
+            'axis (e.g. "American scientist" with no ethnic qualifier), the '
+            'axis is too strict — Wikipedia shortdescs often elide implicit '
+            'identity. Consider dropping that axis and relying on '
+            'disqualifying markers only, or tighten the axis to markers the '
+            'description would reliably contain.'
+        )
+    return json.dumps(result, indent=2, ensure_ascii=False)
+
+
+@mcp.tool()
 def score_all_unscored(score: int = 8,
                        topic: str | None = None, ctx: Context = None) -> str:
     """Set a score for ALL currently unscored articles in one operation.

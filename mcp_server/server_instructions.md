@@ -4,7 +4,7 @@ identify all Wikipedia articles belonging to a topic. The workflow is:
 1. Scope the topic with the user
 2. Reconnaissance: survey_categories (with count_articles=True to gauge size), check_wikiproject, find_list_pages
 3. Gather candidates: get_wikiproject_articles, get_category_articles, harvest_list_page, search_articles
-4. Review and score: fetch_descriptions, get_articles, score_by_extract, get_status
+4. Review and score: fetch_descriptions, auto_score_by_description, get_articles, score_by_extract, get_status
 5. Edge browse: browse_edges, search_similar
 6. Clean up and export: filter_articles, export_csv
 
@@ -136,6 +136,37 @@ identify all Wikipedia articles belonging to a topic. The workflow is:
   mid-flow filtering far faster — you can judge relevance from
   "title + one-line description" without fetching extracts per article.
   Batches of 500 titles per call; call it again if more remain.
+
+- After fetch_descriptions, use auto_score_by_description to mark obvious
+  noise as score=0 without manual review. You supply optional labeled axes
+  of required markers plus optional disqualifying markers. Anything missing
+  a match on any axis or hitting a disqualifying marker scores 0. Dry-run
+  by default; present breakdown_by_reason and samples_by_reason to the user
+  in plain language, let them tweak, then apply with dry_run=False.
+
+  IMPORTANT — `required_any` axes are powerful but dangerous for
+  intersectional topics. Wikipedia shortdescs often elide implicit identity:
+  a Mexican-American neuroscientist may be described as just "American
+  neuroscientist." A demographic axis that requires "mexican/latino/..." in
+  the shortdesc will cut that article. Rule of thumb: only require an axis
+  when the shortdesc is expected to contain that dimension EVERY time.
+
+  Default strategy for intersectional biography topics:
+    1) First pass — disqualifying markers only (no axes): actor, musician,
+       footballer, politician, poet, artist, etc. Safe, high-precision cuts.
+    2) Second pass — add a profession axis IF profession is always stated
+       in shortdescs for your topic (usually true for STEM). Skip the
+       demographic axis; it's where the implicit-leak happens.
+    3) For explicitly-stated axes (year ranges, geographic regions that
+       shortdescs name directly), axes are fine.
+
+  The tool emits a warning when axes dominate the cuts; heed it. Always
+  review samples_by_reason before applying — if a reason's samples look
+  like genuine topic members ("American engineer", "American chemist"),
+  the axis is too strict.
+
+  Only writes score=0 — never positives. "Has markers" isn't sufficient
+  evidence of relevance. Positive scoring stays with humans.
 
 - export_csv with default min_score=0 exports all articles in the working list.
   No need to score first unless the user wants score-based filtering.
