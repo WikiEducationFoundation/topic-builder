@@ -1,6 +1,18 @@
-# This file is pending. When gold.csv is populated, fill in an exemplar
-# session — the tool-call sequence a good AI run would execute to try to
-# hit every article in gold.csv. One JSON object per line:
-#   {"tool": "start_topic", "args": {"name": "hispanic-latino-stem-us", "fresh": true, "topic": "hispanic-latino-stem-us"}}
-# Every call must include topic=<slug> since the runner uses no MCP session.
-# Lines starting with # and blank lines are ignored.
+# Exemplar call sequence for the hispanic-latino-stem-us benchmark, written
+# 2026-04-17. Represents an idealized session using current tools;
+# re-run the benchmark to see how changes move the precision/recall.
+{"tool": "start_topic", "args": {"name": "hispanic-latino-stem-us", "fresh": true, "topic": "hispanic-latino-stem-us"}}
+{"tool": "survey_categories", "args": {"category": "Hispanic and Latino American scientists", "depth": 3, "count_articles": true, "topic": "hispanic-latino-stem-us"}}
+{"tool": "get_category_articles", "args": {"category": "Hispanic and Latino American scientists", "depth": 3, "topic": "hispanic-latino-stem-us"}}
+{"tool": "get_category_articles", "args": {"category": "Hispanic and Latino American academics", "depth": 2, "topic": "hispanic-latino-stem-us"}}
+{"tool": "get_category_articles", "args": {"category": "Puerto Rican engineers", "depth": 2, "topic": "hispanic-latino-stem-us"}}
+{"tool": "get_category_articles", "args": {"category": "Puerto Rican inventors", "depth": 2, "topic": "hispanic-latino-stem-us"}}
+{"tool": "get_category_articles", "args": {"category": "Puerto Rican women scientists", "depth": 3, "topic": "hispanic-latino-stem-us"}}
+{"tool": "search_articles", "args": {"query": "incategory:\"American people of Mexican descent\" (scientist OR engineer OR mathematician OR physicist OR biologist OR chemist OR astronaut OR inventor OR technologist OR neuroscientist)", "limit": 500, "topic": "hispanic-latino-stem-us"}}
+{"tool": "search_articles", "args": {"query": "incategory:\"American people of Puerto Rican descent\" (scientist OR engineer OR mathematician OR physicist OR biologist OR chemist OR astronaut OR inventor OR technologist)", "limit": 500, "topic": "hispanic-latino-stem-us"}}
+{"tool": "search_articles", "args": {"query": "incategory:\"American people of Cuban descent\" (scientist OR engineer OR mathematician OR physicist OR biologist OR chemist OR astronaut OR inventor)", "limit": 500, "topic": "hispanic-latino-stem-us"}}
+{"tool": "search_articles", "args": {"query": "incategory:\"American people of Colombian descent\" (scientist OR engineer OR mathematician OR physicist OR biologist OR chemist OR astronaut OR inventor)", "limit": 500, "topic": "hispanic-latino-stem-us"}}
+{"tool": "search_articles", "args": {"query": "incategory:\"American people of Venezuelan descent\" (scientist OR engineer OR mathematician OR physicist OR biologist OR chemist OR astronaut OR inventor)", "limit": 500, "topic": "hispanic-latino-stem-us"}}
+{"tool": "filter_articles", "args": {"resolve_redirects": true, "remove_disambig": true, "remove_lists": true, "topic": "hispanic-latino-stem-us"}}
+{"tool": "fetch_descriptions", "args": {"limit": 5000, "topic": "hispanic-latino-stem-us"}}
+{"tool": "auto_score_by_description", "args": {"required_any": {"profession": ["scientist", "physicist", "chemist", "biologist", "engineer", "mathematician", "astronaut", "astronomer", "geologist", "ecologist", "neuroscientist", "biochemist", "microbiologist", "geneticist", "physiologist", "inventor", "technologist", "researcher", "immunologist", "cardiologist", "oncologist", "pharmacologist", "virologist", "entomologist", "oceanographer", "meteorologist", "zoologist", "botanist"]}, "disqualifying": ["actor", "actress", "musician", "singer", "songwriter", "politician", "poet", "novelist", "journalist", "painter", "sculptor", "filmmaker", "director", "dancer", "chef", "footballer", "baseball", "basketball", "soccer", "boxer", "wrestler", "athlete", "economist", "psychologist", "sociologist", "anthropologist", "historian", "philosopher", "lawyer", "curator", "activist", "businessman", "businesswoman"], "dry_run": false, "topic": "hispanic-latino-stem-us"}}

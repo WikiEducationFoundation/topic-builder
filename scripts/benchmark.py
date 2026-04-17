@@ -90,8 +90,28 @@ def load_server_module():
     return server
 
 
+class _MockCtx:
+    """Minimal ctx stand-in for in-process tool calls. Server tools access
+    `ctx.session` as a handle to the per-session state dict; giving them a
+    stable object (hashable by id) lets the session-topic tracking work."""
+    class _Session:
+        pass
+    def __init__(self):
+        self.session = self._Session()
+
+
 def replay_calls(server_mod, calls):
-    """Execute calls in order. Returns a list of {tool, args, error?} for logging."""
+    """Execute calls in order. Returns a list of {tool, args, error?} for logging.
+
+    The runner keeps a single MockCtx for the whole replay — every call sees
+    the same "session", so the server's _set_topic / _get_topic machinery
+    works the way it would under a stateful client.
+
+    Arguments in calls.jsonl are filtered against each tool's real signature,
+    so callers can over-specify (e.g. include `topic` for a tool that doesn't
+    accept it) without crashing the run."""
+    import inspect
+    ctx = _MockCtx()
     trace = []
     for i, call in enumerate(calls):
         tool_name = call.get("tool")
@@ -102,9 +122,17 @@ def replay_calls(server_mod, calls):
             entry["error"] = f"unknown tool: {tool_name}"
             trace.append(entry)
             continue
+        # Filter args to ones the function actually accepts (so calls.jsonl
+        # can over-specify without breaking replays against tool-signature
+        # changes).
         try:
-            # Tools accept ctx=None when topic is passed explicitly in args.
-            fn(ctx=None, **args)
+            sig = inspect.signature(fn)
+            accepted = set(sig.parameters.keys())
+            filtered = {k: v for k, v in args.items() if k in accepted}
+        except (TypeError, ValueError):
+            filtered = dict(args)
+        try:
+            fn(ctx=ctx, **filtered)
             entry["ok"] = True
         except Exception as e:
             entry["error"] = f"{type(e).__name__}: {e}"
