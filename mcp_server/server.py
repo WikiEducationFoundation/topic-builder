@@ -122,10 +122,22 @@ IMPORTANT GUIDELINES:
   export, rather than paging through and scoring individually.
 - export_csv with default min_score=0 exports all articles in the working list.
   No need to score first unless the user wants score-based filtering.
+- GAP CHECK: before the final export and before offering feedback, explicitly
+  ask the user what other angles might find articles you both missed. Prompt
+  them with concrete categories: Wikidata properties or SPARQL queries,
+  PetScan-style compound queries, reading lists, awards and honors,
+  bibliographies of key figures, non-English Wikipedias, academic databases,
+  professional society memberships. Some suggestions you can act on directly
+  with search_articles or add_articles (e.g. the user names a book whose
+  subjects should all be included — you can search for them). Suggestions you
+  can't act on — especially Wikidata / SPARQL / PetScan — should be captured
+  verbatim in submit_feedback's missed_strategies field so we know what tools
+  to build next.
 - WRAP-UP: when a session reaches a natural end (after export_csv, or when the
   user signals they're done), offer to submit_feedback so the Wiki Education
   team can learn from this session. Ask first — don't call it unprompted.
-  Be candid in what_didnt: the honest pain points are the most useful signal."""
+  Be candid in what_didnt: the honest pain points are the most useful signal.
+  Include missed_strategies from the GAP CHECK step."""
 )
 
 
@@ -1234,6 +1246,7 @@ def export_csv(min_score: int = 0, scored_only: bool = False,
 
 @mcp.tool()
 def submit_feedback(summary: str, what_worked: str = "", what_didnt: str = "",
+                    missed_strategies: str = "",
                     rating: int | None = None,
                     topic: str | None = None, ctx: Context = None) -> str:
     """Submit a brief retrospective on this topic-building session so the
@@ -1249,6 +1262,13 @@ def submit_feedback(summary: str, what_worked: str = "", what_didnt: str = "",
         what_didnt: Pain points — missing tools, confusing output, noisy sources,
                     places the AI got stuck or had to work around the API.
                     Be specific; this is the most useful field for us.
+        missed_strategies: Other ways the user (or you) thought of for identifying
+                           articles that the current tools didn't support well.
+                           Wikidata / SPARQL queries, PetScan compound queries,
+                           reading lists, awards, author bibliographies, non-English
+                           wikis, academic databases — anything you wanted to reach
+                           for but couldn't. This is how we decide what tool to
+                           build next. Empty string if nothing came up.
         rating: Optional 1-10 rating of the overall experience.
         topic: The topic name this feedback is about. Pass explicitly if your
                client doesn't maintain an MCP session.
@@ -1270,6 +1290,7 @@ def submit_feedback(summary: str, what_worked: str = "", what_didnt: str = "",
         "summary": summary,
         "what_worked": what_worked,
         "what_didnt": what_didnt,
+        "missed_strategies": missed_strategies,
     }
     if tid or topic:
         try:
