@@ -10,7 +10,7 @@ __pycache__/
 # our on/off-topic judgments and free-text justifications — both of which
 # may be wrong. Keep out of version control; store locally only.
 # See benchmarks/README.md for the norm.
-benchmarks/*/gold.csv
+benchmarks/*/gold*.csv
 benchmarks/*/audit*.csv
 benchmarks/*/audit*.md
 benchmarks/*/baseline*.md
