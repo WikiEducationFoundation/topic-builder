@@ -1,0 +1,140 @@
+# Operations and backlog
+
+Working doc covering two things:
+1. How the server is deployed and administered day-to-day.
+2. The running list of things we've considered but haven't built.
+
+Keep this current as it diverges — if you do something operationally that's not written down here, add it. If you finish a backlog item, move it to a brief "done" section (or strike it).
+
+---
+
+## Administration
+
+### Where things live
+
+- **Host:** `172.232.161.125` (Linode), user `root`, SSH key `deploy_key` at the repo root.
+- **Server URL:** `https://topic-builder.wikiedu.org/mcp` — fronted by nginx, proxied to the Python service at `127.0.0.1:8000`.
+- **Landing page:** `https://topic-builder.wikiedu.org/` — served by nginx directly from `/opt/topic-builder/static/index.html`.
+- **Service:** systemd unit `topic-builder.service`, running `/opt/topic-builder/venv/bin/python /opt/topic-builder/app/server.py`.
+
+### Layout on the host
+
+```
+/opt/topic-builder/
+├── app/                        # the MCP server code
+│   ├── server.py
+│   ├── db.py
+│   ├── wikipedia_api.py
+│   └── requirements.txt
+├── venv/                       # Python virtualenv
+├── data/
+│   └── topics.db               # SQLite — topics, articles, sources, scores
+├── exports/                    # CSVs written by export_csv; served via /exports/
+├── logs/
+│   ├── usage.jsonl             # one JSON line per interesting tool call
+│   └── feedback.jsonl          # one JSON line per submit_feedback
+└── static/
+    └── index.html              # the landing page
+```
+
+### Deploying
+
+Two scripts, both in `mcp_server/`:
+
+- `deploy.sh` — full deploy. Syncs server code, rewrites systemd unit, rewrites nginx config, restarts the service. Takes ~10 seconds. Existing MCP sessions get dropped; clients reconnect on their next request.
+- `deploy_landing.sh` — landing-page-only deploy. Just SCPs `landing.html` to `static/index.html`. No service restart.
+
+Both read `.env` for `DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_KEY`.
+
+### Monitoring
+
+No dashboard; run-time visibility is via SSH + journalctl + a couple of useful one-liners:
+
+```bash
+# service status + resource baseline
+ssh -i deploy_key root@$HOST "systemctl is-active topic-builder && uptime && free -m"
+
+# recent tool calls (from the AI's perspective)
+ssh -i deploy_key root@$HOST "tail -n 30 /opt/topic-builder/logs/usage.jsonl"
+
+# recent feedback submissions
+ssh -i deploy_key root@$HOST "tail -n 10 /opt/topic-builder/logs/feedback.jsonl"
+
+# live service log
+ssh -i deploy_key root@$HOST "journalctl -u topic-builder -f"
+
+# what topics exist and their sizes
+ssh -i deploy_key root@$HOST "/opt/topic-builder/venv/bin/python -c '
+import sqlite3; c=sqlite3.connect(\"/opt/topic-builder/data/topics.db\")
+[print(r) for r in c.execute(\"SELECT t.name, COUNT(a.title) FROM topics t LEFT JOIN articles a ON a.topic_id = t.id GROUP BY t.id ORDER BY t.id\")]'"
+```
+
+### Sessions / per-client state
+
+- Each MCP connection has a `Mcp-Session-Id`. Claude reuses its session across tool calls; ChatGPT opens a fresh session for every call.
+- The server's "current topic" is keyed per session. Stateless clients should pass `topic=<name>` on every call; that pattern is documented in the server instructions and in every tool's `topic` docstring.
+
+### Log formats
+
+`logs/usage.jsonl` — one JSON object per line:
+```json
+{"ts": "...", "topic": "...", "tool": "...", "articles_count": N, "params": {...}, "result": "..."}
+```
+Only some tools call `log_usage` (the "interesting" ones: gather, start, reset, export, feedback). Scoring/paging/listing calls aren't logged — keeps the log signal-rich.
+
+`logs/feedback.jsonl` — one JSON object per line:
+```json
+{"ts": "...", "topic": "...", "client_id": "...", "rating": N, "summary": "...",
+ "what_worked": "...", "what_didnt": "...", "missed_strategies": "...",
+ "articles_count": N, "scored_count": N}
+```
+
+### Common admin tasks
+
+- **Wipe all topics and exports** (destructive, use only on clearly-dev data):
+  ```bash
+  ssh root@$HOST "rm /opt/topic-builder/data/topics.db /opt/topic-builder/exports/*.csv; systemctl restart topic-builder"
+  ```
+  On restart, `db.init_db()` recreates schema.
+- **Delete a single topic via SQL:** `DELETE FROM topics WHERE name = '...'` — `articles` is cascaded.
+- **Revoke an old export:** `rm /opt/topic-builder/exports/<filename>` — download link goes 404.
+
+---
+
+## Backlog
+
+Roughly prioritized. Items live here until they ship or get explicitly dropped.
+
+### Planned — design docs exist
+
+1. **Authentication** (`docs/auth-plan.md`). Wikipedia OAuth 2.0, paste-in-chat bearer token, per-user topic scoping. Prerequisite: register the consumer on meta.wikimedia.org (3–7 day approval).
+2. **Impact Visualizer handoff** (`docs/impact-visualizer-handoff.md`). End a session with a pasteable handle that IV's import page fetches from TB. Replaces the current CSV-then-Rails-console flow. Prerequisite: agree on the JSON schema with the IV maintainer.
+
+### Tool ideas that came out of dogfooding
+
+3. **Wikidata / SPARQL integration.** No current support. High value for topics where Wikidata properties are the natural organizing principle (e.g. "all female educational psychologists", "all Supreme Court cases involving education"). Shape: a `sparql_query(query)` tool or a set of higher-level helpers (`find_by_property`, `find_by_class`) that build queries for common cases. Risk: SPARQL is expressive but easy to get wrong; users will need the AI to draft queries and explain them.
+4. **PetScan integration.** Compound category + template + Wikidata queries. Existing external service (`petscan.wmcloud.org`) — we'd be wrapping its HTTP API. Much of what Wikipedia users reach for in practice.
+5. **`preview_category_pull(category, depth)`**. Returns counts of new-vs-overlap without committing. Would have caught the "Developmental psychologists mostly duplicates Educational psychologists" mistake from the ed-psych transcript.
+6. **Lower the `survey_categories` size warning threshold.** 2000 articles is too high; 1479 (Cognition depth 1) slipped through and was clearly too broad. ~1000 probably right.
+
+### Design questions that need real thought
+
+7. **Scoring at scale.** `score_by_extract` caps at 50 per call, and 900+ articles can't be scored within a single conversation's tool budget. Three directions:
+   - (a) Drop scoring from the default workflow; treat it as an optional "quality cut" step.
+   - (b) Cheapen scoring radically — the AI returns a JSON blob of 500 titles+scores in one call, with the server only validating shape.
+   - (c) Accept that pruning-first is the real workflow and scoring is a bonus.
+   Leaning toward (a), but needs a conversation with actual users.
+
+### Smaller nice-to-haves
+
+8. **Admin digest.** Script that reads `feedback.jsonl` and emails a weekly summary. Nothing fancy; `jq` + `mail`.
+9. **Feedback viewer UI.** Lightweight HTML page at `/admin/feedback` showing recent submissions. Requires auth (see item 1).
+10. **Better rate-limit visibility.** `get_status` already returns `rate_limits`, but it's buried. Consider logging when we approach Wikipedia's rate limit.
+11. **Orphan-topic cleanup.** After enough testing, there are unused stub topics in the DB. A `DELETE FROM topics WHERE ...` script with clear "keep these" criteria.
+12. **Backup cadence.** Right now: nothing. Simple plan: nightly cron `sqlite3 topics.db .dump > /backups/$(date +%F).sql`, keep 30 days.
+
+### Explicitly deferred / not doing
+
+- **Team / sharing features.** Out of scope; every user gets their own scoped topics (once auth lands) and that's enough.
+- **Role-based access control.** Same.
+- **A general "admin" UI.** SSH + sqlite3 is fine until it isn't.
