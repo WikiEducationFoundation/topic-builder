@@ -94,7 +94,22 @@ identify all Wikipedia articles belonging to a topic. The workflow is:
   non-biography noise (chemical compounds, place names, aircraft models,
   institution names, science topics as concepts rather than people) in
   seconds per pattern. Review the dry-run output with the user, then commit.
-  Much faster than scoring each title individually.
+  Much faster than scoring each title individually. After fetch_descriptions,
+  pass `match_description=True` to match the pattern against each article's
+  short description rather than the title — that's the fastest way to cut
+  off-scope occupations (e.g. matching "actor", "footballer", "musician",
+  "politician" in descriptions when building a STEM topic).
+
+- `morelike:<seed>` SEARCHES ARE DANGEROUS WITHOUT REVIEW. The CirrusSearch
+  similarity model weights profession over demographic/topic identity, so
+  seeding from a known topic member pulls in profession-peers, not
+  topic-peers. Concretely: `morelike:<Hispanic_scientist>` returns mostly
+  non-Hispanic scientists; `morelike:<Hispanic_athlete>` returns mostly
+  athletes regardless of STEM. For intersectional topics, treat morelike:
+  results as candidates that need review — expect to score or remove most
+  of them out. Good post-filters: remove_by_pattern on description
+  ("actor", "musician", etc.), or cross-checking against a demographic
+  category's member list.
 
 - After pruning is done, use score_all_unscored to mark everything as scored for
   export, rather than paging through and scoring individually.

@@ -997,15 +997,21 @@ def remove_by_source(source: str, keep_if_other_sources: bool = True, dry_run: b
 
 @mcp.tool()
 def remove_by_pattern(pattern: str, below_score: int | None = None, source: str | None = None,
+                      match_description: bool = False,
                       dry_run: bool = True,
                       topic: str | None = None, ctx: Context = None) -> str:
-    """Remove articles matching a pattern (case-insensitive substring match on title).
-    Use dry_run=True first to preview what would be removed.
+    """Remove articles matching a pattern (case-insensitive substring match).
+    Matches against the title by default; set match_description=True to match
+    against each article's stored short description instead (call
+    fetch_descriptions first). Use dry_run=True to preview.
 
     Args:
-        pattern: Substring to match in article titles (case-insensitive)
+        pattern: Substring to match (case-insensitive)
         below_score: Only remove articles with score below this value (or unscored)
         source: Only remove articles from this source
+        match_description: If True, match pattern against the description field
+                           rather than the title. Articles with no description
+                           never match in this mode. Default False.
         dry_run: If True (default), just preview — don't actually remove
         topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
@@ -1022,9 +1028,15 @@ def remove_by_pattern(pattern: str, below_score: int | None = None, source: str 
     pattern_lower = pattern.lower()
 
     matches = []
+    sample_preview = []
     for title, article in all_articles.items():
-        if pattern_lower not in title.lower():
-            continue
+        if match_description:
+            desc = article.get('description') or ''
+            if not desc or pattern_lower not in desc.lower():
+                continue
+        else:
+            if pattern_lower not in title.lower():
+                continue
         if below_score is not None:
             score = article.get('score')
             if score is not None and score >= below_score:
@@ -1033,12 +1045,20 @@ def remove_by_pattern(pattern: str, below_score: int | None = None, source: str 
             if source not in article.get('sources', []):
                 continue
         matches.append(title)
+        if len(sample_preview) < 30:
+            # Include description in the preview when matching by description,
+            # so the AI/user can sanity-check what's about to be cut.
+            if match_description:
+                sample_preview.append({'title': title, 'description': article.get('description') or ''})
+            else:
+                sample_preview.append(title)
 
     if dry_run:
         return json.dumps({
             'pattern': pattern,
+            'match_description': match_description,
             'would_remove': len(matches),
-            'sample': matches[:30],
+            'sample': sample_preview,
             'note': 'Set dry_run=False to actually remove these articles.',
         }, indent=2, ensure_ascii=False)
 
@@ -1169,13 +1189,19 @@ def filter_articles(resolve_redirects: bool = True, remove_disambig: bool = True
             all_articles.pop(t, None)
         stats['disambig_removed'] = len(disambig)
 
-    # Remove list pages
+    # Remove list pages and year-prefixed meta pages. The latter catches
+    # "2020 in Colombia", "2006 FIFA World Cup squads", "2021 deaths in …"
+    # style titles that routinely slip through search pulls for biography
+    # topics. Legitimate biographies rarely start with a 4-digit year.
     if remove_lists:
         list_pages = [t for t in all_articles if t.lower().startswith(
             ('list of ', 'lists of ', 'index of ', 'outline of '))]
-        for t in list_pages:
+        meta_pages = [t for t in all_articles if re.match(r'^\d{4}\s', t)]
+        dropped = set(list_pages) | set(meta_pages)
+        for t in dropped:
             del all_articles[t]
         stats['lists_removed'] = len(list_pages)
+        stats['meta_pages_removed'] = len(meta_pages)
 
     stats['final'] = len(all_articles)
 
