@@ -15,4 +15,6 @@ benchmarks/*/audit*.csv
 benchmarks/*/audit*.md
 benchmarks/*/baseline*.md
 benchmarks/*/petscan_results*
+benchmarks/*/review_queue.json
+benchmarks/*/review_cursor.txt
 benchmarks/*/*.audit.*
