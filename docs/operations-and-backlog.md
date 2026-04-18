@@ -128,6 +128,36 @@ Roughly prioritized. Items live here until they ship or get explicitly dropped.
 1. **Authentication** (`docs/auth-plan.md`). Wikipedia OAuth 2.0, paste-in-chat bearer token, per-user topic scoping. Prerequisite: register the consumer on meta.wikimedia.org (3–7 day approval).
 2. **Impact Visualizer handoff** (`docs/impact-visualizer-handoff.md`). End a session with a pasteable handle that IV's import page fetches from TB. Replaces the current CSV-then-Rails-console flow. Prerequisite: agree on the JSON schema with the IV maintainer.
 
+### Flagged for investigation
+
+- **`preview_search` bypass in Native American scientists dogfood
+  (2026-04-17 22:33).** The session ran a broad keyword search
+  (`"Native American scientist researcher"` → 500 results, became 82%
+  of the topic) and three `morelike:` seeds without using
+  `preview_search` — exactly the calls the new PREVIEW BEFORE COMMIT
+  bullet in `server_instructions.md` says to preview first. Two
+  candidate causes:
+  (a) Claude client tool-schema caching from before the Bundle 2
+      deploy (the same deferred-schema issue we've seen — new tools
+      don't propagate to existing sessions reliably),
+  (b) the AI saw the new instruction but chose to skip the step,
+      possibly because of its urgency / brevity framing.
+  Worth checking: does a fresh Claude session after the deploy know
+  about `preview_search` and actually invoke it? If not, we need
+  either a forced refresh mechanism or a workaround in instructions.
+- **Scoring + removal tool calls are invisible in `usage.jsonl`.**
+  The same Native American scientists session scored 511 articles and
+  removed ~519 in the middle of the flow, but neither action shows in
+  the usage log because `set_scores`, `score_by_extract`,
+  `auto_score_by_description`, `remove_articles`, `remove_by_pattern`,
+  and `remove_by_source` don't call `log_usage`. Adding logging to
+  these makes `scripts/session_status.py` far more useful — flow
+  stage inference currently reports "3. gather" when the topic is
+  actually at score/cleanup/export.
+- **Session ended without SPOT CHECK / GAP CHECK / submit_feedback.**
+  Same session. The AI exported and stopped. Worth reviewing whether
+  the instructions are being read/followed on wrap-up.
+
 ### Tool ideas that came out of dogfooding
 
 3. **Wikidata / SPARQL integration.** No current support. High value for topics where Wikidata properties are the natural organizing principle (e.g. "all female educational psychologists", "all Supreme Court cases involving education"). Shape: a `sparql_query(query)` tool or a set of higher-level helpers (`find_by_property`, `find_by_class`) that build queries for common cases. Risk: SPARQL is expressive but easy to get wrong; users will need the AI to draft queries and explain them.
