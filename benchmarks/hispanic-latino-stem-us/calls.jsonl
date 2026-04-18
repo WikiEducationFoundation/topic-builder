@@ -1,6 +1,9 @@
-# Exemplar call sequence for the hispanic-latino-stem-us benchmark, written
-# 2026-04-17. Represents an idealized session using current tools;
-# re-run the benchmark to see how changes move the precision/recall.
+# Exemplar call sequence for the hispanic-latino-stem-us benchmark.
+# Updated 2026-04-17 from the initial 5-nationality version to 12
+# nationality searches after a variant comparison showed the extra 7
+# searches (Argentine, Chilean, Peruvian, Guatemalan, Dominican,
+# Salvadoran, Ecuadorian) add ~10 gold-IN with no precision penalty.
+# See docs/topic-strategies.md for the broader pattern.
 {"tool": "start_topic", "args": {"name": "hispanic-latino-stem-us", "fresh": true, "topic": "hispanic-latino-stem-us"}}
 {"tool": "survey_categories", "args": {"category": "Hispanic and Latino American scientists", "depth": 3, "count_articles": true, "topic": "hispanic-latino-stem-us"}}
 {"tool": "get_category_articles", "args": {"category": "Hispanic and Latino American scientists", "depth": 3, "topic": "hispanic-latino-stem-us"}}
@@ -13,6 +16,13 @@
 {"tool": "search_articles", "args": {"query": "incategory:\"American people of Cuban descent\" (scientist OR engineer OR mathematician OR physicist OR biologist OR chemist OR astronaut OR inventor)", "limit": 500, "topic": "hispanic-latino-stem-us"}}
 {"tool": "search_articles", "args": {"query": "incategory:\"American people of Colombian descent\" (scientist OR engineer OR mathematician OR physicist OR biologist OR chemist OR astronaut OR inventor)", "limit": 500, "topic": "hispanic-latino-stem-us"}}
 {"tool": "search_articles", "args": {"query": "incategory:\"American people of Venezuelan descent\" (scientist OR engineer OR mathematician OR physicist OR biologist OR chemist OR astronaut OR inventor)", "limit": 500, "topic": "hispanic-latino-stem-us"}}
+{"tool": "search_articles", "args": {"query": "incategory:\"American people of Argentine descent\" (scientist OR engineer OR mathematician OR physicist OR biologist OR chemist OR astronaut OR inventor OR technologist OR neuroscientist)", "limit": 500, "topic": "hispanic-latino-stem-us"}}
+{"tool": "search_articles", "args": {"query": "incategory:\"American people of Chilean descent\" (scientist OR engineer OR mathematician OR physicist OR biologist OR chemist OR astronaut OR inventor OR technologist OR neuroscientist)", "limit": 500, "topic": "hispanic-latino-stem-us"}}
+{"tool": "search_articles", "args": {"query": "incategory:\"American people of Peruvian descent\" (scientist OR engineer OR mathematician OR physicist OR biologist OR chemist OR astronaut OR inventor OR technologist OR neuroscientist)", "limit": 500, "topic": "hispanic-latino-stem-us"}}
+{"tool": "search_articles", "args": {"query": "incategory:\"American people of Guatemalan descent\" (scientist OR engineer OR mathematician OR physicist OR biologist OR chemist OR astronaut OR inventor OR technologist OR neuroscientist)", "limit": 500, "topic": "hispanic-latino-stem-us"}}
+{"tool": "search_articles", "args": {"query": "incategory:\"American people of Dominican descent\" (scientist OR engineer OR mathematician OR physicist OR biologist OR chemist OR astronaut OR inventor OR technologist OR neuroscientist)", "limit": 500, "topic": "hispanic-latino-stem-us"}}
+{"tool": "search_articles", "args": {"query": "incategory:\"American people of Salvadoran descent\" (scientist OR engineer OR mathematician OR physicist OR biologist OR chemist OR astronaut OR inventor OR technologist OR neuroscientist)", "limit": 500, "topic": "hispanic-latino-stem-us"}}
+{"tool": "search_articles", "args": {"query": "incategory:\"American people of Ecuadorian descent\" (scientist OR engineer OR mathematician OR physicist OR biologist OR chemist OR astronaut OR inventor OR technologist OR neuroscientist)", "limit": 500, "topic": "hispanic-latino-stem-us"}}
 {"tool": "filter_articles", "args": {"resolve_redirects": true, "remove_disambig": true, "remove_lists": true, "topic": "hispanic-latino-stem-us"}}
 {"tool": "fetch_descriptions", "args": {"limit": 5000, "topic": "hispanic-latino-stem-us"}}
 {"tool": "auto_score_by_description", "args": {"required_any": {"profession": ["scientist", "physicist", "chemist", "biologist", "engineer", "mathematician", "astronaut", "astronomer", "geologist", "ecologist", "neuroscientist", "biochemist", "microbiologist", "geneticist", "physiologist", "inventor", "technologist", "researcher", "immunologist", "cardiologist", "oncologist", "pharmacologist", "virologist", "entomologist", "oceanographer", "meteorologist", "zoologist", "botanist"]}, "disqualifying": ["actor", "actress", "musician", "singer", "songwriter", "politician", "poet", "novelist", "journalist", "painter", "sculptor", "filmmaker", "director", "dancer", "chef", "footballer", "baseball", "basketball", "soccer", "boxer", "wrestler", "athlete", "economist", "psychologist", "sociologist", "anthropologist", "historian", "philosopher", "lawyer", "curator", "activist", "businessman", "businesswoman"], "dry_run": false, "topic": "hispanic-latino-stem-us"}}
