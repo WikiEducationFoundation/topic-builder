@@ -23,6 +23,7 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
             slug TEXT NOT NULL UNIQUE,
+            wiki TEXT NOT NULL DEFAULT 'en',
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
@@ -41,9 +42,14 @@ def init_db():
     """)
     # Migrate existing DBs that predate the description column. NULL means
     # "not fetched yet"; empty string means "fetched, no short-desc on Wikipedia".
-    cols = [r[1] for r in conn.execute("PRAGMA table_info(articles)")]
-    if 'description' not in cols:
+    art_cols = [r[1] for r in conn.execute("PRAGMA table_info(articles)")]
+    if 'description' not in art_cols:
         conn.execute("ALTER TABLE articles ADD COLUMN description TEXT")
+    # Migrate existing DBs that predate per-topic wiki selection. Pre-existing
+    # topics were all built against English Wikipedia.
+    topic_cols = [r[1] for r in conn.execute("PRAGMA table_info(topics)")]
+    if 'wiki' not in topic_cols:
+        conn.execute("ALTER TABLE topics ADD COLUMN wiki TEXT NOT NULL DEFAULT 'en'")
     conn.commit()
     conn.close()
 
@@ -52,34 +58,41 @@ def _slugify(name):
     return name.lower().replace(' ', '_').replace("'", '').replace('"', '')
 
 
-def create_or_get_topic(name):
-    """Create a new topic or return existing one. Returns (topic_id, is_new, article_count)."""
+def create_or_get_topic(name, wiki='en'):
+    """Create a new topic or return existing one.
+    Returns (topic_id, is_new, article_count, canonical_wiki).
+
+    For an existing topic, `canonical_wiki` is the wiki stored at creation —
+    the passed `wiki` argument is ignored on resume (topics are bound to a
+    wiki at creation time)."""
     slug = _slugify(name)
     conn = _connect()
-    row = conn.execute("SELECT id FROM topics WHERE slug = ?", (slug,)).fetchone()
+    row = conn.execute("SELECT id, wiki FROM topics WHERE slug = ?", (slug,)).fetchone()
     if row:
         topic_id = row['id']
         count = conn.execute("SELECT COUNT(*) as c FROM articles WHERE topic_id = ?",
                              (topic_id,)).fetchone()['c']
         conn.close()
-        return topic_id, False, count
+        return topic_id, False, count, row['wiki']
     else:
-        cur = conn.execute("INSERT INTO topics (name, slug) VALUES (?, ?)", (name, slug))
+        cur = conn.execute("INSERT INTO topics (name, slug, wiki) VALUES (?, ?, ?)",
+                           (name, slug, wiki))
         topic_id = cur.lastrowid
         conn.commit()
         conn.close()
-        return topic_id, True, 0
+        return topic_id, True, 0, wiki
 
 
 def get_topic_by_name(name):
-    """Look up a topic by name. Returns (topic_id, canonical_name) or (None, None) if missing."""
+    """Look up a topic by name. Returns (topic_id, canonical_name, wiki) or
+    (None, None, None) if missing."""
     slug = _slugify(name)
     conn = _connect()
-    row = conn.execute("SELECT id, name FROM topics WHERE slug = ?", (slug,)).fetchone()
+    row = conn.execute("SELECT id, name, wiki FROM topics WHERE slug = ?", (slug,)).fetchone()
     conn.close()
     if row:
-        return row['id'], row['name']
-    return None, None
+        return row['id'], row['name'], row['wiki']
+    return None, None, None
 
 
 def append_feedback(entry):
@@ -95,7 +108,7 @@ def list_topics():
     """List all topics with article counts."""
     conn = _connect()
     rows = conn.execute("""
-        SELECT t.id, t.name, t.slug, t.created_at, t.updated_at,
+        SELECT t.id, t.name, t.slug, t.wiki, t.created_at, t.updated_at,
                COUNT(a.id) as article_count
         FROM topics t LEFT JOIN articles a ON t.id = a.topic_id
         GROUP BY t.id ORDER BY t.updated_at DESC
@@ -231,6 +244,8 @@ def get_all_articles_dict(topic_id):
 def get_status(topic_id):
     """Get topic stats."""
     conn = _connect()
+    wiki_row = conn.execute("SELECT wiki FROM topics WHERE id = ?", (topic_id,)).fetchone()
+    wiki = wiki_row['wiki'] if wiki_row else 'en'
     total = conn.execute("SELECT COUNT(*) as c FROM articles WHERE topic_id = ?",
                          (topic_id,)).fetchone()['c']
     scored = conn.execute("SELECT COUNT(*) as c FROM articles WHERE topic_id = ? AND score IS NOT NULL",
@@ -265,6 +280,7 @@ def get_status(topic_id):
 
     conn.close()
     return {
+        'wiki': wiki,
         'total_articles': total,
         'scored': scored,
         'unscored': total - scored,

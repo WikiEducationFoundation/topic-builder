@@ -116,6 +116,15 @@ Roughly prioritized. Items live here until they ship or get explicitly dropped.
 
 ### Recently shipped
 
+- **2026-04-21** — multi-wiki support. `start_topic` takes a `wiki`
+  parameter (default `"en"`); the value is persisted on the topic row
+  and threaded through every Wikipedia API call. Reconnaissance tools
+  (`survey_categories`, `check_wikiproject`, `find_list_pages`) accept
+  optional `wiki=` too, inheriting the active topic's wiki otherwise.
+  `check_wikiproject` / `get_wikiproject_articles` warn on non-enwiki;
+  `find_list_pages` hints when its English prefixes return nothing.
+  Prompt updated with wiki-selection guidance during scoping.
+  Motivated by 2026-04-21 dewiki dogfood (see prior flagged item).
 - **2026-04-17** — benchmark harness scaffolding (`benchmarks/` directory + `scripts/benchmark.py`). First topic `hispanic-latino-stem-us` scope frozen; gold.csv + PetScan query + calls.jsonl pending user attachment in a later session. Purpose: regression-test tool/prompt changes against a vetted gold set with scripted call replay.
 - **2026-04-17** — audit-driven quality tools: `auto_score_by_description` (with intersectional-axis warning), `preview_search`, per-query search provenance (`search:<query>` source labels) + `remove_by_source` prefix_match, `remove_by_pattern` match_description mode, `filter_articles` year-prefix meta-page drop. morelike:-is-dangerous + preview-before-commit instruction bullets.
 - **2026-04-17** — session-start user guidance added to `server_instructions.md` (SET EXPECTATIONS bullet, right after scope confirmation). Tells users continue-prompts and transient errors are routine. Revisit after first feedback with it live.

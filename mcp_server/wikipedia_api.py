@@ -7,10 +7,17 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-WIKIPEDIA_API = "https://en.wikipedia.org/w/api.php"
+WIKIPEDIA_API = "https://en.wikipedia.org/w/api.php"  # default / enwiki shortcut
 PETSCAN_URL = "https://petscan.wmcloud.org/"
 USER_AGENT = "WikipediaTopicBuilder/1.0 (https://topic-builder.wikiedu.org/; sage@wikiedu.org)"
 REQUEST_DELAY = 0.05
+
+
+def wiki_api_url(wiki='en'):
+    """Build the api.php URL for a given Wikipedia language edition.
+    Wikipedia has 300+ language codes; we don't validate here — an unknown
+    code will surface as an HTTP/DNS error at request time."""
+    return f"https://{wiki}.wikipedia.org/w/api.php"
 
 _last_request_time = 0
 
@@ -82,23 +89,24 @@ def api_get(url, params=None, timeout=30):
             raise
 
 
-def api_query(params):
+def api_query(params, wiki='en'):
     params = dict(params)
     params['action'] = 'query'
     params['format'] = 'json'
     params['formatversion'] = '2'
     params['maxlag'] = '5'  # back off if MediaWiki servers are lagged >5s
-    return api_get(WIKIPEDIA_API, params)
+    return api_get(wiki_api_url(wiki), params)
 
 
-def api_query_all(params, result_key, max_items=50000):
+def api_query_all(params, result_key, max_items=50000, wiki='en'):
     params = dict(params)
     params['action'] = 'query'
     params['format'] = 'json'
     params['formatversion'] = '2'
+    url = wiki_api_url(wiki)
     count = 0
     while True:
-        data = api_get(WIKIPEDIA_API, params)
+        data = api_get(url, params)
         if 'query' in data and result_key in data['query']:
             for item in data['query'][result_key]:
                 yield item
@@ -119,13 +127,14 @@ def normalize_title(title):
     return title.strip()
 
 
-def fetch_short_descriptions(titles):
+def fetch_short_descriptions(titles, wiki='en'):
     """Fetch Wikidata short descriptions for a list of article titles.
 
     Returns a dict mapping each input title to its short description (empty
     string if missing). Uses the pageprops API in batches of 50 and follows
     title normalizations + redirects so titles stored in slightly different
-    form still get matched to the canonical page.
+    form still get matched to the canonical page. `wiki` selects the
+    language edition (e.g. 'en', 'de', 'es').
     """
     out = {t: '' for t in titles}
     for i in range(0, len(titles), 50):
@@ -135,7 +144,7 @@ def fetch_short_descriptions(titles):
             'prop': 'pageprops',
             'ppprop': 'wikibase-shortdesc',
             'redirects': '1',
-        })
+        }, wiki=wiki)
         query = data.get('query', {}) if isinstance(data, dict) else {}
         # Chain normalizations and redirects: original -> canonical page title.
         chain = {t: t for t in batch}

@@ -16,7 +16,7 @@ from pathlib import Path
 from mcp.server.fastmcp import FastMCP, Context
 
 from wikipedia_api import (
-    api_query, api_query_all, api_get, normalize_title, WIKIPEDIA_API,
+    api_query, api_query_all, api_get, normalize_title, wiki_api_url,
     get_rate_limit_stats, fetch_short_descriptions,
 )
 import db
@@ -34,8 +34,8 @@ usage_logger.addHandler(usage_handler)
 
 # Per-session current topic. Each MCP session (one client connection) has its
 # own "current topic" so concurrent clients don't clobber each other's state.
-# Keyed by id(ctx.session); value is (topic_id, topic_name).
-_session_topics: dict[int, tuple[int, str]] = {}
+# Keyed by id(ctx.session); value is (topic_id, topic_name, wiki).
+_session_topics: dict[int, tuple[int, str, str]] = {}
 _session_lock = threading.Lock()
 
 
@@ -43,21 +43,22 @@ def _session_key(ctx: Context) -> int:
     return id(ctx.session)
 
 
-def _get_topic(ctx: Context) -> tuple[int | None, str]:
+def _get_topic(ctx: Context) -> tuple[int | None, str, str]:
     with _session_lock:
-        return _session_topics.get(_session_key(ctx), (None, ""))
+        return _session_topics.get(_session_key(ctx), (None, "", "en"))
 
 
-def _set_topic(ctx: Context, topic_id: int, name: str) -> None:
+def _set_topic(ctx: Context, topic_id: int, name: str, wiki: str = "en") -> None:
     with _session_lock:
-        _session_topics[_session_key(ctx)] = (topic_id, name)
+        _session_topics[_session_key(ctx)] = (topic_id, name, wiki)
 
 
 def log_usage(ctx: Context, tool_name: str, params: dict | None = None, result_summary: str = ""):
-    topic_id, topic_name = _get_topic(ctx)
+    topic_id, topic_name, wiki = _get_topic(ctx)
     entry = {
         "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "topic": topic_name or "(none)",
+        "wiki": wiki,
         "tool": tool_name,
     }
     if topic_id:
@@ -91,64 +92,103 @@ mcp = FastMCP(
 )
 
 
-def _require_topic(ctx: Context, topic_name: str | None = None) -> tuple[int | None, str | None]:
-    """Resolve the topic for this call. Returns (topic_id, error).
+def _require_topic(ctx: Context, topic_name: str | None = None) -> tuple[int | None, str, str | None]:
+    """Resolve the topic for this call. Returns (topic_id, wiki, error).
 
     If topic_name is passed explicitly (for stateless clients like ChatGPT that
-    don't persist MCP sessions), look it up by name — creating if missing — and
-    bind it to this session. Otherwise fall back to the session's current topic
-    (set by start_topic).
+    don't persist MCP sessions), look it up by name — creating as enwiki if
+    missing — and bind it to this session. Otherwise fall back to the
+    session's current topic (set by start_topic). `wiki` defaults to 'en' if
+    no topic is active.
     """
     if topic_name:
-        tid, canonical = db.get_topic_by_name(topic_name)
+        tid, canonical, wiki = db.get_topic_by_name(topic_name)
         if tid is None:
-            tid, _, _ = db.create_or_get_topic(topic_name)
+            tid, _, _, wiki = db.create_or_get_topic(topic_name)
             canonical = topic_name
-        _set_topic(ctx, tid, canonical)
-        return tid, None
+        _set_topic(ctx, tid, canonical, wiki)
+        return tid, wiki, None
 
-    tid, _ = _get_topic(ctx)
+    tid, _, wiki = _get_topic(ctx)
     if not tid:
-        return None, (
+        return None, "en", (
             "No active topic. Call start_topic first, or pass topic=<name> to this tool. "
             "If your MCP client doesn't persist sessions between tool calls (e.g. ChatGPT), "
             "pass topic=<name> on every call."
         )
-    return tid, None
+    return tid, wiki, None
+
+
+def _resolve_wiki(ctx: Context, wiki: str | None = None, topic_name: str | None = None) -> str:
+    """Pick the wiki for a recon tool call (tools that aren't topic-scoped
+    but still need to query Wikipedia). Resolution order:
+      1. explicit `wiki` parameter
+      2. wiki of the topic passed as `topic_name`
+      3. wiki of the session's current topic
+      4. 'en' default
+    """
+    if wiki:
+        return wiki
+    if topic_name:
+        _, _, w = db.get_topic_by_name(topic_name)
+        if w:
+            return w
+    _, _, session_wiki = _get_topic(ctx)
+    return session_wiki or 'en'
 
 
 # ── Topic management ───────────────────────────────────────────────────────
 
 @mcp.tool()
-def start_topic(name: str, fresh: bool = False, ctx: Context = None) -> str:
+def start_topic(name: str, wiki: str = "en", fresh: bool = False, ctx: Context = None) -> str:
     """Start a new topic build or resume an existing one with the same name.
     Topics are persisted — if a topic with this name already exists, it will
     be resumed with all its articles intact UNLESS you pass fresh=True.
 
+    A topic is bound to a specific Wikipedia language edition at creation
+    time. Every subsequent tool call for this topic queries that wiki. Use a
+    non-English wiki when the user wants to build a list of articles that
+    live on (say) German or Spanish Wikipedia — titles, categories, and
+    descriptions all come from the chosen wiki.
+
     Args:
-        name: The topic name (e.g., "climate change", "women in STEM")
+        name: The topic name (e.g., "climate change", "Kochutensilien").
+        wiki: Wikipedia language code (e.g., "en", "de", "es", "fr", "ja").
+              Defaults to "en". Ignored when resuming an existing topic —
+              the stored wiki wins so articles and pulls stay consistent.
         fresh: If True and the topic already exists, wipe all its articles
                before starting. Use this when the user asks to "start over"
                or "start fresh" on an existing topic. Defaults to False.
     """
-    topic_id, is_new, article_count = db.create_or_get_topic(name)
-    _set_topic(ctx, topic_id, name)
+    topic_id, is_new, article_count, canonical_wiki = db.create_or_get_topic(name, wiki=wiki)
+    _set_topic(ctx, topic_id, name, canonical_wiki)
 
     if is_new:
-        log_usage(ctx, "start_topic", {"name": name, "is_new": True})
-        return f"Started new topic build: '{name}'. Working list is empty."
+        log_usage(ctx, "start_topic", {"name": name, "wiki": canonical_wiki, "is_new": True})
+        return (f"Started new topic build: '{name}' on {canonical_wiki}.wikipedia.org. "
+                f"Working list is empty.")
+
+    wiki_mismatch_note = ""
+    if wiki and wiki != canonical_wiki:
+        wiki_mismatch_note = (
+            f" (NOTE: you passed wiki='{wiki}' but this topic was created on "
+            f"'{canonical_wiki}.wikipedia.org' and is locked to it. If you want a "
+            f"different wiki, start a new topic under a different name.)"
+        )
 
     if fresh:
         db.replace_all_articles(topic_id, {})
-        log_usage(ctx, "start_topic", {"name": name, "fresh": True},
+        log_usage(ctx, "start_topic", {"name": name, "wiki": canonical_wiki, "fresh": True},
                   f"cleared {article_count} articles")
-        return (f"Resumed existing topic '{name}' and cleared its {article_count} "
-                f"previous articles (fresh=True). Working list is now empty.")
+        return (f"Resumed existing topic '{name}' on {canonical_wiki}.wikipedia.org and "
+                f"cleared its {article_count} previous articles (fresh=True). Working "
+                f"list is now empty.{wiki_mismatch_note}")
 
-    log_usage(ctx, "start_topic", {"name": name, "is_new": False})
-    return (f"Resumed existing topic: '{name}'. Working list has {article_count} articles. "
-            f"If you want to start over with a fresh empty list instead, call "
-            f"reset_topic now (or re-call start_topic with fresh=True).")
+    log_usage(ctx, "start_topic", {"name": name, "wiki": canonical_wiki, "is_new": False})
+    return (f"Resumed existing topic: '{name}' on {canonical_wiki}.wikipedia.org. Working "
+            f"list has {article_count} articles. If you want to start over with a "
+            f"fresh empty list instead, call reset_topic now (or re-call start_topic "
+            f"with fresh=True).{wiki_mismatch_note}")
 
 
 @mcp.tool()
@@ -162,11 +202,11 @@ def reset_topic(topic: str | None = None, ctx: Context = None) -> str:
                an MCP session (e.g. ChatGPT); otherwise uses the session's
                current topic.
     """
-    topic_id, err = _require_topic(ctx, topic)
+    topic_id, _wiki, err = _require_topic(ctx, topic)
     if err:
         return err
 
-    _, topic_name = _get_topic(ctx)
+    _, topic_name, _ = _get_topic(ctx)
     all_articles = db.get_all_articles_dict(topic_id)
     count = len(all_articles)
     db.replace_all_articles(topic_id, {})
@@ -200,11 +240,11 @@ def get_status(topic: str | None = None, ctx: Context = None) -> str:
     Args:
         topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
-    topic_id, err = _require_topic(ctx, topic)
+    topic_id, _wiki, err = _require_topic(ctx, topic)
     if err:
         return err
 
-    _, topic_name = _get_topic(ctx)
+    _, topic_name, _ = _get_topic(ctx)
     status = db.get_status(topic_id)
     status['topic'] = topic_name
     status['rate_limits'] = get_rate_limit_stats()
@@ -214,16 +254,24 @@ def get_status(topic: str | None = None, ctx: Context = None) -> str:
 # ── Reconnaissance tools ──────────────────────────────────────────────────
 
 @mcp.tool()
-def survey_categories(category: str, depth: int = 2, count_articles: bool = False, ctx: Context = None) -> str:
+def survey_categories(category: str, depth: int = 2, count_articles: bool = False,
+                      wiki: str | None = None, topic: str | None = None,
+                      ctx: Context = None) -> str:
     """Survey the subcategory tree of a Wikipedia category WITHOUT collecting articles.
     Use this first to understand how Wikipedia organizes a topic before committing to a pull.
 
     Args:
-        category: Category name without "Category:" prefix (e.g., "Climate change")
+        category: Category name without "Category:" prefix. On non-English
+                  wikis, pass the category name in that wiki's language
+                  (e.g. "Küchengerät" on dewiki).
         depth: How deep to survey (default 2, max 4)
         count_articles: If True, also count total articles across all categories (slower but helps gauge size before pulling)
+        wiki: Wikipedia language code to query. Defaults to the active topic's
+              wiki, or "en" if no topic is active.
+        topic: Optional topic name to infer the wiki from.
     """
     depth = min(depth, 4)
+    wiki = _resolve_wiki(ctx, wiki, topic)
     visited = set()
     by_depth = collections.defaultdict(list)
 
@@ -240,7 +288,7 @@ def survey_categories(category: str, depth: int = 2, count_articles: bool = Fals
                 'cmtype': 'subcat',
                 'cmlimit': '500',
             }
-            for item in api_query_all(params, 'categorymembers'):
+            for item in api_query_all(params, 'categorymembers', wiki=wiki):
                 title = item['title']
                 if title.startswith('Category:'):
                     title = title[len('Category:'):]
@@ -250,6 +298,7 @@ def survey_categories(category: str, depth: int = 2, count_articles: bool = Fals
                     queue.append((title, d + 1))
 
     result = {
+        'wiki': wiki,
         'root_category': category,
         'depth_surveyed': depth,
         'total_categories': len(visited),
@@ -267,21 +316,38 @@ def survey_categories(category: str, depth: int = 2, count_articles: bool = Fals
                 'cmnamespace': '0',
                 'cmlimit': '500',
             }
-            for _ in api_query_all(params, 'categorymembers', max_items=50000):
+            for _ in api_query_all(params, 'categorymembers', max_items=50000, wiki=wiki):
                 total_articles += 1
         result['estimated_total_articles'] = total_articles
         if total_articles > 2000:
             result['warning'] = f'This tree contains ~{total_articles} articles. Consider pulling specific subcategories rather than the whole tree.'
 
-    log_usage(ctx, "survey_categories", {"category": category, "depth": depth}, f"{len(visited)} categories")
+    # If the root category came back with no subcategories AND no article count
+    # was asked for, that usually means the category name doesn't exist on this
+    # wiki — most often because the user meant a different wiki.
+    if len(visited) == 1 and not count_articles:
+        result['hint'] = (
+            f"No subcategories found under 'Category:{category}' on "
+            f"{wiki}.wikipedia.org. Either the category is a leaf, or it "
+            f"doesn't exist on this wiki. Verify the exact category name on "
+            f"{wiki}.wikipedia.org, or check that you're on the intended wiki."
+        )
+
+    log_usage(ctx, "survey_categories", {"category": category, "depth": depth, "wiki": wiki}, f"{len(visited)} categories")
     return json.dumps(result, indent=2, ensure_ascii=False)
 
 
 @mcp.tool()
-def check_wikiproject(project_name: str) -> str:
+def check_wikiproject(project_name: str, wiki: str | None = None,
+                      topic: str | None = None, ctx: Context = None) -> str:
     """Check whether a given WikiProject exists on Wikipedia. WikiProjects
     tag articles with assessment banners — if one exists for the topic, it's
     usually the best single source of tagged articles.
+
+    WikiProjects are an English-Wikipedia convention. Most other language
+    editions don't maintain them in the same form (no Template:WikiProject
+    namespace), so on non-enwiki topics this tool will almost always report
+    exists=False — fall back to category and search strategies instead.
 
     Args:
         project_name: the WikiProject's own name, which is often not identical
@@ -289,31 +355,55 @@ def check_wikiproject(project_name: str) -> str:
             happens to also be "Climate change", but for "Hispanic and Latino
             people in STEM" it might be "Latino and Hispanic Americans" or
             "Science". Guess likely names and probe.
+        wiki: Wikipedia language code to query. Defaults to the active topic's
+              wiki, or "en" if no topic is active.
+        topic: Optional topic name to infer the wiki from.
     """
+    wiki = _resolve_wiki(ctx, wiki, topic)
     template_title = f"Template:WikiProject {project_name}"
     params = {'titles': template_title, 'prop': 'info'}
-    data = api_query(params)
+    data = api_query(params, wiki=wiki)
     exists = False
     if 'query' in data and 'pages' in data['query']:
         for page in data['query']['pages']:
             if not page.get('missing', False):
                 exists = True
 
-    return json.dumps({
+    result = {
+        'wiki': wiki,
         'project': project_name,
         'template': template_title,
         'exists': exists,
         'note': 'Use get_wikiproject_articles to fetch all tagged articles' if exists else 'No WikiProject found'
-    })
+    }
+    if wiki != 'en':
+        result['warning'] = (
+            f"WikiProjects are an enwiki convention and rarely exist on "
+            f"{wiki}.wikipedia.org. This check is likely uninformative — "
+            f"rely on categories and search instead."
+        )
+    return json.dumps(result)
 
 
 @mcp.tool()
-def find_list_pages(subject: str) -> str:
+def find_list_pages(subject: str, wiki: str | None = None,
+                    topic: str | None = None, ctx: Context = None) -> str:
     """Search for Index/List/Outline/Glossary pages about a subject.
+
+    The "Index of", "List of", "Outline of", "Glossary of" prefixes are
+    English-specific. On non-enwiki topics this tool almost always returns
+    zero results — other-language wikis use different conventions (e.g.
+    "Liste der …" on dewiki, "Lista de …" on eswiki). If you're on a
+    non-enwiki topic and need list-style pages, use search_articles with
+    intitle: and the appropriate prefix for that wiki.
 
     Args:
         subject: Subject to search for (free text, e.g. "climate change")
+        wiki: Wikipedia language code to query. Defaults to the active topic's
+              wiki, or "en" if no topic is active.
+        topic: Optional topic name to infer the wiki from.
     """
+    wiki = _resolve_wiki(ctx, wiki, topic)
     pages = []
     for prefix in ['Index of', 'List of', 'Outline of', 'Glossary of']:
         params = {
@@ -324,14 +414,22 @@ def find_list_pages(subject: str) -> str:
             'srinfo': '',
             'srprop': '',
         }
-        for item in api_query_all(params, 'search', max_items=20):
+        for item in api_query_all(params, 'search', max_items=20, wiki=wiki):
             pages.append(item['title'])
 
-    return json.dumps({
+    result = {
+        'wiki': wiki,
         'subject': subject,
         'list_pages': pages,
         'count': len(pages),
-    }, indent=2)
+    }
+    if wiki != 'en' and not pages:
+        result['hint'] = (
+            f"No results on {wiki}.wikipedia.org — the prefixes used here "
+            f"('Index of', 'List of', …) are English-specific. Try "
+            f"search_articles with the list-page prefix native to this wiki."
+        )
+    return json.dumps(result, indent=2, ensure_ascii=False)
 
 
 # ── Gathering tools ───────────────────────────────────────────────────────
@@ -340,14 +438,15 @@ def find_list_pages(subject: str) -> str:
 def get_wikiproject_articles(project_name: str, max_articles: int = 50000,
                               topic: str | None = None, ctx: Context = None) -> str:
     """Get all articles tagged by a WikiProject. Adds them to the working list
-    with source 'wikiproject'.
+    with source 'wikiproject'. WikiProjects are an enwiki convention — this
+    tool returns few/no articles on non-English wikis.
 
     Args:
         project_name: WikiProject name (e.g., "Climate change")
         max_articles: Maximum articles to fetch (default 50000)
         topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
-    topic_id, err = _require_topic(ctx, topic)
+    topic_id, wiki, err = _require_topic(ctx, topic)
     if err:
         return err
 
@@ -360,7 +459,7 @@ def get_wikiproject_articles(project_name: str, max_articles: int = 50000,
     }
 
     articles = []
-    for item in api_query_all(params, 'embeddedin', max_items=max_articles):
+    for item in api_query_all(params, 'embeddedin', max_items=max_articles, wiki=wiki):
         title = item['title']
         if title.startswith('Talk:'):
             title = title[len('Talk:'):]
@@ -371,15 +470,23 @@ def get_wikiproject_articles(project_name: str, max_articles: int = 50000,
     batch = [(title, source_label, None) for title in articles]
     added, updated = db.add_articles(topic_id, batch)
 
-    log_usage(ctx, "get_wikiproject_articles", {"project": project_name}, f"{len(articles)} articles")
-    return json.dumps({
+    log_usage(ctx, "get_wikiproject_articles", {"project": project_name, "wiki": wiki}, f"{len(articles)} articles")
+    result = {
+        'wiki': wiki,
         'project': project_name,
         'articles_found': len(articles),
         'new_articles_added': added,
         'existing_updated': updated,
         'source_label': source_label,
         'total_in_working_list': db.get_status(topic_id)['total_articles'],
-    }, indent=2, ensure_ascii=False)
+    }
+    if wiki != 'en' and len(articles) == 0:
+        result['hint'] = (
+            f"WikiProjects are rare outside enwiki — {wiki}.wikipedia.org "
+            f"probably doesn't tag articles this way. Use categories and "
+            f"search_articles instead."
+        )
+    return json.dumps(result, indent=2, ensure_ascii=False)
 
 
 @mcp.tool()
@@ -396,7 +503,7 @@ def get_category_articles(category: str, depth: int = 3, exclude: list[str] | No
         max_articles: Maximum articles to collect (default 50000)
         topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
-    topic_id, err = _require_topic(ctx, topic)
+    topic_id, wiki, err = _require_topic(ctx, topic)
     if err:
         return err
 
@@ -418,7 +525,7 @@ def get_category_articles(category: str, depth: int = 3, exclude: list[str] | No
             'cmnamespace': '0',
             'cmlimit': '500',
         }
-        for item in api_query_all(params, 'categorymembers'):
+        for item in api_query_all(params, 'categorymembers', wiki=wiki):
             title = normalize_title(item['title'])
             articles.add(title)
             if len(articles) >= max_articles:
@@ -431,7 +538,7 @@ def get_category_articles(category: str, depth: int = 3, exclude: list[str] | No
                 'cmtype': 'subcat',
                 'cmlimit': '500',
             }
-            for item in api_query_all(params, 'categorymembers'):
+            for item in api_query_all(params, 'categorymembers', wiki=wiki):
                 subcat = item['title']
                 if subcat.startswith('Category:'):
                     subcat = subcat[len('Category:'):]
@@ -444,6 +551,7 @@ def get_category_articles(category: str, depth: int = 3, exclude: list[str] | No
     added, updated = db.add_articles(topic_id, batch)
 
     result = {
+        'wiki': wiki,
         'root_category': category,
         'depth': depth,
         'excluded': sorted(exclude_set),
@@ -458,7 +566,7 @@ def get_category_articles(category: str, depth: int = 3, exclude: list[str] | No
     # Noisy-pull warning: large pull with no word-level overlap between the
     # category name and the topic name is a strong signal of scope drift
     # (e.g. topic="educational psychology", category="Cognition").
-    _, topic_name = _get_topic(ctx)
+    _, topic_name, _ = _get_topic(ctx)
     if added > 500 and topic_name:
         STOPWORDS = {"a", "an", "and", "of", "in", "on", "for", "to", "the", "by"}
         cat_words = {w for w in re.findall(r"\w+", category.lower()) if w not in STOPWORDS}
@@ -473,7 +581,7 @@ def get_category_articles(category: str, depth: int = 3, exclude: list[str] | No
                 f"found via a more on-topic source."
             )
 
-    log_usage(ctx, "get_category_articles", {"category": category, "depth": depth}, f"{len(articles)} articles, {len(visited_cats)} categories")
+    log_usage(ctx, "get_category_articles", {"category": category, "depth": depth, "wiki": wiki}, f"{len(articles)} articles, {len(visited_cats)} categories")
     return json.dumps(result, indent=2, ensure_ascii=False)
 
 
@@ -486,7 +594,7 @@ def harvest_list_page(title: str, topic: str | None = None, ctx: Context = None)
         title: Page title (e.g., "Index of climate change articles")
         topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
-    topic_id, err = _require_topic(ctx, topic)
+    topic_id, wiki, err = _require_topic(ctx, topic)
     if err:
         return err
 
@@ -502,7 +610,7 @@ def harvest_list_page(title: str, topic: str | None = None, ctx: Context = None)
 
     links = []
     while True:
-        data = api_get(WIKIPEDIA_API, params)
+        data = api_get(wiki_api_url(wiki), params)
         if 'query' in data and 'pages' in data['query']:
             for page in data['query']['pages']:
                 for link in page.get('links', []):
@@ -517,13 +625,14 @@ def harvest_list_page(title: str, topic: str | None = None, ctx: Context = None)
     added, updated = db.add_articles(topic_id, batch)
 
     return json.dumps({
+        'wiki': wiki,
         'source_page': title,
         'links_found': len(links),
         'new_articles_added': added,
         'source_label': source_label,
         'total_in_working_list': db.get_status(topic_id)['total_articles'],
         'note': f'To undo this harvest, use: remove_by_source("{source_label}")',
-    }, indent=2)
+    }, indent=2, ensure_ascii=False)
 
 
 @mcp.tool()
@@ -537,7 +646,7 @@ def search_articles(query: str, limit: int = 500,
         limit: Maximum results (default 500)
         topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
-    topic_id, err = _require_topic(ctx, topic)
+    topic_id, wiki, err = _require_topic(ctx, topic)
     if err:
         return err
 
@@ -551,7 +660,7 @@ def search_articles(query: str, limit: int = 500,
     }
 
     results = []
-    for item in api_query_all(params, 'search', max_items=limit):
+    for item in api_query_all(params, 'search', max_items=limit, wiki=wiki):
         results.append(item['title'])
 
     # Tag with the specific query so remove_by_source / get_articles_by_source
@@ -562,8 +671,9 @@ def search_articles(query: str, limit: int = 500,
     batch = [(title, source_label, None) for title in results]
     added, updated = db.add_articles(topic_id, batch)
 
-    log_usage(ctx, "search_articles", {"query": query}, f"{len(results)} results")
+    log_usage(ctx, "search_articles", {"query": query, "wiki": wiki}, f"{len(results)} results")
     return json.dumps({
+        'wiki': wiki,
         'query': query,
         'source_label': source_label,
         'results_found': len(results),
@@ -606,7 +716,7 @@ def preview_search(query: str, limit: int = 50,
         topic: Optional topic name. Pass if your client doesn't maintain an
                MCP session.
     """
-    topic_id, err = _require_topic(ctx, topic)
+    topic_id, wiki, err = _require_topic(ctx, topic)
     if err:
         return err
 
@@ -621,17 +731,18 @@ def preview_search(query: str, limit: int = 50,
     }
 
     titles = []
-    for item in api_query_all(params, 'search', max_items=limit):
+    for item in api_query_all(params, 'search', max_items=limit, wiki=wiki):
         titles.append(item['title'])
 
     if not titles:
         return json.dumps({
+            'wiki': wiki,
             'query': query,
             'results_found': 0,
             'results': [],
         }, indent=2, ensure_ascii=False)
 
-    descriptions = fetch_short_descriptions(titles)
+    descriptions = fetch_short_descriptions(titles, wiki=wiki)
     existing = db.get_all_titles(topic_id)
 
     results = []
@@ -646,9 +757,10 @@ def preview_search(query: str, limit: int = 50,
             'already_in_topic': in_topic,
         })
 
-    log_usage(ctx, "preview_search", {"query": query, "limit": limit},
+    log_usage(ctx, "preview_search", {"query": query, "limit": limit, "wiki": wiki},
               f"{len(titles)} results ({new_count} new)")
     return json.dumps({
+        'wiki': wiki,
         'query': query,
         'results_found': len(titles),
         'new_to_topic': new_count,
@@ -679,7 +791,7 @@ def fetch_descriptions(limit: int = 500,
         topic: Optional topic name. Pass if your client doesn't maintain an
                MCP session.
     """
-    topic_id, err = _require_topic(ctx, topic)
+    topic_id, wiki, err = _require_topic(ctx, topic)
     if err:
         return err
 
@@ -691,7 +803,7 @@ def fetch_descriptions(limit: int = 500,
             'note': 'All articles in this topic already have descriptions (or were checked).',
         }, indent=2, ensure_ascii=False)
 
-    desc_map = fetch_short_descriptions(titles)
+    desc_map = fetch_short_descriptions(titles, wiki=wiki)
     db.set_descriptions(topic_id, desc_map)
 
     non_empty = sum(1 for v in desc_map.values() if v)
@@ -724,7 +836,7 @@ def score_by_extract(titles: list[str] | None = None, unscored_batch: bool = Fal
         batch_size: How many articles to fetch (default 50, max 50)
         topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
-    topic_id, err = _require_topic(ctx, topic)
+    topic_id, wiki, err = _require_topic(ctx, topic)
     if err:
         return err
 
@@ -748,7 +860,7 @@ def score_by_extract(titles: list[str] | None = None, unscored_batch: bool = Fal
         'explaintext': 'true',
         'exsentences': '5',
     }
-    data = api_query(params)
+    data = api_query(params, wiki=wiki)
 
     extracts = {}
     if 'query' in data and 'pages' in data['query']:
@@ -784,7 +896,7 @@ def set_scores(scores: dict[str, int],
         scores: Dict mapping article title to score (e.g., {"Article Name": 8, "Other Article": 3})
         topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
-    topic_id, err = _require_topic(ctx, topic)
+    topic_id, wiki, err = _require_topic(ctx, topic)
     if err:
         return err
 
@@ -802,11 +914,11 @@ def auto_score_by_title(threshold: int = 7,
         threshold: Score to assign to keyword-matched articles (default 7)
         topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
-    topic_id, err = _require_topic(ctx, topic)
+    topic_id, wiki, err = _require_topic(ctx, topic)
     if err:
         return err
 
-    _, topic_name = _get_topic(ctx)
+    _, topic_name, _ = _get_topic(ctx)
     topic_phrase = topic_name.lower()
     all_articles = db.get_all_articles_dict(topic_id)
 
@@ -895,7 +1007,7 @@ def auto_score_by_description(
     Articles with NULL descriptions (not yet fetched) are skipped, not
     auto-zeroed — run fetch_descriptions first to include them.
     """
-    topic_id, err = _require_topic(ctx, topic)
+    topic_id, wiki, err = _require_topic(ctx, topic)
     if err:
         return err
 
@@ -1018,7 +1130,7 @@ def score_all_unscored(score: int = 8,
         score: Score to assign to all unscored articles (default 8)
         topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
-    topic_id, err = _require_topic(ctx, topic)
+    topic_id, wiki, err = _require_topic(ctx, topic)
     if err:
         return err
 
@@ -1045,7 +1157,7 @@ def browse_edges(seed_titles: list[str], min_links: int = 3,
         min_links: Minimum seed articles that must link to a candidate (default 3)
         topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
-    topic_id, err = _require_topic(ctx, topic)
+    topic_id, wiki, err = _require_topic(ctx, topic)
     if err:
         return err
 
@@ -1063,7 +1175,7 @@ def browse_edges(seed_titles: list[str], min_links: int = 3,
             'formatversion': '2',
         }
         while True:
-            data = api_get(WIKIPEDIA_API, params)
+            data = api_get(wiki_api_url(wiki), params)
             if 'query' in data and 'pages' in data['query']:
                 for page in data['query']['pages']:
                     for link in page.get('links', []):
@@ -1098,7 +1210,7 @@ def list_sources(topic: str | None = None, ctx: Context = None) -> str:
     Args:
         topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
-    topic_id, err = _require_topic(ctx, topic)
+    topic_id, wiki, err = _require_topic(ctx, topic)
     if err:
         return err
 
@@ -1132,7 +1244,7 @@ def add_articles(titles: list[str], source: str = "manual", score: int | None = 
         score: Optional relevance score to assign (1-10)
         topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
-    topic_id, err = _require_topic(ctx, topic)
+    topic_id, wiki, err = _require_topic(ctx, topic)
     if err:
         return err
 
@@ -1159,7 +1271,7 @@ def get_articles_by_source(source: str, exclude_sources: list[str] | None = None
         offset: Pagination offset
         topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
-    topic_id, err = _require_topic(ctx, topic)
+    topic_id, wiki, err = _require_topic(ctx, topic)
     if err:
         return err
 
@@ -1197,7 +1309,7 @@ def remove_articles(titles: list[str],
         titles: Article titles to remove
         topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
-    topic_id, err = _require_topic(ctx, topic)
+    topic_id, wiki, err = _require_topic(ctx, topic)
     if err:
         return err
 
@@ -1231,7 +1343,7 @@ def remove_by_source(source: str, keep_if_other_sources: bool = True,
         dry_run: If True (default), preview what would be removed without actually removing.
         topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
-    topic_id, err = _require_topic(ctx, topic)
+    topic_id, wiki, err = _require_topic(ctx, topic)
     if err:
         return err
 
@@ -1300,7 +1412,7 @@ def remove_by_pattern(pattern: str, below_score: int | None = None, source: str 
         dry_run: If True (default), just preview — don't actually remove
         topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
-    topic_id, err = _require_topic(ctx, topic)
+    topic_id, wiki, err = _require_topic(ctx, topic)
     if err:
         return err
 
@@ -1370,7 +1482,7 @@ def get_articles(min_score: int | None = None, max_score: int | None = None,
         offset: Skip this many articles (for pagination)
         topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
-    topic_id, err = _require_topic(ctx, topic)
+    topic_id, wiki, err = _require_topic(ctx, topic)
     if err:
         return err
 
@@ -1408,7 +1520,7 @@ def filter_articles(resolve_redirects: bool = True, remove_disambig: bool = True
         remove_lists: Remove "List of...", "Index of...", etc.
         topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
-    topic_id, err = _require_topic(ctx, topic)
+    topic_id, wiki, err = _require_topic(ctx, topic)
     if err:
         return err
 
@@ -1422,7 +1534,7 @@ def filter_articles(resolve_redirects: bool = True, remove_disambig: bool = True
         for i in range(0, len(titles), 50):
             batch = titles[i:i + 50]
             params = {'titles': '|'.join(batch), 'redirects': '1'}
-            data = api_query(params)
+            data = api_query(params, wiki=wiki)
             if 'query' in data:
                 for r in data['query'].get('redirects', []):
                     redirect_map[r['from']] = r['to']
@@ -1465,7 +1577,7 @@ def filter_articles(resolve_redirects: bool = True, remove_disambig: bool = True
         for i in range(0, len(titles), 50):
             batch = titles[i:i + 50]
             params = {'titles': '|'.join(batch), 'prop': 'pageprops', 'ppprop': 'disambiguation'}
-            data = api_query(params)
+            data = api_query(params, wiki=wiki)
             if 'query' in data and 'pages' in data['query']:
                 for page in data['query']['pages']:
                     if 'pageprops' in page and 'disambiguation' in page['pageprops']:
@@ -1509,11 +1621,11 @@ def export_csv(min_score: int = 0, scored_only: bool = False,
         scored_only: If True, only export articles that have been scored. Default False.
         topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
-    topic_id, err = _require_topic(ctx, topic)
+    topic_id, wiki, err = _require_topic(ctx, topic)
     if err:
         return err
 
-    _, topic_name = _get_topic(ctx)
+    _, topic_name, _ = _get_topic(ctx)
     all_articles = db.get_all_articles_dict(topic_id)
 
     titles = []
@@ -1542,7 +1654,7 @@ def export_csv(min_score: int = 0, scored_only: bool = False,
         else:
             descriptions[title] = stored
     if missing:
-        fetched = fetch_short_descriptions(missing)
+        fetched = fetch_short_descriptions(missing, wiki=wiki)
         db.set_descriptions(topic_id, fetched)
         descriptions.update(fetched)
 
@@ -1563,13 +1675,19 @@ def export_csv(min_score: int = 0, scored_only: bool = False,
 
     download_url = f"https://topic-builder.wikiedu.org/exports/{filename}"
 
-    log_usage(ctx, "export_csv", {"min_score": min_score}, f"{len(titles)} articles exported")
+    log_usage(ctx, "export_csv", {"min_score": min_score, "wiki": wiki}, f"{len(titles)} articles exported")
     return json.dumps({
+        'wiki': wiki,
         'article_count': len(titles),
         'min_score': min_score,
         'download_url': download_url,
         'filename': filename,
-        'note': 'Give the user the download link above. The CSV has two columns per row: article title and a Wikidata short description (empty if none). Impact Visualizer import reads the title column.',
+        'note': (
+            f'Give the user the download link above. The CSV has two columns '
+            f'per row: article title and a Wikidata short description (empty '
+            f'if none). Titles refer to articles on {wiki}.wikipedia.org — '
+            f'pass the same wiki to Impact Visualizer on import.'
+        ),
     }, indent=2, ensure_ascii=False)
 
 
@@ -1604,7 +1722,7 @@ def submit_feedback(summary: str, what_worked: str = "", what_didnt: str = "",
         topic: The topic name this feedback is about. Pass explicitly if your
                client doesn't maintain an MCP session.
     """
-    tid, name = _get_topic(ctx)
+    tid, name, _ = _get_topic(ctx)
     resolved_topic = topic or name or "(unknown)"
 
     client_id = None
@@ -1627,7 +1745,7 @@ def submit_feedback(summary: str, what_worked: str = "", what_didnt: str = "",
         try:
             lookup_id = tid
             if not lookup_id and topic:
-                lookup_id, _ = db.get_topic_by_name(topic)
+                lookup_id, _, _ = db.get_topic_by_name(topic)
             if lookup_id:
                 status = db.get_status(lookup_id)
                 entry["articles_count"] = status["total_articles"]
