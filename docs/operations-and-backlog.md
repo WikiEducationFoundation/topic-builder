@@ -116,6 +116,7 @@ Roughly prioritized. Items live here until they ship or get explicitly dropped.
 
 ### Recently shipped
 
+- **2026-04-22** — sticky rejection list (`[plan 1.22]`). New `rejections` table + tools: `reject_articles(titles, reason, also_remove=True)`, `list_rejections()`, `unreject_articles(titles)`. All gather tools (category, list_page, search, wikiproject, add_articles) filter out rejected titles before adding and report `rejected_skipped`. Topic-scoped, persists across sessions.
 - **2026-04-22** — `export_csv(enriched=True)` (`[plan 1.16]`). Default stays 2-column IV-compatible format. Enriched mode emits 5 columns + header: title, description, score, source_labels (pipe-separated), first_added_at. Filename gets `-enriched` suffix so both variants coexist.
 - **2026-04-22** — `describe_topic` diagnostic (`[plan 1.21]`). In-process shape-of-corpus overview: title-length distribution, top first words (spots dominant genera), suspicious-pattern counts, source-shape stats. No Wikipedia API calls. Levenshtein clustering skipped for now (no stdlib support).
 - **2026-04-22** — `resume_topic` feedback-less-gap nudge (`[plan 1.18]`). When resuming a topic >24h after the last tool call with no intervening submit_feedback and ≥5 prior anchor calls, response envelope gains `feedback_nudge` asking the AI to offer retrospective capture before continuing.

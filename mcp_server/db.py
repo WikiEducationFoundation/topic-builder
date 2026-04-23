@@ -40,6 +40,15 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS idx_articles_topic ON articles(topic_id);
         CREATE INDEX IF NOT EXISTS idx_articles_score ON articles(topic_id, score);
+        CREATE TABLE IF NOT EXISTS rejections (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            topic_id INTEGER NOT NULL REFERENCES topics(id) ON DELETE CASCADE,
+            title TEXT NOT NULL,
+            reason TEXT NOT NULL DEFAULT '',
+            rejected_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(topic_id, title)
+        );
+        CREATE INDEX IF NOT EXISTS idx_rejections_topic ON rejections(topic_id);
     """)
     # Migrate existing DBs that predate the description column. NULL means
     # "not fetched yet"; empty string means "fetched, no short-desc on Wikipedia".
@@ -272,6 +281,69 @@ def get_all_articles_dict(topic_id):
         }
         for r in rows
     }
+
+
+def add_rejections(topic_id, titles, reason=''):
+    """Persist titles into the rejections table. INSERT OR IGNORE on
+    (topic_id, title) — re-rejecting an already-rejected title doesn't
+    update the reason. Returns count of newly rejected titles."""
+    if not titles:
+        return 0
+    conn = _connect()
+    added = 0
+    for title in titles:
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO rejections (topic_id, title, reason) "
+            "VALUES (?, ?, ?)",
+            (topic_id, title, reason),
+        )
+        added += cur.rowcount
+    conn.commit()
+    conn.close()
+    return added
+
+
+def remove_rejections(topic_id, titles):
+    """Un-reject titles. Returns count removed."""
+    if not titles:
+        return 0
+    conn = _connect()
+    removed = 0
+    for i in range(0, len(titles), 500):
+        batch = titles[i:i + 500]
+        placeholders = ','.join('?' * len(batch))
+        cur = conn.execute(
+            f"DELETE FROM rejections WHERE topic_id = ? AND title IN ({placeholders})",
+            [topic_id] + list(batch),
+        )
+        removed += cur.rowcount
+    conn.commit()
+    conn.close()
+    return removed
+
+
+def list_rejections(topic_id):
+    """Return all rejections for a topic as a list of dicts."""
+    conn = _connect()
+    rows = conn.execute(
+        "SELECT title, reason, rejected_at FROM rejections WHERE topic_id = ? "
+        "ORDER BY rejected_at DESC",
+        (topic_id,),
+    ).fetchall()
+    conn.close()
+    return [{'title': r['title'], 'reason': r['reason'] or '',
+             'rejected_at': r['rejected_at']} for r in rows]
+
+
+def get_rejected_titles(topic_id):
+    """Return the set of rejected titles for a topic. Cheap enough to call
+    once per gather-tool invocation."""
+    conn = _connect()
+    rows = conn.execute(
+        "SELECT title FROM rejections WHERE topic_id = ?", (topic_id,)
+    ).fetchall()
+    conn.close()
+    return {r['title'] for r in rows}
 
 
 def get_status(topic_id):

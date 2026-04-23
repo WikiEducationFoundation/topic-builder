@@ -852,6 +852,10 @@ def get_wikiproject_articles(project_name: str, max_articles: int = 50000,
         title = normalize_title(title)
         articles.append(title)
 
+    rejected_set = db.get_rejected_titles(topic_id)
+    rejected_skipped = sum(1 for t in articles if t in rejected_set)
+    articles = [t for t in articles if t not in rejected_set]
+
     source_label = f"wikiproject:{project_name}"
     batch = [(title, source_label, None) for title in articles]
     added, updated = db.add_articles(topic_id, batch)
@@ -862,6 +866,7 @@ def get_wikiproject_articles(project_name: str, max_articles: int = 50000,
         'wiki': wiki,
         'project': project_name,
         'articles_found': len(articles),
+        'rejected_skipped': rejected_skipped,
         'new_articles_added': added,
         'existing_updated': updated,
         'source_label': source_label,
@@ -1025,6 +1030,10 @@ def get_category_articles(category: str, depth: int = 3, exclude: list[str] | No
     articles, visited_cats = _walk_category_tree(
         category, depth, exclude_set, max_articles, wiki)
 
+    rejected_set = db.get_rejected_titles(topic_id)
+    rejected_skipped = sum(1 for a in articles if a in rejected_set)
+    articles = {a for a in articles if a not in rejected_set}
+
     source_label = f"category:{category}"
     batch = [(title, source_label, None) for title in articles]
     added, updated = db.add_articles(topic_id, batch)
@@ -1035,6 +1044,7 @@ def get_category_articles(category: str, depth: int = 3, exclude: list[str] | No
         'depth': depth,
         'excluded': sorted(exclude_set),
         'articles_found': len(articles),
+        'rejected_skipped': rejected_skipped,
         'categories_visited': len(visited_cats),
         'new_articles_added': added,
         'source_label': source_label,
@@ -1321,6 +1331,10 @@ def harvest_list_page(title: str, main_content_only: bool = True,
 
     links, used_html = _fetch_list_page_links(title, wiki, main_content_only)
 
+    rejected_set = db.get_rejected_titles(topic_id)
+    rejected_skipped = sum(1 for t in links if t in rejected_set)
+    links = [t for t in links if t not in rejected_set]
+
     source_label = f"list_page:{title}"
     batch = [(t, source_label, None) for t in links]
     added, updated = db.add_articles(topic_id, batch)
@@ -1333,6 +1347,7 @@ def harvest_list_page(title: str, main_content_only: bool = True,
         'source_page': title,
         'main_content_only': used_html,
         'links_found': len(links),
+        'rejected_skipped': rejected_skipped,
         'new_articles_added': added,
         'source_label': source_label,
         'total_in_working_list': db.get_status(topic_id)['total_articles'],
@@ -1507,6 +1522,10 @@ def search_articles(query: str, limit: int = 500,
     for item in api_query_all(params, 'search', max_items=limit, wiki=wiki):
         results.append(item['title'])
 
+    rejected_set = db.get_rejected_titles(topic_id)
+    rejected_skipped = sum(1 for t in results if t in rejected_set)
+    results = [t for t in results if t not in rejected_set]
+
     # Tag with the specific query so remove_by_source / get_articles_by_source
     # can target one bad pull without blanket-touching all search-added
     # articles. Slugify the query so labels are ASCII / lowercase / hyphenated
@@ -1528,6 +1547,7 @@ def search_articles(query: str, limit: int = 500,
         'effective_query': scoped_query,
         'source_label': source_label,
         'results_found': len(results),
+        'rejected_skipped': rejected_skipped,
         'new_articles_added': added,
         'total_in_working_list': db.get_status(topic_id)['total_articles'],
         'note': f'To undo this pull, use: remove_by_source("{source_label}")',
@@ -2303,11 +2323,16 @@ def add_articles(titles: list[str], source: str = "manual", score: int | None = 
     if err:
         return err
 
-    batch = [(normalize_title(t), source, score) for t in titles]
+    normalized = [normalize_title(t) for t in titles]
+    rejected_set = db.get_rejected_titles(topic_id)
+    rejected_skipped = sum(1 for t in normalized if t in rejected_set)
+    keep = [t for t in normalized if t not in rejected_set]
+    batch = [(t, source, score) for t in keep]
     added, updated = db.add_articles(topic_id, batch)
     total = db.get_status(topic_id)['total_articles']
     log_usage(ctx, "add_articles",
-              {"source": source, "titles_count": len(titles), "score": score},
+              {"source": source, "titles_count": len(titles), "score": score,
+               "rejected_skipped": rejected_skipped},
               f"added {added}, updated {updated}", start_time=_start, note=note)
 
     # In-band nudge: if this is the second+ bare 'manual' call in this
@@ -2333,6 +2358,7 @@ def add_articles(titles: list[str], source: str = "manual", score: int | None = 
         'added': added,
         'updated': updated,
         'source': source,
+        'rejected_skipped': rejected_skipped,
         'total_in_working_list': total,
     }
     if hint:
@@ -2390,6 +2416,114 @@ def get_articles_by_source(source: str, exclude_sources: list[str] | None = None
         'showing': f"{offset + 1}-{offset + len(page)} of {total}",
         'total_matching': total,
         'note': 'Descriptions come from stored Wikidata short-descs. Call fetch_descriptions if they are blank and you want them populated.',
+    }, indent=2, ensure_ascii=False)
+
+
+@mcp.tool()
+def reject_articles(titles: list[str], reason: str = "",
+                    also_remove: bool = True, note: str = "",
+                    topic: str | None = None, ctx: Context = None) -> str:
+    """Add titles to this topic's sticky rejection list. Rejected titles
+    will be auto-skipped by future gather calls (`get_category_articles`,
+    `harvest_list_page`, `search_articles`, `get_wikiproject_articles`,
+    `add_articles`) so the same noise doesn't re-enter the topic on a
+    later pull. Rejections are topic-scoped — rejecting "Oakes Ames" in
+    topic `orchids` doesn't affect other topics.
+
+    By default also removes the titles from the working list in the same
+    call (they usually shouldn't stay in the list if you're rejecting
+    them). Set `also_remove=False` to reject without removing — useful
+    when the articles aren't in the list yet but you want to preempt
+    future pulls.
+
+    Args:
+        titles: Titles to reject.
+        reason: Optional free-text rationale, e.g. "wrong Oakes Ames —
+                politician, not the orchidologist". Stored alongside the
+                rejection for audit via `list_rejections`.
+        also_remove: If True (default), also call remove_articles on the
+                     same titles in the same tx.
+        note: Optional free-text observation for this call's log entry.
+              Use for mid-flow reflection; empty by default.
+        topic: Optional topic name. Pass if your client doesn't maintain
+               an MCP session.
+    """
+    _start = _start_call()
+    topic_id, _wiki, err = _require_topic(ctx, topic)
+    if err:
+        return err
+    titles = [normalize_title(t) for t in titles]
+    added = db.add_rejections(topic_id, titles, reason)
+    removed = 0
+    if also_remove and titles:
+        removed = db.remove_articles(topic_id, titles)
+    log_usage(ctx, "reject_articles",
+              {"titles_count": len(titles), "also_remove": also_remove,
+               "reason_given": bool(reason)},
+              f"rejected {added}, removed {removed}",
+              start_time=_start, note=note)
+    return json.dumps({
+        'rejected': added,
+        'removed_from_working_list': removed,
+        'reason': reason,
+        'note': (
+            'Future gather calls on this topic will auto-skip these titles. '
+            'Call list_rejections to review, unreject_articles to undo.'
+        ),
+    }, indent=2, ensure_ascii=False)
+
+
+@mcp.tool()
+def list_rejections(note: str = "", topic: str | None = None,
+                    ctx: Context = None) -> str:
+    """List this topic's sticky rejections (title, reason, rejected_at),
+    most recent first.
+
+    Args:
+        note: Optional free-text observation for this call's log entry.
+              Use for mid-flow reflection; empty by default.
+        topic: Optional topic name. Pass if your client doesn't maintain
+               an MCP session.
+    """
+    _start = _start_call()
+    topic_id, _wiki, err = _require_topic(ctx, topic)
+    if err:
+        return err
+    entries = db.list_rejections(topic_id)
+    log_usage(ctx, "list_rejections", {}, f"{len(entries)} rejections",
+              start_time=_start, note=note)
+    return json.dumps({
+        'total_rejections': len(entries),
+        'rejections': entries,
+    }, indent=2, ensure_ascii=False)
+
+
+@mcp.tool()
+def unreject_articles(titles: list[str], note: str = "",
+                      topic: str | None = None, ctx: Context = None) -> str:
+    """Remove titles from this topic's rejection list. Does NOT add them
+    back to the working list — call `add_articles` separately if you want
+    them back.
+
+    Args:
+        titles: Titles to un-reject.
+        note: Optional free-text observation for this call's log entry.
+              Use for mid-flow reflection; empty by default.
+        topic: Optional topic name. Pass if your client doesn't maintain
+               an MCP session.
+    """
+    _start = _start_call()
+    topic_id, _wiki, err = _require_topic(ctx, topic)
+    if err:
+        return err
+    titles = [normalize_title(t) for t in titles]
+    removed = db.remove_rejections(topic_id, titles)
+    log_usage(ctx, "unreject_articles", {"titles_count": len(titles)},
+              f"unrejected {removed}", start_time=_start, note=note)
+    return json.dumps({
+        'unrejected': removed,
+        'note': 'These titles are no longer blocked from future gathers. '
+                'Call add_articles to re-add them to the working list.',
     }, indent=2, ensure_ascii=False)
 
 

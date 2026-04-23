@@ -448,7 +448,10 @@ With `include_clusters=True`, compute near-duplicate clusters via Levenshtein (m
 
 ---
 
-### 1.22 ☐ Sticky rejection list `[NEW — medium]`
+### 1.22 ☑ Sticky rejection list `[NEW — medium]`
+
+**Shipped 2026-04-22.** DB: new `rejections(topic_id, title, reason, rejected_at)` table, topic-scoped, ON DELETE CASCADE. Three new tools: `reject_articles(titles, reason, also_remove=True)`, `list_rejections()`, `unreject_articles(titles)`. Gather integration: `get_category_articles`, `harvest_list_page`, `search_articles`, `get_wikiproject_articles`, and `add_articles` all consult `db.get_rejected_titles(topic_id)` before adding and return `rejected_skipped: N` in the response. `also_remove=True` default on `reject_articles` (matches plan's open-question recommendation). No `filter_articles` integration yet — kept minimal; revisit if it comes up.
+
 
 **What.** `reject_articles(titles: list, reason: str = "")` that persists rejected titles separately from the working list. Repeat-gather tools (`get_category_articles`, `harvest_list_page`, `search_articles`, `search_similar`) auto-skip rejected titles on future calls.
 
