@@ -371,9 +371,9 @@
             <p>You describe a topic; the AI runs the workflow and checks in with you along the way. Topics are saved automatically &mdash; you can leave a conversation and pick it back up later.</p>
             <div class="workflow">
                 <div class="workflow-step"><div class="num">1</div><div><strong>Scope</strong><span>Agree on how broadly to define the topic.</span></div></div>
-                <div class="workflow-step"><div class="num">2</div><div><strong>Reconnaissance</strong><span>Survey categories, WikiProjects, and index pages.</span></div></div>
-                <div class="workflow-step"><div class="num">3</div><div><strong>Gather</strong><span>Collect candidate articles from multiple strategies.</span></div></div>
-                <div class="workflow-step"><div class="num">4</div><div><strong>Review &amp; score</strong><span>The AI fetches short descriptions so you and it can judge relevance quickly.</span></div></div>
+                <div class="workflow-step"><div class="num">2</div><div><strong>Reconnaissance</strong><span>Survey categories, WikiProjects, index pages, and Wikidata classes.</span></div></div>
+                <div class="workflow-step"><div class="num">3</div><div><strong>Gather</strong><span>Collect candidate articles from multiple strategies, with preview variants for risky pulls.</span></div></div>
+                <div class="workflow-step"><div class="num">4</div><div><strong>Review &amp; score</strong><span>Fetch short descriptions; optionally score articles 1&ndash;10 for topic centrality (core vs periphery).</span></div></div>
                 <div class="workflow-step"><div class="num">5</div><div><strong>Edge browse</strong><span>Surface articles that structured strategies missed.</span></div></div>
                 <div class="workflow-step"><div class="num">6</div><div><strong>Export</strong><span>Download the final CSV for the Impact Visualizer.</span></div></div>
             </div>
@@ -522,43 +522,56 @@
             <h2>Available tools</h2>
             <p>The AI drives these directly &mdash; you don't need to call them by hand.</p>
             <div class="tools-grid">
-                <div class="tool"><span class="tool-name">start_topic</span><span class="tool-desc">Begin a new topic build; pass fresh=True to clear an existing topic.</span></div>
-                <div class="tool"><span class="tool-name">resume_topic</span><span class="tool-desc">Resume an existing topic by name.</span></div>
+                <div class="tool"><span class="tool-name">start_topic</span><span class="tool-desc">Begin a new topic build on a specific Wikipedia language edition; pass fresh=True to clear an existing topic.</span></div>
+                <div class="tool"><span class="tool-name">resume_topic</span><span class="tool-desc">Resume an existing topic by name; nudges for feedback after a long idle gap.</span></div>
                 <div class="tool"><span class="tool-name">list_topics</span><span class="tool-desc">List all saved topics with their article counts.</span></div>
                 <div class="tool"><span class="tool-name">reset_topic</span><span class="tool-desc">Clear the current topic's working list and start over.</span></div>
+                <div class="tool"><span class="tool-name">get_status</span><span class="tool-desc">Article count, score distribution, source breakdown, per-topic cost aggregate.</span></div>
+                <div class="tool"><span class="tool-name">describe_topic</span><span class="tool-desc">Shape-of-corpus overview: title lengths, top first-words, suspicious patterns, source-shape stats.</span></div>
                 <div class="tool"><span class="tool-name">survey_categories</span><span class="tool-desc">Survey Wikipedia's category tree without collecting yet.</span></div>
                 <div class="tool"><span class="tool-name">check_wikiproject</span><span class="tool-desc">Check whether a given WikiProject exists on Wikipedia.</span></div>
+                <div class="tool"><span class="tool-name">find_wikiprojects</span><span class="tool-desc">Discover enwiki WikiProjects by keyword &mdash; avoid giving up after one bad probe.</span></div>
                 <div class="tool"><span class="tool-name">find_list_pages</span><span class="tool-desc">Search for Index, List, Outline, and Glossary pages.</span></div>
+                <div class="tool"><span class="tool-name">wikidata_search_entity</span><span class="tool-desc">Label-search Wikidata for the QID of a concept &mdash; call this before other Wikidata tools.</span></div>
+                <div class="tool"><span class="tool-name">wikidata_entities_by_property</span><span class="tool-desc">Find entities whose Wikidata property points to a value; returns QID + label + sitelink title.</span></div>
+                <div class="tool"><span class="tool-name">wikidata_query</span><span class="tool-desc">Raw SPARQL against query.wikidata.org, for compound joins and multi-hop traversals.</span></div>
+                <div class="tool"><span class="tool-name">resolve_qids</span><span class="tool-desc">Lazy-backfill Wikidata QIDs onto articles in the working list; enables cross-wiki tooling.</span></div>
                 <div class="tool"><span class="tool-name">get_wikiproject_articles</span><span class="tool-desc">Fetch all articles tagged by a WikiProject.</span></div>
-                <div class="tool"><span class="tool-name">get_category_articles</span><span class="tool-desc">Crawl a category tree and collect articles.</span></div>
-                <div class="tool"><span class="tool-name">harvest_list_page</span><span class="tool-desc">Extract article links from an Index or List page.</span></div>
-                <div class="tool"><span class="tool-name">search_articles</span><span class="tool-desc">Search Wikipedia using CirrusSearch operators.</span></div>
-                <div class="tool"><span class="tool-name">search_similar</span><span class="tool-desc">Find articles similar to a given one &mdash; great for gaps.</span></div>
+                <div class="tool"><span class="tool-name">get_category_articles</span><span class="tool-desc">Crawl a category tree and collect articles, with cooperative time budget.</span></div>
+                <div class="tool"><span class="tool-name">preview_category_pull</span><span class="tool-desc">Dry-run of get_category_articles &mdash; counts + sample without committing.</span></div>
+                <div class="tool"><span class="tool-name">harvest_list_page</span><span class="tool-desc">Extract links from an Index or List page; default skips navboxes and references.</span></div>
+                <div class="tool"><span class="tool-name">preview_harvest_list_page</span><span class="tool-desc">Dry-run of harvest_list_page &mdash; inspect before committing.</span></div>
+                <div class="tool"><span class="tool-name">search_articles</span><span class="tool-desc">Search Wikipedia using CirrusSearch operators; supports within_category scoping.</span></div>
+                <div class="tool"><span class="tool-name">search_similar</span><span class="tool-desc">Find articles similar to a given one via morelike: &mdash; great for filling gaps.</span></div>
                 <div class="tool"><span class="tool-name">preview_search</span><span class="tool-desc">Run a search and return titles + descriptions without adding to the list.</span></div>
+                <div class="tool"><span class="tool-name">preview_similar</span><span class="tool-desc">Read-only morelike: preview &mdash; critical for noisy similarity seeds.</span></div>
                 <div class="tool"><span class="tool-name">browse_edges</span><span class="tool-desc">Follow outgoing links from confirmed articles.</span></div>
                 <div class="tool"><span class="tool-name">add_articles</span><span class="tool-desc">Manually add articles the AI identifies outside the gather tools.</span></div>
-                <div class="tool"><span class="tool-name">fetch_descriptions</span><span class="tool-desc">Pull one-line Wikidata short descriptions for articles in the working list.</span></div>
-                <div class="tool"><span class="tool-name">score_by_extract</span><span class="tool-desc">Fetch article introductions so the AI can score relevance.</span></div>
-                <div class="tool"><span class="tool-name">set_scores</span><span class="tool-desc">Save relevance scores (1&ndash;10) for articles.</span></div>
-                <div class="tool"><span class="tool-name">auto_score_by_title</span><span class="tool-desc">Quick title-match scoring pass for obvious cases.</span></div>
-                <div class="tool"><span class="tool-name">auto_score_by_description</span><span class="tool-desc">Auto-score obvious noise to 0 using description markers (labeled axes + disqualifying).</span></div>
-                <div class="tool"><span class="tool-name">score_all_unscored</span><span class="tool-desc">Mark everything remaining after pruning as scored.</span></div>
+                <div class="tool"><span class="tool-name">fetch_descriptions</span><span class="tool-desc">Pull Wikidata short descriptions, with REST-intro fallback for non-en wikis; auto-loops until done.</span></div>
+                <div class="tool"><span class="tool-name">score_by_extract</span><span class="tool-desc">Fetch article introductions so the AI can score centrality.</span></div>
+                <div class="tool"><span class="tool-name">set_scores</span><span class="tool-desc">Save centrality scores (1&ndash;10) for articles; 10 = canonical core, 1 = distant periphery.</span></div>
+                <div class="tool"><span class="tool-name">auto_score_by_keyword</span><span class="tool-desc">Bulk-score articles whose title or description contains any of the given keywords.</span></div>
+                <div class="tool"><span class="tool-name">auto_score_by_description</span><span class="tool-desc">Reject obvious noise via description markers (labeled axes + disqualifying), with dry-run preview.</span></div>
+                <div class="tool"><span class="tool-name">score_all_unscored</span><span class="tool-desc">Stamp remaining unscored articles at one centrality value. Use deliberately, not as a closing ceremony.</span></div>
                 <div class="tool"><span class="tool-name">list_sources</span><span class="tool-desc">Show every source label attached to articles, with counts.</span></div>
                 <div class="tool"><span class="tool-name">get_articles_by_source</span><span class="tool-desc">List articles from a source, optionally excluding overlap.</span></div>
+                <div class="tool"><span class="tool-name">get_articles</span><span class="tool-desc">List articles with filters: score, source, regex on title or description, source intersection.</span></div>
+                <div class="tool"><span class="tool-name">remove_articles</span><span class="tool-desc">Remove a specific list of articles by title.</span></div>
                 <div class="tool"><span class="tool-name">remove_by_source</span><span class="tool-desc">Undo a noisy pull by its source label, exact or prefix match.</span></div>
                 <div class="tool"><span class="tool-name">remove_by_pattern</span><span class="tool-desc">Bulk-remove articles by title or description pattern, with dry run.</span></div>
-                <div class="tool"><span class="tool-name">remove_articles</span><span class="tool-desc">Remove a specific list of articles by title.</span></div>
-                <div class="tool"><span class="tool-name">filter_articles</span><span class="tool-desc">Resolve redirects; drop disambiguation, list, and year-prefixed pages.</span></div>
-                <div class="tool"><span class="tool-name">get_status</span><span class="tool-desc">Article count, score distribution, source breakdown.</span></div>
-                <div class="tool"><span class="tool-name">get_articles</span><span class="tool-desc">List articles with filters (score, source, unscored).</span></div>
-                <div class="tool"><span class="tool-name">export_csv</span><span class="tool-desc">Export the final list as a CSV: title and short description per row.</span></div>
+                <div class="tool"><span class="tool-name">filter_articles</span><span class="tool-desc">Resolve redirects; drop disambiguation, list, and year-prefixed pages. Cooperative time budget.</span></div>
+                <div class="tool"><span class="tool-name">reject_articles</span><span class="tool-desc">Add titles to a sticky rejection list so future gathers won't re-introduce them.</span></div>
+                <div class="tool"><span class="tool-name">list_rejections</span><span class="tool-desc">List the topic's sticky rejections (title + reason + timestamp).</span></div>
+                <div class="tool"><span class="tool-name">unreject_articles</span><span class="tool-desc">Remove titles from the sticky rejection list.</span></div>
+                <div class="tool"><span class="tool-name">export_csv</span><span class="tool-desc">Export as CSV. Default = 2-column Impact-Visualizer-compatible; enriched=True = 6 columns incl. QID, score, sources.</span></div>
                 <div class="tool"><span class="tool-name">submit_feedback</span><span class="tool-desc">Submit a retrospective at the end of a session.</span></div>
             </div>
         </section>
 
         <section>
             <h2>Output format</h2>
-            <p>A plain CSV with two columns per row &mdash; article title and its Wikidata short description &mdash; ready to feed into the <a href="https://github.com/WikiEducationFoundation/impact-visualizer">Wiki Education Impact Visualizer</a>, which reads the title column.</p>
+            <p>By default, <code>export_csv</code> emits a plain two-column CSV &mdash; article title and its Wikidata short description &mdash; ready to feed into the <a href="https://github.com/WikiEducationFoundation/impact-visualizer">Wiki Education Impact Visualizer</a>, which reads the title column.</p>
+            <p>Pass <code>enriched=True</code> for a richer six-column variant with a header row: <code>title</code>, <code>wikidata_qid</code>, <code>description</code>, <code>score</code>, <code>source_labels</code> (pipe-separated), <code>first_added_at</code>. Useful for manual review, downstream tooling, or future Impact Visualizer filtering on topic centrality.</p>
         </section>
 
     </main>
