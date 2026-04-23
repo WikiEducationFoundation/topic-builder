@@ -724,7 +724,10 @@ Score 0 is deprecated (used to mean "off-topic noise" — conflated the two axes
 
 Consolidates backlog items #3 (Wikidata/SPARQL), #4 (PetScan), plus two new orchids-driven items. One substrate, four user-facing tools.
 
-### 5.1 ☐ `wikidata_query` / `wikidata_entities_by_property` `[backlog:#3]`
+### 5.1 ☑ `wikidata_query` / `wikidata_entities_by_property` `[backlog:#3]`
+
+**Shipped 2026-04-22.** Two tools (`wikidata_entities_by_property` helper, `wikidata_query` raw SPARQL) backed by a shared `wikidata_sparql()` wrapper in `wikipedia_api.py`. Reuses `api_get` so per-call counter + rate-limit backoff come for free. 1h in-memory TTL cache keyed by sha256(query). Response simplifies entity URIs to bare QIDs. **Checkpoint findings:** plumbing works cleanly (helper ~500ms/call, cache ~0ms); the hard part for the AI will be picking the right QID for a concept — my smoke tests picked wrong QIDs twice despite knowing what I was looking for. Flagged `wikidata_search_entity(name)` as a meaningful post-checkpoint quality-of-life add. Also flagged: bare-QID `label` fallback when Wikidata has no label in the requested language — minor polish, not shipping.
+
 
 **What.** SPARQL query tool + higher-level helper.
 
@@ -801,7 +804,10 @@ Six wikis, six different names, one QID underneath. Each wrong guess costs a rou
   - Evidence this matters: the second orchids session found that Guido Pabst and Hoehne (both major Brazilian orchidologists) returned zero via direct title search on ptwiki, likely because they're titled differently under Portuguese conventions. `resolve_article(qid)` would find them by QID regardless of title convention — unblocks cross-wiki bio discovery in general.
 - Dependency: needs Wikidata API access (same infra as 5.1). Ship under the Wikidata layer.
 
-### 5.6 ☐ Per-article Wikidata QID on the working list `[NEW — data-model change]`
+### 5.6 ☑ Per-article Wikidata QID on the working list `[NEW — data-model change]`
+
+**Shipped 2026-04-22.** DB migration adds nullable `wikidata_qid TEXT` column to `articles` (new-DB schema + `init_db` migration hook for existing DBs). New `resolve_qids(limit=2000, time_budget_s=60)` MCP tool — lazy backfill via pageprops (1 call per 50 titles), budgeted per Stage 3 pattern. **Did NOT resolve at `add_articles` time** per kickoff decision: keeps gather cost unchanged, explicit enrichment step. `export_csv(enriched=True)` gets a `wikidata_qid` column as the 2nd column (right after title). Empty-string QID means "resolved but Wikipedia has no QID for this title" (redirects, disambig); NULL means "not yet resolved." Existing topics start with NULL — call `resolve_qids` once per topic to populate.
+
 
 **What.** Every article in a topic's working list gains a `wikidata_qid` field, resolved at add-time.
 

@@ -22,7 +22,7 @@ from mcp.server.fastmcp import FastMCP, Context
 from wikipedia_api import (
     api_query, api_query_all, api_get, normalize_title, wiki_api_url,
     get_rate_limit_stats, fetch_short_descriptions,
-    fetch_descriptions_with_fallback,
+    fetch_descriptions_with_fallback, fetch_wikidata_qids,
     reset_call_counters, get_call_counters,
     wikidata_sparql as _wikidata_sparql,
     wikidata_entities_by_property as _wikidata_entities_by_property,
@@ -945,6 +945,81 @@ def wikidata_query(sparql: str, note: str = "",
     return json.dumps({
         'rows': rows,
         'total': len(rows),
+    }, indent=2, ensure_ascii=False)
+
+
+@mcp.tool()
+def resolve_qids(limit: int = 2000, time_budget_s: int = 60,
+                 note: str = "",
+                 topic: str | None = None, ctx: Context = None) -> str:
+    """Backfill Wikidata QIDs for articles in this topic that haven't
+    been resolved yet. Uses the pageprops API (1 call per 50 titles) —
+    cheap and idempotent: NULL `wikidata_qid` rows get populated, rows
+    already resolved are skipped.
+
+    Articles with no QID on Wikipedia (redirects, disambig pages,
+    brand-new articles) are marked resolved-but-empty so we don't
+    re-ask next time.
+
+    Once resolved, QIDs enable cross-wiki tooling (Stage 5's
+    cross_wiki_diff, completeness_check, resolve_category) and show up
+    in `export_csv(enriched=True)` output.
+
+    Auto-loops internally with a wall-clock budget; one call on a fresh
+    18K-article topic takes ~360 API calls / ~90 seconds. On budget
+    exhaustion returns partial progress + `remaining` count so you can
+    call again.
+
+    Args:
+        limit: Max titles to resolve per internal batch (default 2000).
+        time_budget_s: Wall-clock budget (default 60s).
+        note:  Optional free-text observation for this call's log entry.
+        topic: Optional topic name.
+    """
+    _start = _start_call()
+    topic_id, wiki, err = _require_topic(ctx, topic)
+    if err:
+        return err
+
+    deadline = time.monotonic() + max(1, time_budget_s)
+    total_resolved = 0
+    with_qid = 0
+    batches = 0
+    hit_budget = False
+
+    while True:
+        if time.monotonic() >= deadline:
+            hit_budget = True
+            break
+        titles = db.get_unresolved_qid_titles(topic_id, limit=limit)
+        if not titles:
+            break
+        qid_map = fetch_wikidata_qids(titles, wiki=wiki)
+        db.set_wikidata_qids(topic_id, qid_map)
+        total_resolved += len(titles)
+        with_qid += sum(1 for v in qid_map.values() if v)
+        batches += 1
+
+    remaining = db.count_unresolved_qids(topic_id)
+    log_usage(ctx, "resolve_qids",
+              {"limit": limit, "time_budget_s": time_budget_s, "wiki": wiki},
+              f"resolved {total_resolved} ({with_qid} with QID), "
+              f"{remaining} remaining"
+              f"{' (budget exhausted)' if hit_budget else ''}",
+              start_time=_start, note=note)
+    return json.dumps({
+        'resolved': total_resolved,
+        'with_qid': with_qid,
+        'without_qid': total_resolved - with_qid,
+        'remaining': remaining,
+        'batches_run': batches,
+        'time_budget_exhausted': hit_budget,
+        'note': (
+            'All articles in this topic now have their QID resolved '
+            '(or are marked as having none).' if remaining == 0 else
+            f'{remaining} articles still unresolved. Call resolve_qids '
+            f'again to continue.'
+        ),
     }, indent=2, ensure_ascii=False)
 
 
@@ -3412,13 +3487,14 @@ def export_csv(min_score: int = 0, scored_only: bool = False,
     with open(filepath, 'w', encoding='utf-8-sig', newline='') as f:
         writer = csv.writer(f)
         if enriched:
-            writer.writerow(['title', 'description', 'score', 'source_labels',
-                             'first_added_at'])
+            writer.writerow(['title', 'wikidata_qid', 'description', 'score',
+                             'source_labels', 'first_added_at'])
             for title in titles:
                 article = all_articles.get(title, {})
                 sources = article.get('sources') or []
                 writer.writerow([
                     title,
+                    article.get('wikidata_qid') or '',
                     descriptions.get(title, ''),
                     article.get('score') if article.get('score') is not None else '',
                     '|'.join(sources),
@@ -3435,8 +3511,10 @@ def export_csv(min_score: int = 0, scored_only: bool = False,
                "enriched": enriched, "wiki": wiki},
               f"{len(titles)} articles exported", start_time=_start, note=note)
     note_suffix = (
-        f'The CSV has five columns (title, description, score, source_labels, '
-        f'first_added_at) with a header row. source_labels is pipe-separated. '
+        f'The CSV has six columns (title, wikidata_qid, description, score, '
+        f'source_labels, first_added_at) with a header row. wikidata_qid is '
+        f'blank for unresolved articles — call resolve_qids to populate it. '
+        f'source_labels is pipe-separated. '
         f'For Impact Visualizer import use enriched=False (the two-column '
         f'default).' if enriched else
         f'The CSV has two columns per row: article title and a Wikidata short '

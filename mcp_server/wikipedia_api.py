@@ -347,6 +347,48 @@ def wikidata_entities_by_property(property_id: str, value_qid: str,
     return out
 
 
+def fetch_wikidata_qids(titles, wiki='en'):
+    """Resolve Wikipedia article titles to Wikidata QIDs via the
+    pageprops API (wikibase_item). Returns a dict mapping each input
+    title to its QID (or empty string when the page has no QID —
+    redirects, disambig pages, brand-new articles). Batched 50 titles
+    per call; follows title normalizations + redirects so the stored
+    working-list title matches even if it's a slight variant of the
+    canonical page title. Cheap: 1 api.php call per 50 titles."""
+    out = {t: '' for t in titles}
+    if not titles:
+        return out
+    for i in range(0, len(titles), 50):
+        batch = titles[i:i + 50]
+        data = api_query({
+            'titles': '|'.join(batch),
+            'prop': 'pageprops',
+            'ppprop': 'wikibase_item',
+            'redirects': '1',
+        }, wiki=wiki)
+        query = data.get('query', {}) if isinstance(data, dict) else {}
+        # Chain normalizations and redirects: original -> canonical title.
+        chain = {t: t for t in batch}
+        for item in query.get('normalized', []):
+            for k, v in list(chain.items()):
+                if v == item.get('from'):
+                    chain[k] = item.get('to')
+        for item in query.get('redirects', []):
+            for k, v in list(chain.items()):
+                if v == item.get('from'):
+                    chain[k] = item.get('to')
+        qids = {}
+        for page in query.get('pages', []):
+            title = page.get('title')
+            qid = (page.get('pageprops') or {}).get('wikibase_item', '')
+            if title:
+                qids[title] = qid
+        for orig, target in chain.items():
+            if target in qids:
+                out[orig] = qids[target]
+    return out
+
+
 # ── Wikipedia description helpers ─────────────────────────────────────────
 
 

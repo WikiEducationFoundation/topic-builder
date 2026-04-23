@@ -35,6 +35,7 @@ def init_db():
             score INTEGER,
             sources TEXT NOT NULL DEFAULT '[]',
             description TEXT,
+            wikidata_qid TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             UNIQUE(topic_id, title)
         );
@@ -55,6 +56,11 @@ def init_db():
     art_cols = [r[1] for r in conn.execute("PRAGMA table_info(articles)")]
     if 'description' not in art_cols:
         conn.execute("ALTER TABLE articles ADD COLUMN description TEXT")
+    # Migrate existing DBs that predate the wikidata_qid column. NULL means
+    # "not resolved yet"; empty string means "resolved, no QID on Wikipedia"
+    # (unusual — redirects, disambig pages, brand-new articles).
+    if 'wikidata_qid' not in art_cols:
+        conn.execute("ALTER TABLE articles ADD COLUMN wikidata_qid TEXT")
     # Migrate existing DBs that predate per-topic wiki selection. Pre-existing
     # topics were all built against English Wikipedia.
     topic_cols = [r[1] for r in conn.execute("PRAGMA table_info(topics)")]
@@ -263,11 +269,12 @@ def get_all_titles(topic_id):
 
 
 def get_all_articles_dict(topic_id):
-    """Get all articles as a dict of title -> {sources, score, description, created_at}.
-    description is '' when fetched-but-empty and None when not-yet-fetched."""
+    """Get all articles as a dict of title -> {sources, score, description,
+    wikidata_qid, created_at}. description is '' when fetched-but-empty and
+    None when not-yet-fetched; same convention for wikidata_qid."""
     conn = _connect()
     rows = conn.execute(
-        "SELECT title, score, sources, description, created_at "
+        "SELECT title, score, sources, description, wikidata_qid, created_at "
         "FROM articles WHERE topic_id = ?",
         (topic_id,),
     ).fetchall()
@@ -277,10 +284,57 @@ def get_all_articles_dict(topic_id):
             'score': r['score'],
             'sources': json.loads(r['sources']),
             'description': r['description'],
+            'wikidata_qid': r['wikidata_qid'],
             'created_at': r['created_at'],
         }
         for r in rows
     }
+
+
+def get_unresolved_qid_titles(topic_id, limit=500):
+    """Return titles in the working list that haven't been QID-resolved
+    yet (wikidata_qid IS NULL — distinct from empty-string which means
+    'resolved, no QID exists'). Cheap enough to call in a loop."""
+    conn = _connect()
+    rows = conn.execute(
+        "SELECT title FROM articles WHERE topic_id = ? "
+        "AND wikidata_qid IS NULL ORDER BY title LIMIT ?",
+        (topic_id, limit),
+    ).fetchall()
+    conn.close()
+    return [r['title'] for r in rows]
+
+
+def count_unresolved_qids(topic_id):
+    """Count articles still needing QID resolution."""
+    conn = _connect()
+    row = conn.execute(
+        "SELECT COUNT(*) as c FROM articles "
+        "WHERE topic_id = ? AND wikidata_qid IS NULL",
+        (topic_id,),
+    ).fetchone()
+    conn.close()
+    return row['c']
+
+
+def set_wikidata_qids(topic_id, qid_map):
+    """Store QIDs for a batch of titles. qid_map is {title: qid_or_empty}.
+    Empty-string means "resolved but this title has no QID" (redirect,
+    disambig, brand-new article). Returns count of rows updated."""
+    if not qid_map:
+        return 0
+    conn = _connect()
+    updated = 0
+    for title, qid in qid_map.items():
+        cur = conn.execute(
+            "UPDATE articles SET wikidata_qid = ? "
+            "WHERE topic_id = ? AND title = ?",
+            (qid, topic_id, title),
+        )
+        updated += cur.rowcount
+    conn.commit()
+    conn.close()
+    return updated
 
 
 def add_rejections(topic_id, titles, reason=''):
