@@ -2006,16 +2006,40 @@ def remove_by_pattern(pattern: str, below_score: int | None = None, source: str 
 
 @mcp.tool()
 def get_articles(min_score: int | None = None, max_score: int | None = None,
-                 source: str | None = None, unscored_only: bool = False,
+                 source: str | None = None,
+                 sources_all: list[str] | None = None,
+                 title_regex: str | None = None,
+                 description_regex: str | None = None,
+                 unscored_only: bool = False,
                  titles_only: bool = False,
                  limit: int = 100, offset: int = 0,
                  topic: str | None = None, ctx: Context = None) -> str:
-    """Get articles from the working list with optional filters.
+    """Get articles from the working list with optional filters. Each
+    returned article includes its `sources` list (the source labels it was
+    added under), so you can see at a glance which pulls contributed it —
+    useful for judging confidence during review.
 
     Args:
         min_score: Minimum score filter
         max_score: Maximum score filter
-        source: Filter by source (e.g., "wikiproject", "category", "search")
+        source: Filter to articles that have this source (union / OR
+                semantics when combined with sources_all). E.g.
+                "category:Plants", "list_page:List of orchids",
+                "search:incategory:Orchid genera".
+        sources_all: Filter to articles that have ALL of these sources
+                (intersection / AND semantics). Use for confidence
+                cuts like `sources_all=["category:Orchidaceae", "wikiproject:Orchids"]`
+                — the articles found by BOTH a category and a WikiProject
+                are the highest-confidence core of the topic. Combines
+                with `source`: the final filter is (has source OR no
+                source filter) AND (has every sources_all element).
+        title_regex: Filter to titles matching this case-insensitive regex
+                (Python re.search semantics). Example: `"^[A-Z][a-z]+ [a-z]+$"`
+                matches typical Latin binomials like "Bulbophyllum nutans"
+                while excluding multi-word English titles.
+        description_regex: Filter to Wikidata short descriptions matching
+                this case-insensitive regex. Articles with empty/NULL
+                descriptions never match. Run fetch_descriptions first.
         unscored_only: Only return articles without a score
         titles_only: If True, return just titles (saves tokens). Default False.
         limit: Max articles to return (default 100)
@@ -2026,10 +2050,20 @@ def get_articles(min_score: int | None = None, max_score: int | None = None,
     if err:
         return err
 
-    articles, total = db.get_articles(
-        topic_id, min_score=min_score, max_score=max_score,
-        source=source, unscored_only=unscored_only, limit=limit, offset=offset
-    )
+    try:
+        articles, total = db.get_articles(
+            topic_id, min_score=min_score, max_score=max_score,
+            source=source, sources_all=sources_all,
+            title_regex=title_regex, description_regex=description_regex,
+            unscored_only=unscored_only, limit=limit, offset=offset
+        )
+    except re.error as e:
+        return json.dumps({
+            'error': f'Invalid regex: {e}',
+            'hint': 'title_regex / description_regex use Python re syntax. '
+                    'Escape special characters with \\ and test against '
+                    'sample titles before running on the full topic.',
+        }, indent=2)
 
     if titles_only:
         return json.dumps({

@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import sqlite3
 
 DB_PATH = os.environ.get("DB_PATH", "/opt/topic-builder/data/topics.db")
@@ -179,8 +180,14 @@ def set_scores(topic_id, scores):
 
 
 def get_articles(topic_id, min_score=None, max_score=None, source=None,
+                 sources_all=None, title_regex=None, description_regex=None,
                  unscored_only=False, limit=200, offset=0):
-    """Get articles with filters. Returns (articles_list, total_matching)."""
+    """Get articles with filters. Returns (articles_list, total_matching).
+
+    Score / unscored filters are pushed to SQL; source / sources_all /
+    regex filters are applied in Python after loading because the sources
+    array is JSON and regex matching wants Python semantics anyway. Total
+    is accurate across all filters (we filter then paginate)."""
     conn = _connect()
     conditions = ["topic_id = ?"]
     params = [topic_id]
@@ -195,31 +202,37 @@ def get_articles(topic_id, min_score=None, max_score=None, source=None,
         params.append(max_score)
 
     where = " AND ".join(conditions)
-
-    total = conn.execute(f"SELECT COUNT(*) as c FROM articles WHERE {where}", params).fetchone()['c']
-
     rows = conn.execute(
-        f"SELECT title, score, sources, description FROM articles WHERE {where} ORDER BY title LIMIT ? OFFSET ?",
-        params + [limit, offset]
+        f"SELECT title, score, sources, description FROM articles WHERE {where} ORDER BY title",
+        params
     ).fetchall()
+    conn.close()
+
+    title_re = re.compile(title_regex, re.IGNORECASE) if title_regex else None
+    desc_re = re.compile(description_regex, re.IGNORECASE) if description_regex else None
+    sources_all_set = set(sources_all) if sources_all else None
 
     articles = []
     for r in rows:
-        a = {'title': r['title'], 'score': r['score'],
-             'sources': json.loads(r['sources']),
-             'description': r['description'] or ''}
-        if source and source not in a['sources']:
+        sources = json.loads(r['sources'])
+        description = r['description'] or ''
+        title = r['title']
+        if source and source not in sources:
             continue
-        articles.append(a)
+        if sources_all_set and not sources_all_set.issubset(sources):
+            continue
+        if title_re and not title_re.search(title):
+            continue
+        if desc_re and not desc_re.search(description):
+            continue
+        articles.append({
+            'title': title, 'score': r['score'],
+            'sources': sources, 'description': description,
+        })
 
-    conn.close()
-
-    # If filtering by source, total is approximate (source is in JSON, hard to filter in SQL)
-    if source:
-        all_rows = conn if False else articles  # already filtered above
-        total = len(articles)  # approximate for source filter
-
-    return articles, total
+    total = len(articles)
+    paged = articles[offset:offset + limit]
+    return paged, total
 
 
 def get_all_titles(topic_id):

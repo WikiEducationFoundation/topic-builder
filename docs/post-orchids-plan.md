@@ -100,7 +100,10 @@ Pairs with 2.6 (event-triggered reflection guidance) and 1.18 (auto-nudge on res
 
 ---
 
-### 1.5 ☐ `get_articles(title_regex=..., description_regex=...)` + source labels in output `[NEW]`
+### 1.5 ☑ `get_articles(title_regex=..., description_regex=...)` + source labels in output `[NEW]`
+
+**Shipped 2026-04-22 (grouped with 1.20).** Added `title_regex` and `description_regex` params with Python `re.search` semantics (case-insensitive). Invalid patterns return a structured error rather than 500. `sources` array was already in the get_articles response — left name unchanged for continuity. Filtering now happens entirely in Python so `total_matching` is accurate across all filters (the old code undercounted when `source` was set and paginated).
+
 
 **What.** Two new optional filter params on the existing `get_articles` tool, plus include each article's `source_labels` list in the output schema (currently returns title + description only).
 
@@ -354,7 +357,10 @@ Pairs with 2.6 (instructions-side guidance on *when* to call submit_feedback, co
 
 ---
 
-### 1.20 ☐ Source-intersection query on `get_articles` `[NEW]`
+### 1.20 ☑ Source-intersection query on `get_articles` `[NEW]`
+
+**Shipped 2026-04-22 (grouped with 1.5).** `sources_all: list[str] | None` param added. Uses AND semantics; composes with the existing `source` OR filter. Example: `sources_all=["category:Orchidaceae", "wikiproject:Orchids"]` returns the high-confidence core hit by both a category crawl and a WikiProject pull.
+
 
 **What.** New optional param `sources_all=[...]` on `get_articles`: return only articles that appear under *all* named sources (intersection, not union).
 
