@@ -116,6 +116,7 @@ Roughly prioritized. Items live here until they ship or get explicitly dropped.
 
 ### Recently shipped
 
+- **2026-04-22** — `describe_topic` diagnostic (`[plan 1.21]`). In-process shape-of-corpus overview: title-length distribution, top first words (spots dominant genera), suspicious-pattern counts, source-shape stats. No Wikipedia API calls. Levenshtein clustering skipped for now (no stdlib support).
 - **2026-04-22** — `resume_topic` feedback-less-gap nudge (`[plan 1.18]`). When resuming a topic >24h after the last tool call with no intervening submit_feedback and ≥5 prior anchor calls, response envelope gains `feedback_nudge` asking the AI to offer retrospective capture before continuing.
 - **2026-04-22** — per-topic cost summary in `get_status` (`[plan 1.12]`). Aggregates from usage.jsonl: lifetime API calls, timeouts, rate-limit hits, recent heavy-call tail. Read-from-log approach (no DB materialization). Degrades gracefully on pre-1.1 log entries without cost fields.
 - **2026-04-22** — post-hoc cost surface on heavy tools (`[plan 1.11]`). `get_category_articles`, `harvest_list_page`, `filter_articles` responses include `cost: {elapsed_ms, wikipedia_api_calls}` and a `cost_warning` when >2500 API calls OR >60s. Pivoted from plan's pre-flight-estimate shape — preview_* tools (1.4) already handle pre-flight.

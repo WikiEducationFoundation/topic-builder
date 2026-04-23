@@ -434,6 +434,111 @@ def get_status(topic: str | None = None, ctx: Context = None) -> str:
     return json.dumps(status, indent=2, default=str)
 
 
+@mcp.tool()
+def describe_topic(top_first_words_limit: int = 20,
+                   note: str = "",
+                   topic: str | None = None, ctx: Context = None) -> str:
+    """Shape-of-corpus overview for the current topic. Returns title
+    length distribution, most-common first words, count of articles
+    without descriptions, suspicious-pattern counts (year-prefixed,
+    all-caps, very-short titles), and source-shape stats (single-source
+    vs multi-source articles). Useful mid-flow to catch contamination
+    you'd otherwise only notice by paging `get_articles`.
+
+    Think of it as `DataFrame.describe()` for a topic. Everything runs
+    in-process against the current working list — no Wikipedia API
+    calls, sub-second even on 20K-article topics.
+
+    Args:
+        top_first_words_limit: How many entries to return in
+                               `top_first_words` (default 20). Useful
+                               for spotting dominant genera in a
+                               taxonomy topic.
+        note: Optional free-text observation for this call's log entry.
+              Use for mid-flow reflection; empty by default.
+        topic: Optional topic name. Pass if your client doesn't maintain
+               an MCP session.
+    """
+    _start = _start_call()
+    topic_id, _wiki, err = _require_topic(ctx, topic)
+    if err:
+        return err
+
+    all_articles = db.get_all_articles_dict(topic_id)
+    total = len(all_articles)
+
+    length_dist: dict[str, int] = collections.Counter()
+    first_words: collections.Counter[str] = collections.Counter()
+    no_desc = 0
+    year_or_date = 0
+    all_caps = 0
+    one_word = 0
+    very_short = 0
+    source_counts: collections.Counter[str] = collections.Counter()
+    single_source = 0
+    multi_source = 0
+
+    year_prefix = re.compile(r'^\d{4}\b')
+    for title, article in all_articles.items():
+        words = title.split()
+        if not words:
+            continue
+        nwords = len(words)
+        bucket = f'{nwords}_word' + ('' if nwords == 1 else 's')
+        length_dist[bucket] += 1
+        first_words[words[0]] += 1
+        if article.get('description') is None:
+            no_desc += 1
+        if year_prefix.match(title):
+            year_or_date += 1
+        # All-caps detection: multi-char alpha-only title that's all uppercase.
+        letters_only = ''.join(c for c in title if c.isalpha())
+        if len(letters_only) > 2 and letters_only == letters_only.upper():
+            all_caps += 1
+        if nwords == 1:
+            one_word += 1
+        if len(title) <= 3:
+            very_short += 1
+        sources = article.get('sources') or []
+        for s in sources:
+            source_counts[s] += 1
+        if len(sources) == 1:
+            single_source += 1
+        elif len(sources) > 1:
+            multi_source += 1
+
+    sorted_length_dist = dict(sorted(
+        length_dist.items(),
+        key=lambda kv: int(kv[0].split('_')[0])
+    ))
+
+    result = {
+        'topic': _get_topic(ctx)[1],
+        'total_articles': total,
+        'title_length_distribution': sorted_length_dist,
+        'top_first_words': [
+            {'word': w, 'count': c}
+            for w, c in first_words.most_common(top_first_words_limit)
+        ],
+        'articles_without_description': no_desc,
+        'suspicious_patterns': {
+            'year_or_date_titles': year_or_date,
+            'all_caps_titles': all_caps,
+            'one_word_titles': one_word,
+            'very_short_titles': very_short,
+        },
+        'source_shape': {
+            'total_sources': len(source_counts),
+            'articles_with_single_source': single_source,
+            'articles_with_multiple_sources': multi_source,
+        },
+    }
+    log_usage(ctx, "describe_topic",
+              {"top_first_words_limit": top_first_words_limit},
+              f"{total} articles", start_time=_start, note=note)
+    return json.dumps(result, indent=2, ensure_ascii=False)
+
+
 # ── Reconnaissance tools ──────────────────────────────────────────────────
 
 @mcp.tool()

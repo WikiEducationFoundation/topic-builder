@@ -408,7 +408,10 @@ Pairs with 2.6 (instructions-side guidance on *when* to call submit_feedback, co
 
 ---
 
-### 1.21 ☐ `describe_topic` diagnostic `[NEW — medium]`
+### 1.21 ☑ `describe_topic` diagnostic `[NEW — medium]`
+
+**Shipped 2026-04-22.** In-process aggregation over the working list (no Wikipedia API calls). Returns: `title_length_distribution` (1-word, 2-words, …), `top_first_words` (default top 20 — spots dominant genera in taxonomy topics), `articles_without_description`, `suspicious_patterns` (year-or-date, all-caps, one-word, very-short), and `source_shape` (distinct sources, single-vs-multi-source articles). Skipped the `include_clusters=True` Levenshtein path for now (stdlib has no Levenshtein; would need a small dep or hand-rolled implementation). If that use case shows up, add as follow-up.
+
 
 **What.** New tool that returns a shape-of-corpus overview of a topic. Summary statistics across titles, descriptions, and sources.
 
