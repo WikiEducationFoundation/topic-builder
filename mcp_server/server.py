@@ -438,6 +438,84 @@ def check_wikiproject(project_name: str, wiki: str | None = None,
 
 
 @mcp.tool()
+def find_wikiprojects(keywords: list[str], limit: int = 20,
+                      note: str = "",
+                      topic: str | None = None, ctx: Context = None) -> str:
+    """Discover enwiki WikiProjects whose names contain any of the given
+    keywords. Use this BEFORE `check_wikiproject` when you're not sure of
+    the exact project name — avoids the "I tried WikiProject Plants, it
+    was too broad, so I skipped WikiProjects" failure mode (observed in
+    orchids, which has a dedicated WikiProject Orchids).
+
+    Enwiki-only by design. WikiProjects are a Wikipedia-English convention
+    and rarely exist on other wikis — on non-en topics, skip this tool
+    entirely and rely on categories + search_articles.
+
+    Args:
+        keywords: List of keyword strings. For each, the tool prefix-
+                  searches the Wikipedia: namespace for "WikiProject <kw>"
+                  (e.g. ["Orchid", "Plants", "Botany"] → finds WikiProject
+                  Orchids, WikiProject Plants, WikiProject Botany).
+        limit: Max results per keyword (default 20, hard-capped at 50).
+        note: Optional free-text observation for this call's log entry.
+              Use for mid-flow reflection; empty by default.
+        topic: Optional topic name (used only to log context; the tool
+               always queries enwiki regardless of the topic's wiki).
+    """
+    _start = _start_call()
+    if not keywords:
+        return json.dumps({
+            'error': 'Pass at least one keyword. Try broad terms from the '
+                     'topic name plus domain-specific guesses.',
+        })
+    limit = min(limit, 50)
+
+    found: dict[str, set[str]] = {}
+    for kw in keywords:
+        params = {
+            'list': 'prefixsearch',
+            'pssearch': f'WikiProject {kw}',
+            'psnamespace': '4',  # Wikipedia: namespace
+            'pslimit': str(limit),
+        }
+        data = api_query(params, wiki='en')
+        for item in data.get('query', {}).get('prefixsearch', []):
+            title = item.get('title', '')
+            if title.startswith('Wikipedia:WikiProject '):
+                proj_name = title[len('Wikipedia:WikiProject '):]
+                # Skip task-force / subpage noise — project subpages have
+                # slashes in their titles (e.g. "WikiProject Orchids/Tasks").
+                if '/' in proj_name:
+                    continue
+                found.setdefault(proj_name, set()).add(kw)
+
+    projects = [
+        {
+            'project': name,
+            'matched_keywords': sorted(kws),
+            'template': f'Template:WikiProject {name}',
+        }
+        for name, kws in sorted(found.items())
+    ]
+
+    log_usage(ctx, "find_wikiprojects", {"keywords": keywords, "limit": limit},
+              f"{len(projects)} projects", start_time=_start, note=note)
+    return json.dumps({
+        'wiki': 'en',
+        'keywords': keywords,
+        'found': len(projects),
+        'projects': projects,
+        'note': (
+            'Call check_wikiproject(<project>) to confirm the template '
+            'exists, or get_wikiproject_articles(<project>) to pull every '
+            'tagged article. If this returned nothing, broaden the '
+            'keywords — include domain synonyms and adjacent concepts '
+            '(e.g. for "orchids" try also "Plants", "Botany", "Gardening").'
+        ),
+    }, indent=2, ensure_ascii=False)
+
+
+@mcp.tool()
 def find_list_pages(subject: str, wiki: str | None = None,
                     note: str = "",
                     topic: str | None = None, ctx: Context = None) -> str:

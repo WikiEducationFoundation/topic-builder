@@ -161,7 +161,10 @@ The AI's Q5 answer named this "the single biggest gap." Also Q&A-round request: 
 
 ---
 
-### 1.9 ☐ `check_wikiproject` discovery `[NEW]`
+### 1.9 ☑ `check_wikiproject` discovery `[NEW]`
+
+**Shipped 2026-04-22.** Part (b) — hard warning on non-en — was already in place; verified. Part (a) added via new `find_wikiprojects(keywords, limit=20)` tool. Uses MediaWiki `list=prefixsearch` on the Wikipedia: namespace to enumerate projects whose names start with "WikiProject <keyword>". Skips task-force / subpage noise by dropping titles containing "/". Hard-enwiki (ignores topic wiki) — returns empty for non-en keywords, matching the "WikiProjects are enwiki-only" reality. Docstring points back to `check_wikiproject` + `get_wikiproject_articles` for the next step.
+
 
 **What.** (a) Better discovery of en WikiProjects via fuzzy-match or a new `find_wikiprojects(topic_keywords)` that enumerates candidates. (b) A hard warning when `check_wikiproject` is called against a non-en wiki — WikiProjects are an enwiki convention.
 
