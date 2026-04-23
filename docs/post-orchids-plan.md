@@ -14,7 +14,10 @@ This is a working doc. Sage will step through items in order, decide go/no-go/re
 
 Small code changes, orchids-evidenced, each independently shippable. Target: one deploy per item or small group.
 
-### 1.1 ☐ Observability backfill: missing logs + per-call cost fields `[backlog:flagged 2026-04-17 + NEW]`
+### 1.1 ☑ Observability backfill: missing logs + per-call cost fields `[backlog:flagged 2026-04-17 + NEW]`
+
+**Shipped 2026-04-22.** All three parts landed in one commit: log coverage on 16 previously-unlogged tools; `ContextVar`-based per-call counters (`wikipedia_api_calls`, `rate_limit_hits_this_call`) hooked into `wikipedia_api.api_get`; `elapsed_ms` + `timed_out` fields on every log entry; `note: str = ""` parameter on all 27 `@mcp.tool` functions that log. Pre-flight confirmed backoff is real (linear, 3 attempts, honors `Retry-After`); flagged a maxlag-200 detection gap for later follow-up. Existing log entries not backfilled (plan decision — reader tolerates both shapes).
+
 
 **What (part A — coverage).** Add `log_usage` to the ~16 tools that don't have it: `harvest_list_page`, `add_articles`, `remove_articles`, `remove_by_source`, `remove_by_pattern`, `filter_articles`, `score_all_unscored`, `auto_score_by_title`, `set_scores`, `score_by_extract`, `search_similar`, `browse_edges`, `check_wikiproject`, `find_list_pages`, `list_sources`, `get_articles_by_source`.
 

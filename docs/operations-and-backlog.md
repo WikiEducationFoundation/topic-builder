@@ -116,6 +116,7 @@ Roughly prioritized. Items live here until they ship or get explicitly dropped.
 
 ### Recently shipped
 
+- **2026-04-22** — observability backfill (`[plan 1.1]`). `log_usage` now fires on all 27 `@mcp.tool` entry points (previously 11 of 27); every entry carries `elapsed_ms`, `wikipedia_api_calls` (per-call, via ContextVar counter in `wikipedia_api.py`), `rate_limit_hits_this_call`, and `timed_out`. All logging tools gained an optional `note: str = ""` parameter — zero-ceremony way for the AI to attach a mid-flow observation to the log entry. Pre-flight confirmed existing rate-limit backoff is real (linear retry on 429 + Retry-After honoring), not just counter-only.
 - **2026-04-21** — multi-wiki support. `start_topic` takes a `wiki`
   parameter (default `"en"`); the value is persisted on the topic row
   and threaded through every Wikipedia API call. Reconnaissance tools

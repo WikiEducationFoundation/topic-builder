@@ -6,6 +6,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from contextvars import ContextVar
 
 WIKIPEDIA_API = "https://en.wikipedia.org/w/api.php"  # default / enwiki shortcut
 PETSCAN_URL = "https://petscan.wmcloud.org/"
@@ -21,11 +22,32 @@ def wiki_api_url(wiki='en'):
 
 _last_request_time = 0
 
-# Rate limit tracking
+# Rate limit tracking (process-cumulative)
 _rate_limit_hits = 0
 _last_rate_limit_time = None
 
+# Per-call counters. A tool resets these at entry, and log_usage reads them
+# at exit to attribute cost (api_calls + rate-limit events) to that specific
+# tool invocation. ContextVars are propagated through async call chains by
+# default, so concurrent MCP sessions don't clobber each other.
+_call_api_calls: ContextVar[int] = ContextVar('_call_api_calls', default=0)
+_call_rate_limit_hits: ContextVar[int] = ContextVar('_call_rate_limit_hits', default=0)
+
 logger = logging.getLogger("wikipedia_api")
+
+
+def reset_call_counters():
+    """Zero out per-call counters. Call at the start of each tool invocation."""
+    _call_api_calls.set(0)
+    _call_rate_limit_hits.set(0)
+
+
+def get_call_counters() -> dict:
+    """Read per-call counters. Call at the end of a tool invocation."""
+    return {
+        'wikipedia_api_calls': _call_api_calls.get(),
+        'rate_limit_hits_this_call': _call_rate_limit_hits.get(),
+    }
 
 
 def get_rate_limit_stats():
@@ -54,11 +76,13 @@ def api_get(url, params=None, timeout=30):
     for attempt in range(3):
         try:
             _last_request_time = time.time()
+            _call_api_calls.set(_call_api_calls.get() + 1)
             with urllib.request.urlopen(req, timeout=timeout) as response:
                 # Check for rate limit warning headers
                 retry_after = response.headers.get('Retry-After')
                 if retry_after:
                     _rate_limit_hits += 1
+                    _call_rate_limit_hits.set(_call_rate_limit_hits.get() + 1)
                     _last_rate_limit_time = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
                     wait = int(retry_after)
                     logger.warning(f"Rate limited (Retry-After: {wait}s). Total hits: {_rate_limit_hits}")
@@ -68,6 +92,7 @@ def api_get(url, params=None, timeout=30):
         except urllib.error.HTTPError as e:
             if e.code == 429:
                 _rate_limit_hits += 1
+                _call_rate_limit_hits.set(_call_rate_limit_hits.get() + 1)
                 _last_rate_limit_time = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
                 retry_after = e.headers.get('Retry-After', (attempt + 1) * 5)
                 wait = int(retry_after)

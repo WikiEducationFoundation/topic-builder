@@ -12,12 +12,14 @@ import logging
 import os
 import re
 import threading
+import time
 from pathlib import Path
 from mcp.server.fastmcp import FastMCP, Context
 
 from wikipedia_api import (
     api_query, api_query_all, api_get, normalize_title, wiki_api_url,
     get_rate_limit_stats, fetch_short_descriptions,
+    reset_call_counters, get_call_counters,
 )
 import db
 
@@ -53,7 +55,24 @@ def _set_topic(ctx: Context, topic_id: int, name: str, wiki: str = "en") -> None
         _session_topics[_session_key(ctx)] = (topic_id, name, wiki)
 
 
-def log_usage(ctx: Context, tool_name: str, params: dict | None = None, result_summary: str = ""):
+def _start_call() -> float:
+    """Mark the start of a tool invocation: zero per-call counters, return a
+    monotonic timestamp. Every tool that calls log_usage should call this at
+    entry; log_usage reads the counters + diffs the timestamp to record
+    elapsed_ms, wikipedia_api_calls, and rate_limit_hits_this_call."""
+    reset_call_counters()
+    return time.perf_counter()
+
+
+def log_usage(ctx: Context, tool_name: str, params: dict | None = None,
+              result_summary: str = "", start_time: float | None = None,
+              timed_out: bool = False, note: str = ""):
+    """Append a usage log entry. Pass start_time from _start_call() at tool
+    entry to attach elapsed_ms + per-call cost fields (wikipedia_api_calls,
+    rate_limit_hits_this_call). timed_out is a contract for future tools that
+    return partial results on a cooperative budget (Stage 3); current tools
+    pass False. note is an optional AI-provided observation captured at the
+    moment of the call."""
     topic_id, topic_name, wiki = _get_topic(ctx)
     entry = {
         "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
@@ -69,6 +88,14 @@ def log_usage(ctx: Context, tool_name: str, params: dict | None = None, result_s
                           if not isinstance(v, (list, dict)) or len(str(v)) < 200}
     if result_summary:
         entry["result"] = result_summary
+    if start_time is not None:
+        entry["elapsed_ms"] = int((time.perf_counter() - start_time) * 1000)
+    counters = get_call_counters()
+    entry["wikipedia_api_calls"] = counters['wikipedia_api_calls']
+    entry["rate_limit_hits_this_call"] = counters['rate_limit_hits_this_call']
+    entry["timed_out"] = timed_out
+    if note:
+        entry["note"] = note
     usage_logger.info(json.dumps(entry, ensure_ascii=False))
 
 
@@ -140,7 +167,8 @@ def _resolve_wiki(ctx: Context, wiki: str | None = None, topic_name: str | None 
 # ── Topic management ───────────────────────────────────────────────────────
 
 @mcp.tool()
-def start_topic(name: str, wiki: str = "en", fresh: bool = False, ctx: Context = None) -> str:
+def start_topic(name: str, wiki: str = "en", fresh: bool = False,
+                note: str = "", ctx: Context = None) -> str:
     """Start a new topic build or resume an existing one with the same name.
     Topics are persisted — if a topic with this name already exists, it will
     be resumed with all its articles intact UNLESS you pass fresh=True.
@@ -159,12 +187,19 @@ def start_topic(name: str, wiki: str = "en", fresh: bool = False, ctx: Context =
         fresh: If True and the topic already exists, wipe all its articles
                before starting. Use this when the user asks to "start over"
                or "start fresh" on an existing topic. Defaults to False.
+        note: Optional free-text observation to attach to this call's log
+              entry. Use for zero-ceremony mid-flow reflection: surprise,
+              friction, unexpected cost, unusual seed — the stuff worth
+              remembering later. Empty by default; leave blank unless you
+              have something specific to capture.
     """
+    _start = _start_call()
     topic_id, is_new, article_count, canonical_wiki = db.create_or_get_topic(name, wiki=wiki)
     _set_topic(ctx, topic_id, name, canonical_wiki)
 
     if is_new:
-        log_usage(ctx, "start_topic", {"name": name, "wiki": canonical_wiki, "is_new": True})
+        log_usage(ctx, "start_topic", {"name": name, "wiki": canonical_wiki, "is_new": True},
+                  start_time=_start, note=note)
         return (f"Started new topic build: '{name}' on {canonical_wiki}.wikipedia.org. "
                 f"Working list is empty.")
 
@@ -179,12 +214,13 @@ def start_topic(name: str, wiki: str = "en", fresh: bool = False, ctx: Context =
     if fresh:
         db.replace_all_articles(topic_id, {})
         log_usage(ctx, "start_topic", {"name": name, "wiki": canonical_wiki, "fresh": True},
-                  f"cleared {article_count} articles")
+                  f"cleared {article_count} articles", start_time=_start, note=note)
         return (f"Resumed existing topic '{name}' on {canonical_wiki}.wikipedia.org and "
                 f"cleared its {article_count} previous articles (fresh=True). Working "
                 f"list is now empty.{wiki_mismatch_note}")
 
-    log_usage(ctx, "start_topic", {"name": name, "wiki": canonical_wiki, "is_new": False})
+    log_usage(ctx, "start_topic", {"name": name, "wiki": canonical_wiki, "is_new": False},
+              start_time=_start, note=note)
     return (f"Resumed existing topic: '{name}' on {canonical_wiki}.wikipedia.org. Working "
             f"list has {article_count} articles. If you want to start over with a "
             f"fresh empty list instead, call reset_topic now (or re-call start_topic "
@@ -192,16 +228,19 @@ def start_topic(name: str, wiki: str = "en", fresh: bool = False, ctx: Context =
 
 
 @mcp.tool()
-def reset_topic(topic: str | None = None, ctx: Context = None) -> str:
+def reset_topic(note: str = "", topic: str | None = None, ctx: Context = None) -> str:
     """Clear all articles from the current topic and start over.
     The topic itself is kept (so the name is preserved), but all articles,
     scores, and sources are wiped.
 
     Args:
+        note: Optional free-text observation for this call's log entry.
+              Use for mid-flow reflection; empty by default.
         topic: Optional topic name. Pass if your client doesn't maintain
                an MCP session (e.g. ChatGPT); otherwise uses the session's
                current topic.
     """
+    _start = _start_call()
     topic_id, _wiki, err = _require_topic(ctx, topic)
     if err:
         return err
@@ -210,7 +249,8 @@ def reset_topic(topic: str | None = None, ctx: Context = None) -> str:
     all_articles = db.get_all_articles_dict(topic_id)
     count = len(all_articles)
     db.replace_all_articles(topic_id, {})
-    log_usage(ctx, "reset_topic", {}, f"cleared {count} articles")
+    log_usage(ctx, "reset_topic", {}, f"cleared {count} articles",
+              start_time=_start, note=note)
     return f"Reset topic '{topic_name}'. Removed all {count} articles. Working list is now empty."
 
 
@@ -255,8 +295,8 @@ def get_status(topic: str | None = None, ctx: Context = None) -> str:
 
 @mcp.tool()
 def survey_categories(category: str, depth: int = 2, count_articles: bool = False,
-                      wiki: str | None = None, topic: str | None = None,
-                      ctx: Context = None) -> str:
+                      wiki: str | None = None, note: str = "",
+                      topic: str | None = None, ctx: Context = None) -> str:
     """Survey the subcategory tree of a Wikipedia category WITHOUT collecting articles.
     Use this first to understand how Wikipedia organizes a topic before committing to a pull.
 
@@ -268,8 +308,11 @@ def survey_categories(category: str, depth: int = 2, count_articles: bool = Fals
         count_articles: If True, also count total articles across all categories (slower but helps gauge size before pulling)
         wiki: Wikipedia language code to query. Defaults to the active topic's
               wiki, or "en" if no topic is active.
+        note: Optional free-text observation for this call's log entry.
+              Use for mid-flow reflection; empty by default.
         topic: Optional topic name to infer the wiki from.
     """
+    _start = _start_call()
     depth = min(depth, 4)
     wiki = _resolve_wiki(ctx, wiki, topic)
     visited = set()
@@ -333,12 +376,14 @@ def survey_categories(category: str, depth: int = 2, count_articles: bool = Fals
             f"{wiki}.wikipedia.org, or check that you're on the intended wiki."
         )
 
-    log_usage(ctx, "survey_categories", {"category": category, "depth": depth, "wiki": wiki}, f"{len(visited)} categories")
+    log_usage(ctx, "survey_categories", {"category": category, "depth": depth, "wiki": wiki},
+              f"{len(visited)} categories", start_time=_start, note=note)
     return json.dumps(result, indent=2, ensure_ascii=False)
 
 
 @mcp.tool()
 def check_wikiproject(project_name: str, wiki: str | None = None,
+                      note: str = "",
                       topic: str | None = None, ctx: Context = None) -> str:
     """Check whether a given WikiProject exists on Wikipedia. WikiProjects
     tag articles with assessment banners — if one exists for the topic, it's
@@ -357,8 +402,11 @@ def check_wikiproject(project_name: str, wiki: str | None = None,
             "Science". Guess likely names and probe.
         wiki: Wikipedia language code to query. Defaults to the active topic's
               wiki, or "en" if no topic is active.
+        note: Optional free-text observation for this call's log entry.
+              Use for mid-flow reflection; empty by default.
         topic: Optional topic name to infer the wiki from.
     """
+    _start = _start_call()
     wiki = _resolve_wiki(ctx, wiki, topic)
     template_title = f"Template:WikiProject {project_name}"
     params = {'titles': template_title, 'prop': 'info'}
@@ -382,11 +430,14 @@ def check_wikiproject(project_name: str, wiki: str | None = None,
             f"{wiki}.wikipedia.org. This check is likely uninformative — "
             f"rely on categories and search instead."
         )
+    log_usage(ctx, "check_wikiproject", {"project": project_name, "wiki": wiki},
+              f"exists={exists}", start_time=_start, note=note)
     return json.dumps(result)
 
 
 @mcp.tool()
 def find_list_pages(subject: str, wiki: str | None = None,
+                    note: str = "",
                     topic: str | None = None, ctx: Context = None) -> str:
     """Search for Index/List/Outline/Glossary pages about a subject.
 
@@ -401,8 +452,11 @@ def find_list_pages(subject: str, wiki: str | None = None,
         subject: Subject to search for (free text, e.g. "climate change")
         wiki: Wikipedia language code to query. Defaults to the active topic's
               wiki, or "en" if no topic is active.
+        note: Optional free-text observation for this call's log entry.
+              Use for mid-flow reflection; empty by default.
         topic: Optional topic name to infer the wiki from.
     """
+    _start = _start_call()
     wiki = _resolve_wiki(ctx, wiki, topic)
     pages = []
     for prefix in ['Index of', 'List of', 'Outline of', 'Glossary of']:
@@ -429,6 +483,8 @@ def find_list_pages(subject: str, wiki: str | None = None,
             f"('Index of', 'List of', …) are English-specific. Try "
             f"search_articles with the list-page prefix native to this wiki."
         )
+    log_usage(ctx, "find_list_pages", {"subject": subject, "wiki": wiki},
+              f"{len(pages)} pages", start_time=_start, note=note)
     return json.dumps(result, indent=2, ensure_ascii=False)
 
 
@@ -436,6 +492,7 @@ def find_list_pages(subject: str, wiki: str | None = None,
 
 @mcp.tool()
 def get_wikiproject_articles(project_name: str, max_articles: int = 50000,
+                              note: str = "",
                               topic: str | None = None, ctx: Context = None) -> str:
     """Get all articles tagged by a WikiProject. Adds them to the working list
     with source 'wikiproject'. WikiProjects are an enwiki convention — this
@@ -444,8 +501,11 @@ def get_wikiproject_articles(project_name: str, max_articles: int = 50000,
     Args:
         project_name: WikiProject name (e.g., "Climate change")
         max_articles: Maximum articles to fetch (default 50000)
+        note: Optional free-text observation for this call's log entry.
+              Use for mid-flow reflection; empty by default.
         topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
+    _start = _start_call()
     topic_id, wiki, err = _require_topic(ctx, topic)
     if err:
         return err
@@ -470,7 +530,8 @@ def get_wikiproject_articles(project_name: str, max_articles: int = 50000,
     batch = [(title, source_label, None) for title in articles]
     added, updated = db.add_articles(topic_id, batch)
 
-    log_usage(ctx, "get_wikiproject_articles", {"project": project_name, "wiki": wiki}, f"{len(articles)} articles")
+    log_usage(ctx, "get_wikiproject_articles", {"project": project_name, "wiki": wiki},
+              f"{len(articles)} articles", start_time=_start, note=note)
     result = {
         'wiki': wiki,
         'project': project_name,
@@ -491,7 +552,7 @@ def get_wikiproject_articles(project_name: str, max_articles: int = 50000,
 
 @mcp.tool()
 def get_category_articles(category: str, depth: int = 3, exclude: list[str] | None = None,
-                          max_articles: int = 50000,
+                          max_articles: int = 50000, note: str = "",
                           topic: str | None = None, ctx: Context = None) -> str:
     """Crawl a category tree and collect all articles. Adds them to the working list
     with source 'category'.
@@ -501,8 +562,11 @@ def get_category_articles(category: str, depth: int = 3, exclude: list[str] | No
         depth: Maximum depth to crawl (default 3, max 5)
         exclude: Category names to skip (prune entire branches)
         max_articles: Maximum articles to collect (default 50000)
+        note: Optional free-text observation for this call's log entry.
+              Use for mid-flow reflection; empty by default.
         topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
+    _start = _start_call()
     topic_id, wiki, err = _require_topic(ctx, topic)
     if err:
         return err
@@ -581,19 +645,25 @@ def get_category_articles(category: str, depth: int = 3, exclude: list[str] | No
                 f"found via a more on-topic source."
             )
 
-    log_usage(ctx, "get_category_articles", {"category": category, "depth": depth, "wiki": wiki}, f"{len(articles)} articles, {len(visited_cats)} categories")
+    log_usage(ctx, "get_category_articles", {"category": category, "depth": depth, "wiki": wiki},
+              f"{len(articles)} articles, {len(visited_cats)} categories",
+              start_time=_start, note=note)
     return json.dumps(result, indent=2, ensure_ascii=False)
 
 
 @mcp.tool()
-def harvest_list_page(title: str, topic: str | None = None, ctx: Context = None) -> str:
+def harvest_list_page(title: str, note: str = "",
+                      topic: str | None = None, ctx: Context = None) -> str:
     """Extract all article links from a List/Index/Glossary page. Adds them
     to the working list with source 'list_page'.
 
     Args:
         title: Page title (e.g., "Index of climate change articles")
+        note: Optional free-text observation for this call's log entry.
+              Use for mid-flow reflection; empty by default.
         topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
+    _start = _start_call()
     topic_id, wiki, err = _require_topic(ctx, topic)
     if err:
         return err
@@ -624,6 +694,8 @@ def harvest_list_page(title: str, topic: str | None = None, ctx: Context = None)
     batch = [(t, source_label, None) for t in links]
     added, updated = db.add_articles(topic_id, batch)
 
+    log_usage(ctx, "harvest_list_page", {"title": title, "wiki": wiki},
+              f"{len(links)} links, {added} new", start_time=_start, note=note)
     return json.dumps({
         'wiki': wiki,
         'source_page': title,
@@ -636,7 +708,7 @@ def harvest_list_page(title: str, topic: str | None = None, ctx: Context = None)
 
 
 @mcp.tool()
-def search_articles(query: str, limit: int = 500,
+def search_articles(query: str, limit: int = 500, note: str = "",
                     topic: str | None = None, ctx: Context = None) -> str:
     """Search Wikipedia using CirrusSearch. Supports operators like intitle:,
     morelike:, hastemplate:, incategory:. Adds results to working list with source 'search'.
@@ -644,8 +716,11 @@ def search_articles(query: str, limit: int = 500,
     Args:
         query: Search query (e.g., 'intitle:"climate change"', 'morelike:Effects of climate change')
         limit: Maximum results (default 500)
+        note: Optional free-text observation for this call's log entry.
+              Use for mid-flow reflection; empty by default.
         topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
+    _start = _start_call()
     topic_id, wiki, err = _require_topic(ctx, topic)
     if err:
         return err
@@ -671,7 +746,8 @@ def search_articles(query: str, limit: int = 500,
     batch = [(title, source_label, None) for title in results]
     added, updated = db.add_articles(topic_id, batch)
 
-    log_usage(ctx, "search_articles", {"query": query, "wiki": wiki}, f"{len(results)} results")
+    log_usage(ctx, "search_articles", {"query": query, "wiki": wiki},
+              f"{len(results)} results", start_time=_start, note=note)
     return json.dumps({
         'wiki': wiki,
         'query': query,
@@ -684,7 +760,7 @@ def search_articles(query: str, limit: int = 500,
 
 
 @mcp.tool()
-def search_similar(seed_article: str, limit: int = 50,
+def search_similar(seed_article: str, limit: int = 50, note: str = "",
                    topic: str | None = None, ctx: Context = None) -> str:
     """Find articles similar to a given article using CirrusSearch morelike:.
     Great for finding thematic clusters the other strategies miss.
@@ -692,13 +768,16 @@ def search_similar(seed_article: str, limit: int = 50,
     Args:
         seed_article: Article title to find similar articles to
         limit: Maximum results (default 50)
+        note: Optional free-text observation for this call's log entry.
+              Use for mid-flow reflection; empty by default.
         topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
-    return search_articles(f'morelike:{seed_article}', limit=limit, topic=topic, ctx=ctx)
+    return search_articles(f'morelike:{seed_article}', limit=limit, note=note,
+                           topic=topic, ctx=ctx)
 
 
 @mcp.tool()
-def preview_search(query: str, limit: int = 50,
+def preview_search(query: str, limit: int = 50, note: str = "",
                    topic: str | None = None, ctx: Context = None) -> str:
     """Run a Wikipedia search and return titles + short descriptions WITHOUT
     adding anything to the working list. Use this before committing broad
@@ -713,9 +792,12 @@ def preview_search(query: str, limit: int = 50,
         query: Same syntax as search_articles (intitle:, morelike:,
                incategory:, hastemplate:, etc.)
         limit: Max results to preview (default 50, capped at 100).
+        note: Optional free-text observation for this call's log entry.
+              Use for mid-flow reflection; empty by default.
         topic: Optional topic name. Pass if your client doesn't maintain an
                MCP session.
     """
+    _start = _start_call()
     topic_id, wiki, err = _require_topic(ctx, topic)
     if err:
         return err
@@ -758,7 +840,8 @@ def preview_search(query: str, limit: int = 50,
         })
 
     log_usage(ctx, "preview_search", {"query": query, "limit": limit, "wiki": wiki},
-              f"{len(titles)} results ({new_count} new)")
+              f"{len(titles)} results ({new_count} new)",
+              start_time=_start, note=note)
     return json.dumps({
         'wiki': wiki,
         'query': query,
@@ -775,7 +858,7 @@ def preview_search(query: str, limit: int = 50,
 # ── Review aids ───────────────────────────────────────────────────────────
 
 @mcp.tool()
-def fetch_descriptions(limit: int = 500,
+def fetch_descriptions(limit: int = 500, note: str = "",
                        topic: str | None = None, ctx: Context = None) -> str:
     """Fetch Wikidata short descriptions for articles in the current topic
     that don't have one yet, and persist them. Descriptions show up in
@@ -788,9 +871,12 @@ def fetch_descriptions(limit: int = 500,
     Args:
         limit: Max titles to fetch in this call (default 500). If more
                articles are undescribed afterward, call again to continue.
+        note: Optional free-text observation for this call's log entry.
+              Use for mid-flow reflection; empty by default.
         topic: Optional topic name. Pass if your client doesn't maintain an
                MCP session.
     """
+    _start = _start_call()
     topic_id, wiki, err = _require_topic(ctx, topic)
     if err:
         return err
@@ -810,7 +896,8 @@ def fetch_descriptions(limit: int = 500,
     remaining = db.count_undescribed(topic_id)
 
     log_usage(ctx, "fetch_descriptions", {"limit": limit},
-              f"fetched {len(titles)} ({non_empty} non-empty), {remaining} still undescribed")
+              f"fetched {len(titles)} ({non_empty} non-empty), {remaining} still undescribed",
+              start_time=_start, note=note)
     return json.dumps({
         'fetched': len(titles),
         'non_empty': non_empty,
@@ -825,7 +912,7 @@ def fetch_descriptions(limit: int = 500,
 
 @mcp.tool()
 def score_by_extract(titles: list[str] | None = None, unscored_batch: bool = False,
-                     batch_size: int = 50,
+                     batch_size: int = 50, note: str = "",
                      topic: str | None = None, ctx: Context = None) -> str:
     """Fetch article extracts (first 5 sentences) from Wikipedia for scoring.
     Returns the extracts so you can judge relevance on a 1-10 scale.
@@ -834,8 +921,11 @@ def score_by_extract(titles: list[str] | None = None, unscored_batch: bool = Fal
         titles: Specific titles to score. If None and unscored_batch=True, fetches unscored articles.
         unscored_batch: If True and titles is None, fetch a batch of unscored articles
         batch_size: How many articles to fetch (default 50, max 50)
+        note: Optional free-text observation for this call's log entry.
+              Use for mid-flow reflection; empty by default.
         topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
+    _start = _start_call()
     topic_id, wiki, err = _require_topic(ctx, topic)
     if err:
         return err
@@ -880,6 +970,10 @@ def score_by_extract(titles: list[str] | None = None, unscored_batch: bool = Fal
             'current_score': article.get('score'),
         })
 
+    log_usage(ctx, "score_by_extract",
+              {"batch_size": batch_size, "unscored_batch": unscored_batch,
+               "titles_count": len(titles) if titles else 0},
+              f"{len(results)} extracts", start_time=_start, note=note)
     return json.dumps({
         'articles': results,
         'count': len(results),
@@ -888,32 +982,40 @@ def score_by_extract(titles: list[str] | None = None, unscored_batch: bool = Fal
 
 
 @mcp.tool()
-def set_scores(scores: dict[str, int],
+def set_scores(scores: dict[str, int], note: str = "",
                topic: str | None = None, ctx: Context = None) -> str:
     """Set relevance scores for articles. Scores should be 1-10.
 
     Args:
         scores: Dict mapping article title to score (e.g., {"Article Name": 8, "Other Article": 3})
+        note: Optional free-text observation for this call's log entry.
+              Use for mid-flow reflection; empty by default.
         topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
+    _start = _start_call()
     topic_id, wiki, err = _require_topic(ctx, topic)
     if err:
         return err
 
     updated = db.set_scores(topic_id, scores)
+    log_usage(ctx, "set_scores", {"scores_count": len(scores)},
+              f"updated {updated}", start_time=_start, note=note)
     return f"Updated scores for {updated} articles."
 
 
 @mcp.tool()
-def auto_score_by_title(threshold: int = 7,
+def auto_score_by_title(threshold: int = 7, note: str = "",
                         topic: str | None = None, ctx: Context = None) -> str:
     """Quick title-based scoring pass for obvious cases. Articles with clear topic
     keywords in the title get auto-scored.
 
     Args:
         threshold: Score to assign to keyword-matched articles (default 7)
+        note: Optional free-text observation for this call's log entry.
+              Use for mid-flow reflection; empty by default.
         topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
+    _start = _start_call()
     topic_id, wiki, err = _require_topic(ctx, topic)
     if err:
         return err
@@ -933,6 +1035,9 @@ def auto_score_by_title(threshold: int = 7,
         db.set_scores(topic_id, scores)
 
     unscored = sum(1 for a in all_articles.values() if a.get('score') is None) - len(scores)
+    log_usage(ctx, "auto_score_by_title", {"threshold": threshold, "phrase": topic_phrase},
+              f"scored {len(scores)}, {unscored} still unscored",
+              start_time=_start, note=note)
     return f"Auto-scored {len(scores)} articles containing '{topic_phrase}' in title. ~{unscored} still unscored."
 
 
@@ -942,6 +1047,7 @@ def auto_score_by_description(
     disqualifying: list[str] | None = None,
     overwrite_scored: bool = False,
     dry_run: bool = True,
+    note: str = "",
     topic: str | None = None, ctx: Context = None,
 ) -> str:
     """Auto-score articles as 0 ("irrelevant") when their Wikidata short
@@ -1001,12 +1107,15 @@ def auto_score_by_description(
             disqualifying criteria.
         dry_run: If True (default), preview counts + samples without
                  applying. Set False to apply the score=0 writes.
+        note: Optional free-text observation for this call's log entry.
+              Use for mid-flow reflection; empty by default.
         topic: Optional topic name. Pass if your client doesn't maintain
                an MCP session.
 
     Articles with NULL descriptions (not yet fetched) are skipped, not
     auto-zeroed — run fetch_descriptions first to include them.
     """
+    _start = _start_call()
     topic_id, wiki, err = _require_topic(ctx, topic)
     if err:
         return err
@@ -1071,7 +1180,15 @@ def auto_score_by_description(
         log_usage(ctx, "auto_score_by_description",
                   {"axes": list(required_any.keys()),
                    "disqualifying_count": len(disqualifying)},
-                  f"scored 0: {len(would_zero)}")
+                  f"scored 0: {len(would_zero)}",
+                  start_time=_start, note=note)
+    elif dry_run:
+        log_usage(ctx, "auto_score_by_description",
+                  {"axes": list(required_any.keys()),
+                   "disqualifying_count": len(disqualifying),
+                   "dry_run": True},
+                  f"would score 0: {len(would_zero)}",
+                  start_time=_start, note=note)
 
     # Group samples by reason (up to 5 each) so the AI/user can spot patterns:
     # e.g. if "missing_demographic: 1300" is accompanied by samples like
@@ -1120,7 +1237,7 @@ def auto_score_by_description(
 
 
 @mcp.tool()
-def score_all_unscored(score: int = 8,
+def score_all_unscored(score: int = 8, note: str = "",
                        topic: str | None = None, ctx: Context = None) -> str:
     """Set a score for ALL currently unscored articles in one operation.
     Use this after you've already pruned the list down to on-topic articles
@@ -1128,8 +1245,11 @@ def score_all_unscored(score: int = 8,
 
     Args:
         score: Score to assign to all unscored articles (default 8)
+        note: Optional free-text observation for this call's log entry.
+              Use for mid-flow reflection; empty by default.
         topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
+    _start = _start_call()
     topic_id, wiki, err = _require_topic(ctx, topic)
     if err:
         return err
@@ -1141,13 +1261,15 @@ def score_all_unscored(score: int = 8,
     if scores:
         db.set_scores(topic_id, scores)
 
+    log_usage(ctx, "score_all_unscored", {"score": score},
+              f"scored {len(scores)}", start_time=_start, note=note)
     return f"Scored {len(scores)} previously unscored articles at {score}. All articles are now scored."
 
 
 # ── Edge browsing ─────────────────────────────────────────────────────────
 
 @mcp.tool()
-def browse_edges(seed_titles: list[str], min_links: int = 3,
+def browse_edges(seed_titles: list[str], min_links: int = 3, note: str = "",
                  topic: str | None = None, ctx: Context = None) -> str:
     """Browse outgoing links from seed articles to find related articles not yet
     in the working list. Articles linked by multiple seeds are most likely relevant.
@@ -1155,8 +1277,11 @@ def browse_edges(seed_titles: list[str], min_links: int = 3,
     Args:
         seed_titles: Articles to browse from (pick peripheral/edge articles for best results)
         min_links: Minimum seed articles that must link to a candidate (default 3)
+        note: Optional free-text observation for this call's log entry.
+              Use for mid-flow reflection; empty by default.
         topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
+    _start = _start_call()
     topic_id, wiki, err = _require_topic(ctx, topic)
     if err:
         return err
@@ -1189,6 +1314,9 @@ def browse_edges(seed_titles: list[str], min_links: int = 3,
 
     candidates = [(t, c) for t, c in link_counts.most_common() if c >= min_links]
 
+    log_usage(ctx, "browse_edges",
+              {"seeds": len(seed_titles), "min_links": min_links, "wiki": wiki},
+              f"{len(candidates)} candidates", start_time=_start, note=note)
     return json.dumps({
         'seeds_browsed': len(seed_titles),
         'candidates': [{'title': t, 'linked_by': c} for t, c in candidates[:100]],
@@ -1200,7 +1328,7 @@ def browse_edges(seed_titles: list[str], min_links: int = 3,
 # ── List management ───────────────────────────────────────────────────────
 
 @mcp.tool()
-def list_sources(topic: str | None = None, ctx: Context = None) -> str:
+def list_sources(note: str = "", topic: str | None = None, ctx: Context = None) -> str:
     """List every source label currently attached to articles in the working list,
     with counts. Call this before remove_by_source to see exactly what labels
     you can target. Each gather tool records a specific source label:
@@ -1208,8 +1336,11 @@ def list_sources(topic: str | None = None, ctx: Context = None) -> str:
     "search:morelike:Mario Molina", "search:incategory:American women chemists".
 
     Args:
+        note: Optional free-text observation for this call's log entry.
+              Use for mid-flow reflection; empty by default.
         topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
+    _start = _start_call()
     topic_id, wiki, err = _require_topic(ctx, topic)
     if err:
         return err
@@ -1221,6 +1352,8 @@ def list_sources(topic: str | None = None, ctx: Context = None) -> str:
             counts[s] += 1
 
     sources = [{'source': s, 'count': c} for s, c in counts.most_common()]
+    log_usage(ctx, "list_sources", {}, f"{len(sources)} sources",
+              start_time=_start, note=note)
     return json.dumps({
         'sources': sources,
         'total_distinct_sources': len(sources),
@@ -1234,16 +1367,24 @@ def list_sources(topic: str | None = None, ctx: Context = None) -> str:
 
 @mcp.tool()
 def add_articles(titles: list[str], source: str = "manual", score: int | None = None,
+                 note: str = "",
                  topic: str | None = None, ctx: Context = None) -> str:
     """Add articles to the working list. Use this when you want to add articles
     you've discovered or identified yourself, outside of the other gather tools.
 
     Args:
         titles: Article titles to add
-        source: Source label (e.g., "manual", "edge_browse", "search")
+        source: Source label. For hand-curated additions prefer 'manual:<context>'
+                over bare 'manual' — e.g. 'manual:veitch-cluster',
+                'manual:cross-wiki-reconciliation-nl'. The <context> makes the
+                audit trail self-describing and enables selective undo via
+                remove_by_source. Bare 'manual' works but loses provenance.
         score: Optional relevance score to assign (1-10)
+        note: Optional free-text observation for this call's log entry.
+              Use for mid-flow reflection; empty by default.
         topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
+    _start = _start_call()
     topic_id, wiki, err = _require_topic(ctx, topic)
     if err:
         return err
@@ -1251,12 +1392,15 @@ def add_articles(titles: list[str], source: str = "manual", score: int | None = 
     batch = [(normalize_title(t), source, score) for t in titles]
     added, updated = db.add_articles(topic_id, batch)
     total = db.get_status(topic_id)['total_articles']
+    log_usage(ctx, "add_articles",
+              {"source": source, "titles_count": len(titles), "score": score},
+              f"added {added}, updated {updated}", start_time=_start, note=note)
     return f"Added {added} new articles, updated {updated} (source: {source}). Total: {total}"
 
 
 @mcp.tool()
 def get_articles_by_source(source: str, exclude_sources: list[str] | None = None,
-                           limit: int = 100, offset: int = 0,
+                           limit: int = 100, offset: int = 0, note: str = "",
                            topic: str | None = None, ctx: Context = None) -> str:
     """Get articles that came from a specific source, optionally excluding articles
     that also came from other sources. Useful for reviewing noisy sources like list page harvests.
@@ -1269,8 +1413,11 @@ def get_articles_by_source(source: str, exclude_sources: list[str] | None = None
         exclude_sources: If set, exclude articles that also have any of these sources
         limit: Max articles to return (default 100)
         offset: Pagination offset
+        note: Optional free-text observation for this call's log entry.
+              Use for mid-flow reflection; empty by default.
         topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
+    _start = _start_call()
     topic_id, wiki, err = _require_topic(ctx, topic)
     if err:
         return err
@@ -1290,6 +1437,10 @@ def get_articles_by_source(source: str, exclude_sources: list[str] | None = None
     total = len(matches)
     page = matches[offset:offset + limit]
 
+    log_usage(ctx, "get_articles_by_source",
+              {"source": source, "exclude_sources": exclude_sources,
+               "limit": limit, "offset": offset},
+              f"{total} matches", start_time=_start, note=note)
     return json.dumps({
         'source': source,
         'excluding': sorted(exclude) if exclude else None,
@@ -1301,26 +1452,32 @@ def get_articles_by_source(source: str, exclude_sources: list[str] | None = None
 
 
 @mcp.tool()
-def remove_articles(titles: list[str],
+def remove_articles(titles: list[str], note: str = "",
                     topic: str | None = None, ctx: Context = None) -> str:
     """Remove articles from the working list.
 
     Args:
         titles: Article titles to remove
+        note: Optional free-text observation for this call's log entry.
+              Use for mid-flow reflection; empty by default.
         topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
+    _start = _start_call()
     topic_id, wiki, err = _require_topic(ctx, topic)
     if err:
         return err
 
     removed = db.remove_articles(topic_id, titles)
     total = db.get_status(topic_id)['total_articles']
+    log_usage(ctx, "remove_articles", {"titles_count": len(titles)},
+              f"removed {removed}", start_time=_start, note=note)
     return f"Removed {removed} articles. Total: {total}"
 
 
 @mcp.tool()
 def remove_by_source(source: str, keep_if_other_sources: bool = True,
                      prefix_match: bool = False, dry_run: bool = True,
+                     note: str = "",
                      topic: str | None = None, ctx: Context = None) -> str:
     """Remove all articles that came from a specific source. Use this to undo a bad
     category pull, noisy list harvest, or noisy search query.
@@ -1341,8 +1498,11 @@ def remove_by_source(source: str, keep_if_other_sources: bool = True,
         prefix_match: If True, match source labels that START WITH `source`.
                       Default False (exact match).
         dry_run: If True (default), preview what would be removed without actually removing.
+        note: Optional free-text observation for this call's log entry.
+              Use for mid-flow reflection; empty by default.
         topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
+    _start = _start_call()
     topic_id, wiki, err = _require_topic(ctx, topic)
     if err:
         return err
@@ -1368,6 +1528,11 @@ def remove_by_source(source: str, keep_if_other_sources: bool = True,
             to_remove.append(title)
 
     if dry_run:
+        log_usage(ctx, "remove_by_source",
+                  {"source": source, "prefix_match": prefix_match,
+                   "keep_if_other_sources": keep_if_other_sources, "dry_run": True},
+                  f"would remove {len(to_remove)}, keep {len(to_keep)}",
+                  start_time=_start, note=note)
         return json.dumps({
             'source': source,
             'prefix_match': prefix_match,
@@ -1389,13 +1554,18 @@ def remove_by_source(source: str, keep_if_other_sources: bool = True,
 
     total = db.get_status(topic_id)['total_articles']
     desc = f"{len(matched_labels)} source label(s)" if prefix_match else f"source '{source}'"
+    log_usage(ctx, "remove_by_source",
+              {"source": source, "prefix_match": prefix_match,
+               "keep_if_other_sources": keep_if_other_sources},
+              f"removed {removed}, kept {len(to_keep)}",
+              start_time=_start, note=note)
     return f"Removed {removed} articles from {desc} (kept {len(to_keep)} that had other sources). Total: {total}"
 
 
 @mcp.tool()
 def remove_by_pattern(pattern: str, below_score: int | None = None, source: str | None = None,
                       match_description: bool = False,
-                      dry_run: bool = True,
+                      dry_run: bool = True, note: str = "",
                       topic: str | None = None, ctx: Context = None) -> str:
     """Remove articles matching a pattern (case-insensitive substring match).
     Matches against the title by default; set match_description=True to match
@@ -1410,8 +1580,11 @@ def remove_by_pattern(pattern: str, below_score: int | None = None, source: str 
                            rather than the title. Articles with no description
                            never match in this mode. Default False.
         dry_run: If True (default), just preview — don't actually remove
+        note: Optional free-text observation for this call's log entry.
+              Use for mid-flow reflection; empty by default.
         topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
+    _start = _start_call()
     topic_id, wiki, err = _require_topic(ctx, topic)
     if err:
         return err
@@ -1451,6 +1624,12 @@ def remove_by_pattern(pattern: str, below_score: int | None = None, source: str 
                 sample_preview.append(title)
 
     if dry_run:
+        log_usage(ctx, "remove_by_pattern",
+                  {"pattern": pattern, "below_score": below_score,
+                   "source": source, "match_description": match_description,
+                   "dry_run": True},
+                  f"would remove {len(matches)}",
+                  start_time=_start, note=note)
         return json.dumps({
             'pattern': pattern,
             'match_description': match_description,
@@ -1461,6 +1640,10 @@ def remove_by_pattern(pattern: str, below_score: int | None = None, source: str 
 
     removed = db.remove_articles(topic_id, matches)
     total = db.get_status(topic_id)['total_articles']
+    log_usage(ctx, "remove_by_pattern",
+              {"pattern": pattern, "below_score": below_score,
+               "source": source, "match_description": match_description},
+              f"removed {removed}", start_time=_start, note=note)
     return f"Removed {removed} articles matching '{pattern}'. Total: {total}"
 
 
@@ -1509,7 +1692,7 @@ def get_articles(min_score: int | None = None, max_score: int | None = None,
 
 @mcp.tool()
 def filter_articles(resolve_redirects: bool = True, remove_disambig: bool = True,
-                    remove_lists: bool = True,
+                    remove_lists: bool = True, note: str = "",
                     topic: str | None = None, ctx: Context = None) -> str:
     """Clean up the working list: resolve redirects, remove disambiguation pages,
     remove list/index pages.
@@ -1518,8 +1701,11 @@ def filter_articles(resolve_redirects: bool = True, remove_disambig: bool = True
         resolve_redirects: Resolve redirect titles to canonical titles
         remove_disambig: Remove disambiguation pages
         remove_lists: Remove "List of...", "Index of...", etc.
+        note: Optional free-text observation for this call's log entry.
+              Use for mid-flow reflection; empty by default.
         topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
+    _start = _start_call()
     topic_id, wiki, err = _require_topic(ctx, topic)
     if err:
         return err
@@ -1605,11 +1791,15 @@ def filter_articles(resolve_redirects: bool = True, remove_disambig: bool = True
     # Write back to DB
     db.replace_all_articles(topic_id, all_articles)
 
+    log_usage(ctx, "filter_articles",
+              {"resolve_redirects": resolve_redirects, "remove_disambig": remove_disambig,
+               "remove_lists": remove_lists},
+              f"{stats['before']} → {stats['final']}", start_time=_start, note=note)
     return json.dumps(stats, indent=2)
 
 
 @mcp.tool()
-def export_csv(min_score: int = 0, scored_only: bool = False,
+def export_csv(min_score: int = 0, scored_only: bool = False, note: str = "",
                topic: str | None = None, ctx: Context = None) -> str:
     """Export the final article list as a downloadable CSV file.
 
@@ -1619,8 +1809,11 @@ def export_csv(min_score: int = 0, scored_only: bool = False,
         min_score: Minimum score to include (default 0 = export all articles).
                    Set to 7 to export only scored-and-relevant articles.
         scored_only: If True, only export articles that have been scored. Default False.
+        note: Optional free-text observation for this call's log entry.
+              Use for mid-flow reflection; empty by default.
         topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
+    _start = _start_call()
     topic_id, wiki, err = _require_topic(ctx, topic)
     if err:
         return err
@@ -1675,7 +1868,8 @@ def export_csv(min_score: int = 0, scored_only: bool = False,
 
     download_url = f"https://topic-builder.wikiedu.org/exports/{filename}"
 
-    log_usage(ctx, "export_csv", {"min_score": min_score, "wiki": wiki}, f"{len(titles)} articles exported")
+    log_usage(ctx, "export_csv", {"min_score": min_score, "scored_only": scored_only, "wiki": wiki},
+              f"{len(titles)} articles exported", start_time=_start, note=note)
     return json.dumps({
         'wiki': wiki,
         'article_count': len(titles),
@@ -1696,7 +1890,7 @@ def export_csv(min_score: int = 0, scored_only: bool = False,
 @mcp.tool()
 def submit_feedback(summary: str, what_worked: str = "", what_didnt: str = "",
                     missed_strategies: str = "",
-                    rating: int | None = None,
+                    rating: int | None = None, note: str = "",
                     topic: str | None = None, ctx: Context = None) -> str:
     """Submit a brief retrospective on this topic-building session so the
     Wiki Education team can improve the tool. Offer to call this at the end
@@ -1719,9 +1913,12 @@ def submit_feedback(summary: str, what_worked: str = "", what_didnt: str = "",
                            for but couldn't. This is how we decide what tool to
                            build next. Empty string if nothing came up.
         rating: Optional 1-10 rating of the overall experience.
+        note: Optional free-text observation for this call's log entry.
+              Use for mid-flow reflection; empty by default.
         topic: The topic name this feedback is about. Pass explicitly if your
                client doesn't maintain an MCP session.
     """
+    _start = _start_call()
     tid, name, _ = _get_topic(ctx)
     resolved_topic = topic or name or "(unknown)"
 
@@ -1755,7 +1952,8 @@ def submit_feedback(summary: str, what_worked: str = "", what_didnt: str = "",
 
     db.append_feedback(entry)
     log_usage(ctx, "submit_feedback", {"topic": resolved_topic, "rating": rating},
-              f"feedback recorded ({len(summary)} chars)")
+              f"feedback recorded ({len(summary)} chars)",
+              start_time=_start, note=note)
     return ("Thanks — feedback recorded. The Wiki Education team will review it. "
             "Tell the user their feedback was submitted.")
 
