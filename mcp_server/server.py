@@ -266,6 +266,100 @@ def reset_topic(note: str = "", topic: str | None = None, ctx: Context = None) -
 
 
 @mcp.tool()
+def set_topic_rubric(rubric: str, note: str = "",
+                     topic: str | None = None, ctx: Context = None) -> str:
+    """Persist a centrality rubric for the active topic. Call this AFTER
+    confirming scope with the user, BEFORE any gather call — the rubric
+    is the authoritative scope statement and frames all later review.
+
+    A rubric is a short prose statement (typically a few sentences per
+    section) of how centrality is decided for THIS topic. Structure it
+    in three parts:
+      * CENTRAL — the core membership criterion. What's essentially
+        "about" this topic. Gets score 8-10.
+      * PERIPHERAL — adjacent articles that touch the topic without
+        being about it. Gets score 3-5.
+      * OUT — related-but-not-in-scope. Should be rejected, not added.
+
+    The rubric is shape-agnostic: it works equally well for topics with
+    rich structural sources (categories + Wikidata + list pages all
+    agree) and for topics where every tool is marginal and you're
+    reasoning mostly from domain knowledge.
+
+    Idempotent. Call again with revised text to update; the whole
+    rubric is overwritten. When scope drifts mid-build, stop, update
+    the rubric, then proceed.
+
+    Args:
+        rubric: Prose rubric. Recommended ~100–500 chars across the
+                three sections — enough to be unambiguous without
+                becoming a policy document.
+        note: Optional free-text observation for this call's log entry.
+        topic: Optional topic name. Pass if your client doesn't maintain
+               an MCP session; otherwise uses the session's current topic.
+    """
+    _start = _start_call()
+    topic_id, _wiki, err = _require_topic(ctx, topic)
+    if err:
+        return err
+
+    prior = db.get_topic_rubric(topic_id)
+    db.set_topic_rubric(topic_id, rubric)
+    _, topic_name, _ = _get_topic(ctx)
+
+    log_usage(ctx, "set_topic_rubric",
+              {"rubric_chars": len(rubric), "had_prior": bool(prior)},
+              f"rubric set ({len(rubric)} chars, "
+              f"{'revised' if prior else 'initial'})",
+              start_time=_start, note=note)
+    return json.dumps({
+        'topic': topic_name,
+        'rubric': rubric,
+        'rubric_chars': len(rubric),
+        'was_revision': bool(prior),
+        'note': (
+            'Rubric persisted. Reference it during every review step: '
+            'classify each candidate as CENTRAL / PERIPHERAL / OUT. '
+            'Revise via set_topic_rubric again if a scope wrinkle surfaces.'
+        ),
+    }, indent=2, ensure_ascii=False)
+
+
+@mcp.tool()
+def get_topic_rubric(topic: str | None = None, ctx: Context = None) -> str:
+    """Read the centrality rubric for the active topic. Returns empty
+    string if no rubric has been set yet.
+
+    Useful across stateless tool-call sessions, during resume, or at
+    wrap-up before export to sanity-check the rubric still matches
+    the corpus.
+
+    Args:
+        topic: Optional topic name. Pass if your client doesn't maintain
+               an MCP session; otherwise uses the session's current topic.
+    """
+    _start = _start_call()
+    topic_id, _wiki, err = _require_topic(ctx, topic)
+    if err:
+        return err
+
+    rubric = db.get_topic_rubric(topic_id)
+    _, topic_name, _ = _get_topic(ctx)
+    return json.dumps({
+        'topic': topic_name,
+        'rubric': rubric,
+        'rubric_chars': len(rubric),
+        'has_rubric': bool(rubric),
+        'note': (
+            'Write or revise via set_topic_rubric.'
+            if not rubric else
+            'Apply this rubric when reviewing, scoring, or spot-checking. '
+            'CENTRAL ≈ 8–10, PERIPHERAL ≈ 3–5, OUT → reject.'
+        ),
+    }, indent=2, ensure_ascii=False)
+
+
+@mcp.tool()
 def list_topics() -> str:
     """List all existing topics that can be resumed."""
     topics = db.list_topics()
@@ -535,7 +629,15 @@ def describe_topic(top_first_words_limit: int = 20,
             'articles_with_single_source': single_source,
             'articles_with_multiple_sources': multi_source,
         },
+        'centrality_rubric': db.get_topic_rubric(topic_id),
     }
+    if not result['centrality_rubric']:
+        result['rubric_reminder'] = (
+            'No centrality rubric set for this topic yet. After scope '
+            'confirmation with the user, draft one and save via '
+            'set_topic_rubric — CENTRAL / PERIPHERAL / OUT. The rubric '
+            'frames all later review and is exported alongside the CSV.'
+        )
     log_usage(ctx, "describe_topic",
               {"top_first_words_limit": top_first_words_limit},
               f"{total} articles", start_time=_start, note=note)
@@ -660,21 +762,52 @@ def check_wikiproject(project_name: str, wiki: str | None = None,
     _start = _start_call()
     wiki = _resolve_wiki(ctx, wiki, topic)
     template_title = f"Template:WikiProject {project_name}"
-    params = {'titles': template_title, 'prop': 'info'}
+    project_page_title = f"Wikipedia:WikiProject {project_name}"
+    # Probe both the template namespace AND the Wikipedia: namespace page —
+    # `find_wikiprojects` uses prefixsearch on the Wikipedia: namespace so
+    # it can report a project candidate whose template never existed (or
+    # was merged/renamed). Returning both signals lets the AI tell "truly
+    # no WikiProject" from "project page exists but template is missing".
+    params = {'titles': f'{template_title}|{project_page_title}',
+              'prop': 'info'}
     data = api_query(params, wiki=wiki)
-    exists = False
+    template_exists = False
+    project_page_exists = False
     if 'query' in data and 'pages' in data['query']:
         for page in data['query']['pages']:
-            if not page.get('missing', False):
-                exists = True
+            if page.get('missing', False):
+                continue
+            t = page.get('title', '')
+            if t == template_title:
+                template_exists = True
+            elif t == project_page_title:
+                project_page_exists = True
 
+    # `exists` stays as the practical "can I call get_wikiproject_articles
+    # on this project?" signal — which needs the template to be tagging
+    # articles. Historical callers that just read `exists` keep working.
+    exists = template_exists
     result = {
         'wiki': wiki,
         'project': project_name,
         'template': template_title,
+        'template_exists': template_exists,
+        'project_page': project_page_title,
+        'project_page_exists': project_page_exists,
         'exists': exists,
-        'note': 'Use get_wikiproject_articles to fetch all tagged articles' if exists else 'No WikiProject found'
     }
+    if template_exists:
+        result['note'] = 'Use get_wikiproject_articles to fetch all tagged articles'
+    elif project_page_exists:
+        result['note'] = (
+            'Project PAGE exists but the template does not — `find_wikiprojects` '
+            'may list this as a candidate, but `get_wikiproject_articles` will '
+            'return nothing because there are no template-tagged articles. Try '
+            'a renamed / merged variant of the project name, or fall back to '
+            'categories + search.'
+        )
+    else:
+        result['note'] = 'No WikiProject found'
     if wiki != 'en':
         result['warning'] = (
             f"WikiProjects are an enwiki convention and rarely exist on "
@@ -682,7 +815,8 @@ def check_wikiproject(project_name: str, wiki: str | None = None,
             f"rely on categories and search instead."
         )
     log_usage(ctx, "check_wikiproject", {"project": project_name, "wiki": wiki},
-              f"exists={exists}", start_time=_start, note=note)
+              f"template_exists={template_exists} project_page_exists={project_page_exists}",
+              start_time=_start, note=note)
     return json.dumps(result)
 
 
@@ -764,56 +898,173 @@ def find_wikiprojects(keywords: list[str], limit: int = 20,
     }, indent=2, ensure_ascii=False)
 
 
+_LIST_PAGE_PREFIXES = [
+    'Index of', 'List of', 'Lists of', 'Outline of', 'Glossary of',
+    'Timeline of', 'Bibliography of',
+]
+_LIST_PAGE_SUFFIXES = [
+    'in popular culture', 'in fiction', 'filmography', 'discography',
+    'anniversaries', 'by country', 'by year',
+]
+
+
+def _extract_topic_qualifier(topic_name: str | None) -> str:
+    """Pull the parenthetical qualifier from a topic name.
+    'Symbolism (art movement)' -> 'art movement'. Empty if none."""
+    if not topic_name:
+        return ''
+    m = re.search(r'\(([^)]+)\)\s*$', topic_name)
+    return m.group(1).strip() if m else ''
+
+
 @mcp.tool()
 def find_list_pages(subject: str, wiki: str | None = None,
                     note: str = "",
                     topic: str | None = None, ctx: Context = None) -> str:
-    """Search for Index/List/Outline/Glossary pages about a subject.
+    """Search for list-shaped Wikipedia pages about a subject — "List of X",
+    "Index of X", "Outline of X", "Glossary of X", "Timeline of X",
+    "Bibliography of X", plus suffix-shaped patterns like "X in popular
+    culture", "X filmography", "X discography".
 
-    The "Index of", "List of", "Outline of", "Glossary of" prefixes are
-    English-specific. On non-enwiki topics this tool almost always returns
-    zero results — other-language wikis use different conventions (e.g.
-    "Liste der …" on dewiki, "Lista de …" on eswiki). If you're on a
-    non-enwiki topic and need list-style pages, use search_articles with
-    intitle: and the appropriate prefix for that wiki.
+    Subject matching is relevance-ranked free text rather than a strict
+    phrase — strict phrase match misses "List of Korean dramas" when the
+    topic name is "Korean television dramas" (the canonical list drops
+    one token). Dropping the phrase quote lets CirrusSearch relevance-
+    rank candidates instead.
+
+    Disambiguation filter: if the active topic (or passed-in `topic`) has
+    a parenthetical qualifier like "Symbolism (art movement)", candidates
+    are filtered to those whose shortdesc or title contains the
+    qualifier's tokens. This prevents homonym bleed — e.g. a bare
+    `find_list_pages("Symbolism")` otherwise returns semiotic/religious
+    list pages along with the art-movement ones.
+
+    The prefix/suffix patterns are English-specific. On non-enwiki topics
+    the tool typically returns zero results — other-language wikis use
+    different conventions (e.g. "Liste der …" on dewiki). Use
+    search_articles with the wiki-native prefix for non-enwiki.
+
+    When `find_list_pages` returns 0 or only irrelevant hits, the
+    topic's OWN main article often functions as the canonical list
+    page (e.g. an award article with a year-by-year winners table,
+    or a concept article with an enumeration of subtypes) — harvest
+    it directly via harvest_list_page.
 
     Args:
-        subject: Subject to search for (free text, e.g. "climate change")
-        wiki: Wikipedia language code to query. Defaults to the active topic's
-              wiki, or "en" if no topic is active.
+        subject: Subject to search for (free text, e.g. "Apollo 11")
+        wiki: Wikipedia language code to query. Defaults to the active
+              topic's wiki, or "en" if no topic is active.
         note: Optional free-text observation for this call's log entry.
               Use for mid-flow reflection; empty by default.
-        topic: Optional topic name to infer the wiki from.
+        topic: Optional topic name to infer the wiki / qualifier from.
     """
     _start = _start_call()
     wiki = _resolve_wiki(ctx, wiki, topic)
-    pages = []
-    for prefix in ['Index of', 'List of', 'Outline of', 'Glossary of']:
+
+    candidates: dict[str, set[str]] = {}  # title -> matched pattern labels
+
+    # Prefix patterns: `intitle:"<prefix>"` + subject as free text.
+    # Confirm the returned title actually starts with the prefix — CirrusSearch
+    # intitle: allows partial matches and we only want true "X of Y" shape.
+    for prefix in _LIST_PAGE_PREFIXES:
         params = {
             'list': 'search',
-            'srsearch': f'intitle:"{prefix}" intitle:"{subject}"',
-            'srnamespace': '0',
-            'srlimit': '20',
-            'srinfo': '',
-            'srprop': '',
+            'srsearch': f'intitle:"{prefix}" {subject}',
+            'srnamespace': '0', 'srlimit': '20', 'srinfo': '', 'srprop': '',
         }
         for item in api_query_all(params, 'search', max_items=20, wiki=wiki):
-            pages.append(item['title'])
+            t = item['title']
+            if t.startswith(prefix + ' '):
+                candidates.setdefault(t, set()).add(prefix)
+
+    # Suffix patterns: title must actually contain the suffix.
+    for suffix in _LIST_PAGE_SUFFIXES:
+        params = {
+            'list': 'search',
+            'srsearch': f'intitle:"{suffix}" {subject}',
+            'srnamespace': '0', 'srlimit': '20', 'srinfo': '', 'srprop': '',
+        }
+        for item in api_query_all(params, 'search', max_items=20, wiki=wiki):
+            t = item['title']
+            if suffix.lower() in t.lower():
+                candidates.setdefault(t, set()).add(suffix)
+
+    all_candidates = sorted(candidates.keys())
+
+    # Resolve the active topic name for the disambiguation filter. Prefer
+    # the explicit `topic` argument; fall back to the session's current topic.
+    active_topic_name = topic or ''
+    if not active_topic_name and ctx is not None:
+        _tid, tname, _twiki = _get_topic(ctx)
+        if tname:
+            active_topic_name = tname
+    qualifier = _extract_topic_qualifier(active_topic_name)
+
+    # Token-based relevance filter. Without this, the widened prefix/suffix
+    # search returns "generic soup" for any topic whose canonical article
+    # has no parenthetical qualifier — e.g. `Mountains of Kyrgyzstan` hit
+    # 61 candidates in a Codex dogfood run, including timelines of Kyrgyz
+    # history and outlines of geography, with only the one useful mountain
+    # list buried inside. The filter always uses `subject` tokens as a
+    # minimum relevance check; when the topic also supplies a qualifier,
+    # its tokens extend the accept set.
+    filter_note = None
+    filter_tokens = {t.lower() for t in re.findall(r"\w+", subject) if len(t) > 2}
+    if qualifier:
+        filter_tokens |= {t.lower() for t in re.findall(r"\w+", qualifier) if len(t) > 2}
+    # Never filter on just {'list','of','index'} — common English words
+    # borrowed from the subject would match every candidate.
+    _STOPWORDS = {'list', 'lists', 'index', 'outline', 'glossary',
+                  'timeline', 'bibliography', 'filmography', 'discography',
+                  'the', 'and', 'for', 'with', 'from', 'into'}
+    filter_tokens -= _STOPWORDS
+
+    if filter_tokens and all_candidates:
+        descs = fetch_short_descriptions(all_candidates, wiki=wiki)
+        kept = []
+        dropped = []
+        for title in all_candidates:
+            d = (descs.get(title) or '').lower()
+            t_lower = title.lower()
+            matched = any(tok in d or tok in t_lower for tok in filter_tokens)
+            if matched:
+                kept.append(title)
+            else:
+                dropped.append(title)
+        filtered = kept
+        if dropped:
+            filter_note = (
+                f"Filtered {len(dropped)} candidate(s) whose shortdesc and "
+                f"title didn't match any relevance token from "
+                f"{sorted(filter_tokens)} (derived from subject"
+                f"{' and topic qualifier' if qualifier else ''}). "
+                f"Dropped sample: {dropped[:5]}"
+            )
+    else:
+        filtered = all_candidates
 
     result = {
         'wiki': wiki,
         'subject': subject,
-        'list_pages': pages,
-        'count': len(pages),
+        'active_topic': active_topic_name,
+        'qualifier': qualifier,
+        'list_pages': filtered,
+        'count': len(filtered),
+        'total_candidates_before_filter': len(all_candidates),
+        'matched_patterns': {t: sorted(candidates[t]) for t in filtered},
     }
-    if wiki != 'en' and not pages:
+    if filter_note:
+        result['disambiguation_filter_note'] = filter_note
+    if wiki != 'en' and not all_candidates:
         result['hint'] = (
-            f"No results on {wiki}.wikipedia.org — the prefixes used here "
-            f"('Index of', 'List of', …) are English-specific. Try "
-            f"search_articles with the list-page prefix native to this wiki."
+            f"No results on {wiki}.wikipedia.org — the prefixes / suffixes "
+            f"used here ('List of', 'Index of', 'in popular culture', …) "
+            f"are English-specific. Try search_articles with the list-page "
+            f"prefix native to this wiki."
         )
     log_usage(ctx, "find_list_pages", {"subject": subject, "wiki": wiki},
-              f"{len(pages)} pages", start_time=_start, note=note)
+              f"{len(filtered)} pages (of {len(all_candidates)} candidates)",
+              start_time=_start, note=note)
     return json.dumps(result, indent=2, ensure_ascii=False)
 
 
@@ -879,6 +1130,21 @@ def wikidata_search_entity(term: str, entity_type: str = "item",
     }, indent=2, ensure_ascii=False)
 
 
+# Response-size thresholds for Wikidata tools. Both dogfood sessions hit
+# MCP-transport overflow on 300-row SPARQL responses: Lakes of Finland at
+# 52kb (wikidata_query with labels), Symbolism at 85kb
+# (wikidata_entities_by_property). Setting 40kb as the auto-trim trigger
+# keeps responses well under any observed overflow point. Bytes are a
+# rough char count on compact-JSON serialization.
+_WIKIDATA_RESPONSE_SOFT_LIMIT = 40_000
+
+
+def _json_size(obj) -> int:
+    """Approximate byte size of `obj` serialized as compact JSON. Skips
+    indent whitespace for speed; the value is indicative, not exact."""
+    return len(json.dumps(obj, separators=(',', ':'), ensure_ascii=False))
+
+
 @mcp.tool()
 def wikidata_entities_by_property(property_id: str, value_qid: str,
                                   wiki: str | None = None,
@@ -900,11 +1166,19 @@ def wikidata_entities_by_property(property_id: str, value_qid: str,
         members of a well-defined class
 
     Does NOT add anything to the working list — review the result, then
-    call add_articles with the titles you want. Articles without a
-    sitelink on the requested wiki come back with empty `title`; those
-    are typically translation candidates (see `cross_wiki_diff` when it
-    ships). Run fetch_descriptions after committing to get Wikipedia
-    descriptions; the Wikidata description here is separate.
+    call add_articles with the titles you want. Each row includes:
+      * `title` — sitelink on the requested wiki (empty if none)
+      * `has_sitelink_on_wiki` — boolean convenience mirror of `bool(title)`
+      * `sitelink_count` — total number of sitelinks this entity has
+        across ALL wikis. Distinguishes the two "empty title" cases:
+        `sitelink_count > 0` = the entity has articles on other wikis
+        but not this one (translation candidate, or missing sitelink
+        metadata for an enwiki article that actually exists — worth
+        probing via `preview_search` on the label); `sitelink_count == 0`
+        = the entity has no article on any wiki (genuine Wikidata-only
+        entity, probably a real gap).
+    Run fetch_descriptions after committing to get Wikipedia descriptions;
+    the Wikidata description here is separate.
 
     Args:
         property_id: Wikidata property (e.g. "P171" for parent taxon).
@@ -935,12 +1209,7 @@ def wikidata_entities_by_property(property_id: str, value_qid: str,
         }, indent=2)
 
     with_title = sum(1 for r in rows if r.get('title'))
-    log_usage(ctx, "wikidata_entities_by_property",
-              {"property": property_id, "value": value_qid,
-               "wiki": wiki, "limit": limit},
-              f"{len(rows)} entities, {with_title} on {wiki}",
-              start_time=_start, note=note)
-    return json.dumps({
+    response = {
         'wiki': wiki,
         'property': property_id,
         'value': value_qid,
@@ -955,7 +1224,40 @@ def wikidata_entities_by_property(property_id: str, value_qid: str,
             f'Entities without a sitelink have no article on {wiki}.wikipedia.org '
             f'yet — they are typically translation candidates, not add candidates.'
         ),
-    }, indent=2, ensure_ascii=False)
+    }
+    # Auto-trim on overflow — drop label + description, keep structural
+    # fields (qid, title, has_sitelink_on_wiki, sitelink_count). Observed
+    # to cut ~300-row responses from 85kb to ~15kb while preserving the
+    # fields needed to decide what to commit. Dogfood: Symbolism.
+    raw_size = _json_size(response)
+    if raw_size > _WIKIDATA_RESPONSE_SOFT_LIMIT:
+        trimmed_rows = [
+            {k: v for k, v in r.items() if k not in ('label', 'description')}
+            for r in rows
+        ]
+        response['entities'] = trimmed_rows
+        response['auto_trimmed'] = {
+            'reason': (
+                f'full response was {raw_size} bytes, above the '
+                f'{_WIKIDATA_RESPONSE_SOFT_LIMIT}-byte soft limit; auto-'
+                f'dropped per-entity `label` and `description` to keep '
+                f'the shape usable.'
+            ),
+            'dropped_fields': ['label', 'description'],
+            'trimmed_size': _json_size(response),
+            'to_get_full_fields': (
+                'Pass a smaller `limit=`, or use `wikidata_query` with a '
+                'narrower SELECT projection (e.g. drop `?itemLabel` and '
+                '`?description`) if you only need some of the fields.'
+            ),
+        }
+    log_usage(ctx, "wikidata_entities_by_property",
+              {"property": property_id, "value": value_qid,
+               "wiki": wiki, "limit": limit},
+              f"{len(rows)} entities, {with_title} on {wiki}"
+              f"{' [auto-trimmed]' if raw_size > _WIKIDATA_RESPONSE_SOFT_LIMIT else ''}",
+              start_time=_start, note=note)
+    return json.dumps(response, indent=2, ensure_ascii=False)
 
 
 @mcp.tool()
@@ -999,14 +1301,55 @@ def wikidata_query(sparql: str, note: str = "",
             'hint': 'Verify syntax at query.wikidata.org. Expensive or '
                     'malformed queries are rejected.',
         }, indent=2)
+    response = {'rows': rows, 'total': len(rows)}
+    # Auto-truncate on overflow. The caller controls the SELECT so we
+    # can't know which fields to drop — truncate row count instead and
+    # tell them to narrow the projection. Proportional truncation from
+    # the observed-size ratio gives a reasonable first guess; the AI
+    # can rerun with a tighter SELECT or lower LIMIT.
+    # Dogfood evidence: Lakes of Finland (330 rows × label = 52kb).
+    raw_size = _json_size(response)
+    truncated = False
+    if raw_size > _WIKIDATA_RESPONSE_SOFT_LIMIT and rows:
+        # Proportional estimate + verify-and-tighten. Per-row size varies,
+        # and a pure proportional target often overshoots by a few hundred
+        # bytes. Halve the target up to 3 times if still over.
+        target_count = max(10,
+            (len(rows) * _WIKIDATA_RESPONSE_SOFT_LIMIT * 8) // (raw_size * 10))
+        for _ in range(3):
+            candidate = {**response, 'rows': rows[:target_count],
+                         'total': len(rows), 'returned_rows': target_count}
+            if _json_size(candidate) <= _WIKIDATA_RESPONSE_SOFT_LIMIT:
+                break
+            target_count = max(10, target_count // 2)
+        if target_count < len(rows):
+            response['rows'] = rows[:target_count]
+            response['returned_rows'] = target_count
+            response['auto_truncated'] = {
+                'reason': (
+                    f'full response was {raw_size} bytes, above the '
+                    f'{_WIKIDATA_RESPONSE_SOFT_LIMIT}-byte soft limit; '
+                    f'truncated to first {target_count} of {len(rows)} rows.'
+                ),
+                'total_rows_from_sparql': len(rows),
+                'guidance': (
+                    'Narrow your SELECT projection (drop `?itemLabel` / '
+                    'description variables — SPARQL `SERVICE wikibase:label` '
+                    'is often the biggest cost), or add a tighter WHERE '
+                    'filter and a `LIMIT` so the full result fits. Rows '
+                    'beyond this truncation are not stored anywhere and '
+                    'will be lost unless you re-query.'
+                ),
+            }
+            truncated = True
+    result_summary = f"{len(rows)} rows"
+    if truncated:
+        result_summary += f" [auto-truncated to {len(response['rows'])}]"
     log_usage(ctx, "wikidata_query",
               {"query_length": len(sparql)},
-              f"{len(rows)} rows",
+              result_summary,
               start_time=_start, note=note)
-    return json.dumps({
-        'rows': rows,
-        'total': len(rows),
-    }, indent=2, ensure_ascii=False)
+    return json.dumps(response, indent=2, ensure_ascii=False)
 
 
 @mcp.tool()
@@ -1615,6 +1958,23 @@ class _MainContentLinkExtractor(html.parser.HTMLParser):
                             or '/w/index.php?title=' in href)
             if not is_wiki_link or not link_title:
                 return
+            # Some links (notably image-thumbnail wrappers produced by
+            # MediaWiki's parser) carry a caption string in the title
+            # attribute while href points at a File:/Category:/etc. page.
+            # Trust href for namespace detection, not title — the caption
+            # typically has no colon and would sneak past the title-based
+            # colon check further down.
+            href_title = ''
+            if href.startswith('/wiki/'):
+                href_title = urllib.parse.unquote(
+                    href[len('/wiki/'):]).replace('_', ' ').split('#', 1)[0]
+            elif '/w/index.php?title=' in href:
+                qs = href.split('/w/index.php?', 1)[1]
+                href_title = urllib.parse.unquote(
+                    dict(urllib.parse.parse_qsl(qs)).get('title', '')
+                ).replace('_', ' ')
+            if ':' in href_title:
+                return
             if link_title.endswith(' (page does not exist)'):
                 link_title = link_title[:-len(' (page does not exist)')].strip()
             # mainspace only — skip namespaced pages (File:, Category:, etc.)
@@ -1868,6 +2228,155 @@ def preview_harvest_list_page(title: str, sample_size: int = 50,
     }, indent=2, ensure_ascii=False)
 
 
+class _AllMainspaceLinkExtractor(html.parser.HTMLParser):
+    """Collect every mainspace <a> link in a rendered HTML fragment.
+
+    Unlike `_MainContentLinkExtractor`, does NOT exclude navbox-class or
+    sidebar-class subtrees — used for `harvest_navbox` where the entire
+    page IS a navbox and filtering those classes would drop everything.
+    Carries over the href-based namespace check from the caption-as-title
+    fix so image-thumb wrappers don't pollute the link set."""
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.links: list[str] = []
+        self._seen: set[str] = set()
+
+    def handle_starttag(self, tag, attrs):
+        if tag != 'a':
+            return
+        attr_dict = dict(attrs)
+        link_title = attr_dict.get('title', '').strip()
+        href = attr_dict.get('href', '')
+        is_wiki_link = (href.startswith('/wiki/')
+                        or '/w/index.php?title=' in href)
+        if not is_wiki_link or not link_title:
+            return
+        href_title = ''
+        if href.startswith('/wiki/'):
+            href_title = urllib.parse.unquote(
+                href[len('/wiki/'):]).replace('_', ' ').split('#', 1)[0]
+        elif '/w/index.php?title=' in href:
+            qs = href.split('/w/index.php?', 1)[1]
+            href_title = urllib.parse.unquote(
+                dict(urllib.parse.parse_qsl(qs)).get('title', '')
+            ).replace('_', ' ')
+        if ':' in href_title:
+            return
+        if link_title.endswith(' (page does not exist)'):
+            link_title = link_title[:-len(' (page does not exist)')].strip()
+        if ':' in link_title:
+            return
+        if link_title in self._seen:
+            return
+        self._seen.add(link_title)
+        self.links.append(link_title)
+
+
+@mcp.tool()
+def harvest_navbox(template: str, note: str = "",
+                   topic: str | None = None, ctx: Context = None) -> str:
+    """Extract mainspace article links from a Wikipedia navbox template.
+
+    Navboxes (the horizontal tables at the bottom of Wikipedia articles
+    — e.g. `Template:Apollo program`, `Template:tvN series`,
+    `Template:Pulitzer Prize for Investigative Reporting`) are
+    editor-curated enumerations. They tend to be cleaner and more
+    canonical than free-form "List of …" pages, which often collect
+    prose-body links alongside the curated entries. Three dogfood
+    sessions (Pulitzer, K-drama, Symbolism) specifically asked for a
+    navbox-harvest primitive so they could target template-curated
+    content directly instead of fishing it out of list-page prose.
+
+    Extracted links are added to the working list with source label
+    `navbox:<template-name>`. Undo with `remove_by_source`.
+
+    Args:
+        template: Template name, either "Apollo program" (bare) or
+                  "Template:Apollo program" (prefixed). Both work.
+        note: Optional free-text observation for this call's log entry.
+              Use for mid-flow reflection; empty by default.
+        topic: Optional topic name. Pass if your client doesn't maintain
+               an MCP session.
+    """
+    _start = _start_call()
+    topic_id, wiki, err = _require_topic(ctx, topic)
+    if err:
+        return err
+
+    # Accept "Template:X" or bare "X". Strip whitespace before the
+    # prefix check so "  Template:X  " works like "X".
+    bare = template.strip()
+    if bare.lower().startswith('template:'):
+        bare = bare.split(':', 1)[1].strip()
+    if not bare:
+        return json.dumps({'error': 'Template name cannot be empty.'}, indent=2)
+    page_title = f"Template:{bare}"
+
+    parse_params = {
+        'action': 'parse',
+        'page': page_title,
+        'prop': 'text',
+        'format': 'json',
+        'formatversion': '2',
+        'redirects': '1',
+        'disabletoc': '1',
+        'disableeditsection': '1',
+    }
+    data = api_get(wiki_api_url(wiki), parse_params)
+
+    if not isinstance(data, dict) or 'error' in data:
+        return json.dumps({
+            'wiki': wiki,
+            'error': f'Template not found or inaccessible: {page_title}',
+            'api_error': (data or {}).get('error') if isinstance(data, dict) else None,
+            'hint': (
+                f'Check that "{page_title}" exists on {wiki}.wikipedia.org. '
+                f'Common mistake: passing a project/portal name (e.g. '
+                f'"WikiProject Apollo") — navboxes live in the Template: '
+                f'namespace, not the Wikipedia: namespace.'
+            ),
+        }, indent=2, ensure_ascii=False)
+
+    html_text = data.get('parse', {}).get('text', '')
+    if not html_text:
+        return json.dumps({
+            'wiki': wiki,
+            'error': f'Template rendered to empty HTML: {page_title}',
+        }, indent=2, ensure_ascii=False)
+
+    extractor = _AllMainspaceLinkExtractor()
+    extractor.feed(html_text)
+    links = [normalize_title(t) for t in extractor.links]
+
+    links, rejected_skipped, rejected_sample = _apply_rejections(topic_id, links)
+
+    source_label = f"navbox:{bare}"
+    batch = [(t, source_label, None) for t in links]
+    added, updated = db.add_articles(topic_id, batch)
+
+    log_usage(ctx, "harvest_navbox",
+              {"template": bare, "wiki": wiki},
+              f"{len(links)} links, {added} new",
+              start_time=_start, note=note)
+    return json.dumps({
+        'wiki': wiki,
+        'template': page_title,
+        'source_label': source_label,
+        'links_extracted': len(links),
+        'rejected_skipped': rejected_skipped,
+        'rejected_sample': rejected_sample,
+        'new_articles_added': added,
+        'total_in_working_list': db.get_status(topic_id)['total_articles'],
+        'note': (
+            f'Links added with source="{source_label}". To undo this pull, '
+            f'use: remove_by_source("{source_label}"). Navboxes typically '
+            f'include a handful of non-article links (category pages, other '
+            f'navboxes) that are filtered out here — the count reflects '
+            f'mainspace articles only.'
+        ),
+    }, indent=2, ensure_ascii=False)
+
+
 def _slugify_for_source_label(query: str, max_length: int = 60) -> str:
     """Slugify a search query for use inside a source label.
 
@@ -1915,6 +2424,65 @@ def _apply_within_category(query: str, within_category: str | None) -> str:
     return f'{query} incategory:"{within_category}"' if query else f'incategory:"{within_category}"'
 
 
+_INTITLE_OR_PATTERN = re.compile(
+    r'^\s*intitle:"[^"]+"(?:\s+OR\s+intitle:"[^"]+")+\s*$')
+
+
+def _split_intitle_or_query(query: str) -> list[str] | None:
+    """If `query` is a pure compound `intitle:"A" OR intitle:"B" [OR ...]`
+    chain, return the titles as a list. Else return None.
+
+    Works around a CirrusSearch quirk where compound intitle-OR queries
+    silently return zero results while each single-clause form returns
+    matches. Observed across three dogfood sessions. Callers split into
+    N separate queries and union the results."""
+    if not _INTITLE_OR_PATTERN.match(query):
+        return None
+    titles = re.findall(r'intitle:"([^"]+)"', query)
+    return titles if len(titles) >= 2 else None
+
+
+def _run_cirrus_search(query: str, within_category: str | None,
+                        limit: int, wiki: str) -> tuple[list[str], str]:
+    """Run a CirrusSearch query, union-splitting compound intitle-OR
+    forms. Returns (title_list, effective_query_note)."""
+    scoped_query = _apply_within_category(query, within_category)
+    subtitles = _split_intitle_or_query(query)
+
+    if not subtitles:
+        params = {
+            'list': 'search', 'srsearch': scoped_query,
+            'srnamespace': '0', 'srlimit': str(min(limit, 500)),
+            'srinfo': '', 'srprop': '',
+        }
+        titles = [item['title'] for item in
+                  api_query_all(params, 'search', max_items=limit, wiki=wiki)]
+        return titles, scoped_query
+
+    # Compound intitle-OR: run each clause separately and union.
+    seen: set[str] = set()
+    titles: list[str] = []
+    for sub in subtitles:
+        sub_scoped = _apply_within_category(f'intitle:"{sub}"', within_category)
+        params = {
+            'list': 'search', 'srsearch': sub_scoped,
+            'srnamespace': '0', 'srlimit': str(min(limit, 500)),
+            'srinfo': '', 'srprop': '',
+        }
+        for item in api_query_all(params, 'search', max_items=limit, wiki=wiki):
+            t = item['title']
+            if t not in seen:
+                seen.add(t)
+                titles.append(t)
+            if len(titles) >= limit:
+                break
+        if len(titles) >= limit:
+            break
+    note = (f'compound intitle-OR split into {len(subtitles)} separate '
+            f'queries (CirrusSearch quirk workaround)')
+    return titles, note
+
+
 @mcp.tool()
 def search_articles(query: str, limit: int = 500,
                     within_category: str | None = None,
@@ -1941,21 +2509,7 @@ def search_articles(query: str, limit: int = 500,
     if err:
         return err
 
-    scoped_query = _apply_within_category(query, within_category)
-
-    params = {
-        'list': 'search',
-        'srsearch': scoped_query,
-        'srnamespace': '0',
-        'srlimit': str(min(limit, 500)),
-        'srinfo': '',
-        'srprop': '',
-    }
-
-    results = []
-    for item in api_query_all(params, 'search', max_items=limit, wiki=wiki):
-        results.append(item['title'])
-
+    results, scoped_query = _run_cirrus_search(query, within_category, limit, wiki)
     results, rejected_skipped, rejected_sample = _apply_rejections(topic_id, results)
 
     # Tag with the specific query so remove_by_source / get_articles_by_source
@@ -2036,19 +2590,7 @@ def preview_search(query: str, limit: int = 50,
         return err
 
     limit = min(limit, 100)
-    scoped_query = _apply_within_category(query, within_category)
-    params = {
-        'list': 'search',
-        'srsearch': scoped_query,
-        'srnamespace': '0',
-        'srlimit': str(limit),
-        'srinfo': '',
-        'srprop': '',
-    }
-
-    titles = []
-    for item in api_query_all(params, 'search', max_items=limit, wiki=wiki):
-        titles.append(item['title'])
+    titles, scoped_query = _run_cirrus_search(query, within_category, limit, wiki)
 
     if not titles:
         return json.dumps({
@@ -2179,11 +2721,22 @@ def fetch_descriptions(limit: int = 2000, time_budget_s: int = 60,
         titles = db.get_undescribed_titles(topic_id, limit=limit)
         if not titles:
             break
-        desc_map = fetch_descriptions_with_fallback(titles, wiki=wiki)
+        desc_map = fetch_descriptions_with_fallback(
+            titles, wiki=wiki, deadline=deadline)
+        # Titles unprobed by the REST fallback (budget exhausted mid-
+        # batch) are omitted from desc_map so they stay NULL in the DB
+        # and a follow-up call retries them.
+        unprobed = [t for t in titles if t not in desc_map]
         db.set_descriptions(topic_id, desc_map)
-        total_fetched += len(titles)
+        total_fetched += len(desc_map)
         total_non_empty += sum(1 for v in desc_map.values() if v)
         batches += 1
+        if unprobed:
+            # REST fallback ran out of time mid-batch. Treat as budget
+            # exhausted so the tool returns now and the AI can call
+            # again to continue.
+            hit_budget = True
+            break
 
     remaining = db.count_undescribed(topic_id)
     if remaining == 0 and total_fetched == 0:
@@ -3337,6 +3890,7 @@ def filter_articles(resolve_redirects: bool = True, remove_disambig: bool = True
     if resolve_redirects:
         titles = list(all_articles.keys())
         redirect_map = {}
+        missing_titles: set[str] = set()
         collection_complete = True
         for i in range(0, len(titles), 50):
             if time.monotonic() >= deadline:
@@ -3352,10 +3906,18 @@ def filter_articles(resolve_redirects: bool = True, remove_disambig: bool = True
                     redirect_map[r['from']] = r['to']
                 for n in data['query'].get('normalized', []):
                     redirect_map[n['from']] = n['to']
+                # Track titles MediaWiki can't resolve at all. The
+                # caption-as-title leak from harvest_list_page parks
+                # phantom titles here — drop them rather than carry
+                # them into the export.
+                for p in data['query'].get('pages', []):
+                    if p.get('missing', False):
+                        missing_titles.add(p.get('title', ''))
 
         if collection_complete:
             new_articles = {}
             redirected = 0
+            removed_missing = 0
             for title, article in all_articles.items():
                 resolved = title
                 for _ in range(5):
@@ -3364,6 +3926,12 @@ def filter_articles(resolve_redirects: bool = True, remove_disambig: bool = True
                     else:
                         break
                 resolved = normalize_title(resolved)
+                # Drop titles MediaWiki doesn't recognize — no redirect
+                # target, no page. Titles that redirected are in
+                # redirect_map and won't be in missing_titles.
+                if resolved == normalize_title(title) and title in missing_titles:
+                    removed_missing += 1
+                    continue
                 if resolved != title:
                     redirected += 1
                     # Title changed — the stored description was for the old
@@ -3382,6 +3950,8 @@ def filter_articles(resolve_redirects: bool = True, remove_disambig: bool = True
 
             all_articles = new_articles
             stats['redirects_resolved'] = redirected
+            if removed_missing:
+                stats['removed_missing_titles'] = removed_missing
             stats['after_redirects'] = len(all_articles)
             phases_completed.append('redirects')
         else:
@@ -3567,6 +4137,73 @@ def export_csv(min_score: int = 0, scored_only: bool = False,
 
     download_url = f"https://topic-builder.wikiedu.org/exports/{filename}"
 
+    # Sidecar rubric file on enriched exports — the rubric is the
+    # shape-agnostic scope statement the AI (and later a reader) can use
+    # to interpret the scored corpus. Plain .txt sidecar keeps the CSV
+    # itself Impact-Visualizer-compatible.
+    rubric = db.get_topic_rubric(topic_id)
+    rubric_filename = None
+    rubric_download_url = None
+    if enriched and rubric:
+        rubric_filename = f"topic-articles-{slug}-rubric.txt"
+        rubric_path = os.path.join(export_dir, rubric_filename)
+        with open(rubric_path, 'w', encoding='utf-8') as rf:
+            rf.write(f"# Centrality rubric for topic: {topic_name}\n")
+            rf.write(f"# wiki: {wiki}\n")
+            rf.write(f"# exported: {datetime.datetime.now(datetime.timezone.utc).isoformat()}\n")
+            rf.write("\n")
+            rf.write(rubric)
+            if not rubric.endswith('\n'):
+                rf.write('\n')
+        rubric_download_url = f"https://topic-builder.wikiedu.org/exports/{rubric_filename}"
+
+    # Triangulation stats — articles present in multiple sources are more
+    # trustworthy than single-sourced ones. The 2026-04-23 dogfood arc
+    # showed triangulation quality monotonically predicts self-rated
+    # quality (Lakes 85% multi-sourced → rating 8; K-drama 0% → rating 6).
+    # Surfacing this at export time lets the AI (or user) decide whether
+    # to add a second gathering axis before shipping.
+    triangulation: dict = {}
+    triangulation_warning = None
+    if titles:
+        single = 0
+        multi = 0
+        solo_contrib: dict[str, int] = {}
+        for t in titles:
+            sources = all_articles.get(t, {}).get('sources') or []
+            n = len(sources)
+            if n == 1:
+                single += 1
+                label = sources[0]
+                solo_contrib[label] = solo_contrib.get(label, 0) + 1
+            elif n >= 2:
+                multi += 1
+        total = len(titles)
+        triangulation = {
+            'total_articles': total,
+            'multi_sourced': multi,
+            'multi_sourced_pct': round(100.0 * multi / total, 1),
+            'single_sourced': single,
+            'single_sourced_pct': round(100.0 * single / total, 1),
+        }
+        if solo_contrib:
+            top_solo = sorted(solo_contrib.items(), key=lambda kv: -kv[1])[:5]
+            triangulation['top_solo_source_contributors'] = [
+                {'source': s, 'solo_articles': n} for s, n in top_solo
+            ]
+        # Warn only on meaningfully-sized corpora — a 5-article topic with
+        # 80% single-sourced is noise, not a quality signal.
+        if total >= 20 and triangulation['single_sourced_pct'] > 70:
+            triangulation_warning = (
+                f"{single} of {total} articles ({triangulation['single_sourced_pct']}%) "
+                f"are single-sourced. Topics with tight triangulation "
+                f"(≥30% multi-sourced) have rated noticeably higher in "
+                f"prior sessions. Consider adding a second gathering axis "
+                f"(WikiProject, Wikidata P-property, list page harvest, or "
+                f"category pull) and re-exporting, especially if the top "
+                f"solo contributor is a list page or navbox-heavy source."
+            )
+
     log_usage(ctx, "export_csv",
               {"min_score": min_score, "scored_only": scored_only,
                "enriched": enriched, "wiki": wiki},
@@ -3584,18 +4221,32 @@ def export_csv(min_score: int = 0, scored_only: bool = False,
         f'For richer output (score, source labels, timestamp), call export_csv '
         f'with enriched=True.'
     )
-    return json.dumps({
+    response: dict = {
         'wiki': wiki,
         'article_count': len(titles),
         'min_score': min_score,
         'enriched': enriched,
         'download_url': download_url,
         'filename': filename,
+        'triangulation': triangulation,
         'note': (
             f'Give the user the download link above. {note_suffix} '
             f'Titles refer to articles on {wiki}.wikipedia.org.'
         ),
-    }, indent=2, ensure_ascii=False)
+    }
+    if triangulation_warning:
+        response['triangulation_warning'] = triangulation_warning
+    if rubric_download_url:
+        response['rubric_download_url'] = rubric_download_url
+        response['rubric_filename'] = rubric_filename
+    elif enriched and not rubric:
+        response['rubric_missing'] = (
+            'No centrality rubric was set for this topic — enriched '
+            'exports normally ship a sidecar .txt rubric file so a '
+            'reader can interpret the scores. Call set_topic_rubric '
+            'before re-exporting if you want one.'
+        )
+    return json.dumps(response, indent=2, ensure_ascii=False)
 
 
 # ── Feedback ──────────────────────────────────────────────────────────────

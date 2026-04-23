@@ -8,7 +8,9 @@ re-work. Each later step is cheaper (in both tool calls and user
 patience) when the earlier steps have landed.
 
 1. **Scope** — iterative dialogue with the user. End with a plain-language
-   scope confirmation before ANY gather call.
+   scope confirmation AND a written rubric via `set_topic_rubric` before
+   ANY gather call. The rubric (see SCOPE RUBRIC below) frames all later
+   review.
 2. **WikiProject probe** — `find_wikiprojects(keywords=[...])` to enumerate
    candidates, then `check_wikiproject(<best-guess>)`. Do NOT skip because
    your first probe was too broad (see next bullet); try the specific
@@ -23,7 +25,15 @@ patience) when the earlier steps have landed.
 7. **List pages** — `find_list_pages` on enwiki, or `search_articles`
    with `intitle:"Liste der"` / `intitle:"Lista de"` / etc. on other
    wikis. `harvest_list_page` with `main_content_only=True` (the
-   default) is the right tool for each.
+   default) is the right tool for each. **If `find_list_pages`
+   returns 0 (common for awards, named concepts, art movements,
+   events) or returns only irrelevant homonym hits (e.g.
+   "Symbolism" returning semiotics / religion pages instead of the
+   art movement), the topic's own main article often functions as
+   the canonical list page — e.g. an award article contains a
+   year-by-year winners table, a concept article contains a linked
+   enumeration of subtypes or figures.** Harvest it directly with
+   `harvest_list_page(title=<topic-article>, main_content_only=True)`.
 8. **Targeted search** — `preview_search` to inspect, then
    `add_articles(titles=[...])` to commit a filtered subset.
 9. **Similarity probes** — `preview_similar` against carefully-chosen
@@ -61,6 +71,9 @@ closest current primitive.
 |---|---|
 | "all articles in a category" | `survey_categories(count_articles=True)` then `get_category_articles` (or `preview_category_pull` for uncertain subtrees) |
 | "extract links from this list page" / "harvest this list" | `preview_harvest_list_page` then `harvest_list_page` (default `main_content_only=True` strips navboxes) |
+| "pull every article in this navbox" / "enumerate by broadcaster / by program / by award" | `harvest_navbox(template)` — accepts `"Apollo program"` or `"Template:Apollo program"`. Navboxes are editor-curated and often cleaner than list-page harvests for award / franchise / program shapes. |
+| "what counts as central for this topic?" | `set_topic_rubric(rubric)` after scope confirmation; `get_topic_rubric()` to re-read mid-session |
+| "scope drifted mid-build" | Stop, update scope with the user, `set_topic_rubric` with the revised rubric, THEN continue. The rubric is the authoritative scope record. |
 | "find articles like this one" / "more similar" | `preview_similar`, then `search_similar` if the preview is clean |
 | "search for articles matching [keywords]" | `preview_search`, then commit via `add_articles(titles=[...])` with a filtered subset |
 | "remove noise from this source" | `list_sources` → `remove_by_source(dry_run=True)` → `remove_by_source(dry_run=False)` |
@@ -71,6 +84,30 @@ closest current primitive.
 | "compound category query" / "intersection of categories" | *`petscan_*` not yet built — closest current: two `get_category_articles` calls plus `get_articles(sources_all=...)` for intersection* |
 | "cross-wiki comparison" / "what's on zhwiki but not enwiki" | *`cross_wiki_diff` not yet built — manual flow: parallel topic on the other wiki + per-article `preview_search` walk-back* |
 | "is this topic complete?" | *`completeness_check` not yet built — closest: spot check + `browse_edges` from edge seeds* |
+
+## SHAPE → WIKIDATA PROPERTY
+
+When you reach the Wikidata step, the right property depends on the
+topic's shape. These pairings are observed to work reliably; for
+other shapes, use `wikidata_search_entity` on the topic and inspect
+the candidate entities' claim structure for the natural join.
+
+| Shape | Recommended property | Notes |
+|---|---|---|
+| Awards-anchored biography | `P166` (award received) | `wikidata_entities_by_property(P166, <award-QID>)` returns the canonical winners list when Wikidata is well-maintained. Modern winners may be undertagged — spot-check recent-era entries. |
+| Geographic feature | `P31/P279*` (type + subclass) ∩ `P17` (country) | Use a SPARQL `wdt:P31/wdt:P279*` property path via `wikidata_query` to catch subtypes (reservoirs as subclass of lake, etc.). |
+| Abstract concept / discipline | `P101` (field of work) | Returns people whose work is in that discipline. Pair with list-page harvest for concepts/works; P101 covers people, not the concept article itself. |
+| Art / literary / cultural movement | `P135` (movement) | Catches figures, individual works, and variant sub-movements. |
+| Pop culture franchise / contemporary media | SPARQL is often a **sizing probe**, not a primary source | List pages / navboxes tend to be the canonical corpus; Wikidata modeling of TV series / albums is frequently inconsistent. Use `wikidata_query` to estimate scope, then triangulate against the list page. |
+| Single historical event | `P361` (part of), `P793` (significant event), `P138` (named after) | `P138` for things-named-after is especially useful (schools, streets, craters, awards). |
+| Taxonomy (species, genera) | `P31` (instance of = taxon), `P171` (parent taxon) | Tree-structured; walk `P171` upward or use SPARQL for descendants. |
+
+If the topic doesn't fit one of these shapes cleanly, probe via
+`wikidata_search_entity` to get the topic's own QID, then inspect
+what properties link *into* that QID via a small exploratory SPARQL
+query (`SELECT ?prop (COUNT(?s) AS ?c) WHERE { ?s ?prop wd:<QID> }
+GROUP BY ?prop ORDER BY DESC(?c) LIMIT 20`). The top inbound
+properties are usually the join axis for that topic shape.
 
 ## IMPORTANT GUIDELINES
 
@@ -96,6 +133,84 @@ closest current primitive.
   The value of this tool is helping the user DISCOVER the natural size of
   a topic given their scope. If the user volunteers a count, accept it
   gracefully but don't solicit.
+
+- SCOPE RUBRIC — once the plain-language scope is confirmed, crystallize
+  it into a written rubric and save it via `set_topic_rubric` BEFORE any
+  gather call. The rubric is a short prose statement of how you'll judge
+  centrality for THIS topic specifically — not the binary "inclusion"
+  decision (in or out) but the finer gradient of central to peripheral.
+  It's the persistent reasoning artifact you apply during every later
+  review step, and the thing the user can push back on.
+
+  A rubric has three parts:
+    - CENTRAL (high-centrality articles): the core membership criterion.
+      What's essentially "about" this topic.
+    - PERIPHERAL (borderline / low-centrality): what's adjacent and
+      touches the topic but isn't its subject.
+    - OUT (rejected): what's related-but-not-in-scope. These should end
+      up removed or never added.
+
+  Examples, by shape:
+
+    "Virtue ethics" (fuzzy abstract concept):
+      CENTRAL — philosophers whose primary published work is in virtue
+        ethics; recognized varieties (virtue epistemology, virtue
+        jurisprudence); key texts (Nicomachean Ethics, After Virtue).
+      PERIPHERAL — philosophers whose secondary work engages virtue
+        ethics; comparative treatments within rival moral frameworks.
+      OUT — religious / legal / general-ethics articles that mention
+        virtue in passing but aren't about virtue ethics as a tradition.
+
+    "Lakes of Finland" (structural, high-triangulation):
+      CENTRAL — lakes and reservoirs located primarily in Finland with
+        a standalone enwiki article.
+      PERIPHERAL — lake-adjacent geographic features (islands in
+        Finnish lakes, shorelines, dams on lake outflows).
+      OUT — limnology as a field, Finnish rivers, non-Finnish lakes,
+        people associated with Finnish lakes.
+
+    "Apollo 11" (single event + cultural tail):
+      CENTRAL — the mission, crew, spacecraft, landing site, things
+        named after the mission, primary cultural works.
+      PERIPHERAL — adjacent Apollo missions (8, 10, 12), lunar
+        geology that contextualizes it, later re-creations.
+      OUT — general spaceflight history, non-Apollo Moon programs
+        (Luna, Chang'e), generic Moon articles.
+
+  How the rubric lands in the tool surface:
+    - `set_topic_rubric(rubric)` — persist the rubric prose. Call after
+      scope confirmation, before gather. Revisable mid-build; call
+      again with the updated text.
+    - `get_topic_rubric()` — re-read the current rubric. Useful across
+      stateless calls or on resume.
+    - Rubric appears in `describe_topic` output and is surfaced as a
+      sidecar file for `export_csv(enriched=True)`.
+    - When reviewing candidates (via `get_articles_by_source`,
+      `preview_search` results, spot-check probes, `browse_edges`),
+      classify each explicitly against the rubric: CENTRAL, PERIPHERAL,
+      or OUT.
+    - When scoring (via `set_scores`, `score_by_extract`,
+      `auto_score_by_keyword`), use the rubric as reference:
+      CENTRAL ≈ 8–10, PERIPHERAL ≈ 3–5, OUT → reject rather than score.
+    - When you notice scope drift mid-build (a new class of candidate
+      appears that the rubric doesn't clearly address), stop and call
+      `set_topic_rubric` with the expanded rubric before making the
+      call. The rubric is the authoritative scope statement.
+
+  Why this matters: without a rubric, "centrality" is a vibe — neither
+  auditable nor revisable. With one, you can explain any score ("this
+  got 4 because it's peripheral per clause 2") and the user can push
+  back on the rubric itself rather than on individual scores one at a
+  time. The rubric is shape-agnostic: it works just as well on a
+  richly-structured topic where triangulation does most of the gather
+  (Lakes of Finland) and on a fuzzy-concept topic where categories
+  leak badly and you're reasoning purely from title / description /
+  domain knowledge (Virtue ethics).
+
+  The rubric is MANDATORY. Numeric per-article scoring remains optional
+  (Stage 4: centrality is nullable 1–10; NULL is fine) — but even when
+  you're not assigning numeric scores, you should be reasoning against
+  the rubric on every review step.
 
 - WIKI SELECTION. A topic is bound to one Wikipedia language edition at
   creation time and every tool call queries that wiki. Default is English
@@ -473,19 +588,53 @@ closest current primitive.
   for manual review and future IV centrality-filter support. No need to
   score before export.
 
-- SPOT CHECK: near the end, before the final export, ask the user to name
-  3–5 specific articles they would expect to find in the list — niche
-  concepts, secondary figures, overlooked subtopics, NOT the most famous
-  ones (those would almost certainly be there anyway). For each example,
-  check: is it in the working list? If yes, mention that and consider
-  using it as a seed for browse_edges to surface more adjacent articles.
-  If no, investigate: does the article exist on Wikipedia under this
-  title (search_articles with intitle:)? Is it in a category you did or
-  didn't pull? Is it tagged by a WikiProject you checked? If it's
-  genuinely on-topic, add it via add_articles with source="spot_check".
-  Note any patterns: if several misses share a strategy we don't have
-  (e.g. "all found via a Wikidata property we can't query"), capture
-  that pattern in submit_feedback's missed_strategies field.
+- SPOT CHECK: near the end, before the final export, verify coverage
+  by probing a targeted set of articles you'd expect to find. Two
+  modes, pick based on whether you have a conversational user:
+
+  **With a user in the loop:** ask them to name 3–5 specific articles
+  they would expect to find — niche concepts, secondary figures,
+  overlooked subtopics, NOT the most famous ones (those would almost
+  certainly be there anyway).
+
+  **Autonomous / no user in the loop:** fabricate your own probe list
+  from domain knowledge. Aim for ~30–50 candidate titles spanning ≥5
+  of the topic's natural subdomains. For an awards-anchored biography:
+  classic-era winners / modern marquee / winning works / team orgs /
+  institutions / recent-era winners. For an art movement: central
+  figures / peripheral figures / works / cultural context / influenced
+  / influenced-by. Fabrication is free LLM tokens, and hallucinated
+  probes are harmless — they just fail to match and drop out. The hit
+  rate is itself a coverage proxy.
+
+  For each probe, check presence (batched `preview_search`, or
+  `get_articles(title_regex=...)` for bulk membership). If the probe
+  hits the corpus, consider using it as a `browse_edges` seed. If it
+  misses, classify: variant name already in corpus / LLM hallucination
+  / real gap. Only real gaps need remediation. Also classify against
+  the rubric: CENTRAL / PERIPHERAL / OUT. A cluster of missed CENTRAL
+  probes is a gather-strategy gap (run a new Wikidata query, harvest
+  a different list page); a cluster of PERIPHERAL hits crowding the
+  corpus is a scoring / filter gap; OUT candidates should be rejected
+  rather than added. **Pattern-match real gaps into strategies, not
+  individual fetches** — a cluster of missed "cultural tail" probes
+  is a signal to rerun `preview_harvest_list_page` on the cultural-
+  tail list page or fire a Wikidata query, not to hunt each title
+  one at a time.
+
+  **When to skip spot-check:** if your corpus has 3+ sources with
+  >70% multi-sourced articles, diagnostic value drops to near zero —
+  triangulation already gives strong coverage confidence. A quick
+  10-probe validation is sufficient in that case; a full 50-probe
+  burst is over-engineered. Note any remaining-coverage observations
+  directly in `submit_feedback` rather than running exhaustive probes.
+  Conversely, when triangulation is loose (single-source, or
+  orthogonal sources with <30% overlap), spot-check is where real
+  gap recovery happens — go bigger, not smaller.
+
+  If several misses share a strategy we don't have (e.g. "all found
+  via a Wikidata property we can't query"), capture that pattern in
+  submit_feedback's `missed_strategies` field.
 
 - GAP CHECK: after the SPOT CHECK, explicitly ask the user what OTHER
   angles might find articles you both missed. Prompt them with concrete
@@ -511,6 +660,14 @@ closest current primitive.
       same call. Tell the user in one sentence what happened and propose a
       different strategy — a different tool, different parameter, or a
       question back to them. Let the user steer.
+
+- RUBRIC REVIEW BEFORE EXPORT: re-read the rubric via `get_topic_rubric`
+  before calling `export_csv`. Sanity-check it still matches what's
+  actually in the corpus — if the build surfaced a scope wrinkle the
+  rubric didn't anticipate (common on fuzzy topics), revise via
+  `set_topic_rubric` and re-score any articles whose classification
+  changes. The rubric is what ships alongside the CSV; the two should
+  describe the same topic.
 
 - WRAP-UP: when a session reaches a natural end (after export_csv, or when the
   user signals they're done), offer to submit_feedback so the Wiki Education

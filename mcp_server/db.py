@@ -25,6 +25,7 @@ def init_db():
             name TEXT NOT NULL,
             slug TEXT NOT NULL UNIQUE,
             wiki TEXT NOT NULL DEFAULT 'en',
+            centrality_rubric TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
@@ -66,6 +67,11 @@ def init_db():
     topic_cols = [r[1] for r in conn.execute("PRAGMA table_info(topics)")]
     if 'wiki' not in topic_cols:
         conn.execute("ALTER TABLE topics ADD COLUMN wiki TEXT NOT NULL DEFAULT 'en'")
+    # Migrate existing DBs that predate the centrality rubric. Empty string
+    # means "no rubric set yet" — AI should write one at scoping time.
+    if 'centrality_rubric' not in topic_cols:
+        conn.execute(
+            "ALTER TABLE topics ADD COLUMN centrality_rubric TEXT NOT NULL DEFAULT ''")
     conn.commit()
     conn.close()
 
@@ -109,6 +115,28 @@ def get_topic_by_name(name):
     if row:
         return row['id'], row['name'], row['wiki']
     return None, None, None
+
+
+def get_topic_rubric(topic_id):
+    """Read the centrality rubric for a topic. Returns '' if unset."""
+    conn = _connect()
+    row = conn.execute(
+        "SELECT centrality_rubric FROM topics WHERE id = ?",
+        (topic_id,)).fetchone()
+    conn.close()
+    return row['centrality_rubric'] if row else ''
+
+
+def set_topic_rubric(topic_id, rubric):
+    """Persist the centrality rubric. Idempotent; overwrites prior value.
+    Also bumps `updated_at` so `list_topics` reflects the edit."""
+    conn = _connect()
+    conn.execute(
+        "UPDATE topics SET centrality_rubric = ?, "
+        "updated_at = datetime('now') WHERE id = ?",
+        (rubric, topic_id))
+    conn.commit()
+    conn.close()
 
 
 def append_feedback(entry):

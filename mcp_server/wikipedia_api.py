@@ -175,45 +175,69 @@ def _first_sentence(text, max_chars=200):
     return text
 
 
-def fetch_rest_intros(titles, wiki):
+def fetch_rest_intros(titles, wiki, deadline=None):
     """Fetch first-sentence intros from MediaWiki's REST page-summary
-    endpoint. Returns a dict title -> first sentence (may be empty string
-    when the page is missing or the extract is blank).
+    endpoint. Returns `(out, unprobed)` — a dict of title -> first
+    sentence (may be empty string when the page is missing or the
+    extract is blank) plus a list of titles that were NOT probed
+    because the monotonic `deadline` was exhausted mid-loop.
 
-    Intended as a fallback when Wikidata short-descs are empty — English
-    Wikidata short-desc coverage is near-complete, but most other language
-    editions are sparse, so `fetch_short_descriptions` alone returns
-    mostly empty on non-en topics. The REST extract pulls the first
-    paragraph of the article body, so non-en pages almost always have
-    *something* even without a Wikidata short-desc."""
+    Per-call cost is one HTTP round-trip, so a sequential loop over
+    N empty titles takes ~N × p99 latency. On large topics with many
+    empty Wikidata short-descs (e.g. transliterated geography, older
+    biographies) this can push a tool past its client transport's
+    timeout — pass a `deadline` to bail early and let the caller
+    retry the unprobed titles on the next invocation.
+
+    Intended as a fallback when Wikidata short-descs are empty."""
     import urllib.parse
-    out = {t: '' for t in titles}
+    out = {}
+    unprobed = []
     base = f"https://{wiki}.wikipedia.org/api/rest_v1/page/summary/"
     for title in titles:
+        if deadline is not None and time.monotonic() >= deadline:
+            unprobed.append(title)
+            continue
         encoded = urllib.parse.quote(title.replace(' ', '_'), safe='')
         try:
             data = api_get(base + encoded, timeout=10)
         except Exception:
+            out[title] = ''
             continue
         extract = (data or {}).get('extract', '') if isinstance(data, dict) else ''
-        if extract:
-            out[title] = _first_sentence(extract)
-    return out
+        out[title] = _first_sentence(extract) if extract else ''
+    return out, unprobed
 
 
-def fetch_descriptions_with_fallback(titles, wiki='en'):
+def fetch_descriptions_with_fallback(titles, wiki='en', deadline=None):
     """Fetch Wikidata short-descs, then fall back to REST /page/summary
-    intros for titles where Wikidata came back empty AND the wiki is
-    non-en. On enwiki the Wikidata layer is sufficient (we skip the REST
-    fallback to save requests). Returns dict title -> description."""
+    intros for titles where Wikidata came back empty. Returns dict
+    title -> description.
+
+    Earlier versions skipped the REST fallback on enwiki on the
+    assumption Wikidata shortdescs are near-complete there. In practice
+    older-era biography articles commonly have no shortdesc set,
+    leaving ~20% blank in topics like Pulitzer IR. The REST extract
+    hits a distinct endpoint per title, so a large batch of empties
+    can blow past a client transport timeout — pass `deadline` (a
+    `time.monotonic()` cutoff) to bail early. Titles that weren't
+    probed are OMITTED from the returned dict so the caller's DB write
+    doesn't lock them in as permanently empty; a follow-up call will
+    retry them."""
     out = fetch_short_descriptions(titles, wiki=wiki)
-    if wiki != 'en':
-        empty_titles = [t for t, d in out.items() if not d]
-        if empty_titles:
-            rest = fetch_rest_intros(empty_titles, wiki)
-            for t, intro in rest.items():
-                if intro:
-                    out[t] = intro
+    empty_titles = [t for t, d in out.items() if not d]
+    if not empty_titles:
+        return out
+    rest, unprobed = fetch_rest_intros(empty_titles, wiki, deadline=deadline)
+    for t, intro in rest.items():
+        if intro:
+            out[t] = intro
+    # Don't persist the Wikidata-empty verdict for titles we couldn't
+    # probe the REST endpoint for — drop them from the dict so the DB
+    # layer leaves them NULL (still-undescribed) and a retry actually
+    # re-attempts them.
+    for t in unprobed:
+        out.pop(t, None)
     return out
 
 
@@ -365,7 +389,7 @@ def wikidata_entities_by_property(property_id: str, value_qid: str,
         )
     limit = max(1, min(int(limit), 10000))
     sparql = f"""
-    SELECT ?item ?itemLabel ?article ?description WHERE {{
+    SELECT ?item ?itemLabel ?article ?description ?sitelinkCount WHERE {{
       ?item wdt:{property_id} wd:{value_qid} .
       OPTIONAL {{
         ?article schema:about ?item ;
@@ -375,6 +399,7 @@ def wikidata_entities_by_property(property_id: str, value_qid: str,
         ?item schema:description ?description .
         FILTER(LANG(?description) = "{wiki}")
       }}
+      OPTIONAL {{ ?item wikibase:sitelinks ?sitelinkCount . }}
       SERVICE wikibase:label {{ bd:serviceParam wikibase:language "{wiki}". }}
     }}
     LIMIT {limit}
@@ -388,11 +413,21 @@ def wikidata_entities_by_property(property_id: str, value_qid: str,
         if article_url.startswith(title_prefix):
             title = urllib.parse.unquote(
                 article_url[len(title_prefix):]).replace('_', ' ')
+        # sitelinkCount comes back as a string; coerce to int. An entity
+        # with no sitelinks at all (genuine not-on-any-wiki) is distinct
+        # from one with sitelinks on other wikis but not the requested
+        # one (translation / merge-target candidate).
+        try:
+            sitelink_count = int(r.get('sitelinkCount', '') or 0)
+        except (TypeError, ValueError):
+            sitelink_count = 0
         out.append({
             'qid': r.get('item', ''),
             'label': r.get('itemLabel', ''),
             'title': title,
             'description': r.get('description', ''),
+            'has_sitelink_on_wiki': bool(title),
+            'sitelink_count': sitelink_count,
         })
     return out
 
