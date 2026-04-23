@@ -152,6 +152,69 @@ def normalize_title(title):
     return title.strip()
 
 
+def _first_sentence(text, max_chars=200):
+    """Extract a best-effort first sentence from a plain-text REST extract.
+    Skips periods within the first 30 chars (likely abbreviations like
+    'Dr.' / 'Mt.') and caps at max_chars so long opening sentences don't
+    bloat the description column."""
+    if not text:
+        return ''
+    text = text.strip()
+    # Look for the first period followed by whitespace or end-of-string,
+    # past the 30-char threshold.
+    import re
+    match = re.search(r'\.(?:\s|$)', text[30:])
+    if match:
+        end = 30 + match.start() + 1
+        return text[:end][:max_chars]
+    # No clean sentence boundary — just truncate.
+    if len(text) > max_chars:
+        return text[:max_chars].rstrip() + '…'
+    return text
+
+
+def fetch_rest_intros(titles, wiki):
+    """Fetch first-sentence intros from MediaWiki's REST page-summary
+    endpoint. Returns a dict title -> first sentence (may be empty string
+    when the page is missing or the extract is blank).
+
+    Intended as a fallback when Wikidata short-descs are empty — English
+    Wikidata short-desc coverage is near-complete, but most other language
+    editions are sparse, so `fetch_short_descriptions` alone returns
+    mostly empty on non-en topics. The REST extract pulls the first
+    paragraph of the article body, so non-en pages almost always have
+    *something* even without a Wikidata short-desc."""
+    import urllib.parse
+    out = {t: '' for t in titles}
+    base = f"https://{wiki}.wikipedia.org/api/rest_v1/page/summary/"
+    for title in titles:
+        encoded = urllib.parse.quote(title.replace(' ', '_'), safe='')
+        try:
+            data = api_get(base + encoded, timeout=10)
+        except Exception:
+            continue
+        extract = (data or {}).get('extract', '') if isinstance(data, dict) else ''
+        if extract:
+            out[title] = _first_sentence(extract)
+    return out
+
+
+def fetch_descriptions_with_fallback(titles, wiki='en'):
+    """Fetch Wikidata short-descs, then fall back to REST /page/summary
+    intros for titles where Wikidata came back empty AND the wiki is
+    non-en. On enwiki the Wikidata layer is sufficient (we skip the REST
+    fallback to save requests). Returns dict title -> description."""
+    out = fetch_short_descriptions(titles, wiki=wiki)
+    if wiki != 'en':
+        empty_titles = [t for t, d in out.items() if not d]
+        if empty_titles:
+            rest = fetch_rest_intros(empty_titles, wiki)
+            for t, intro in rest.items():
+                if intro:
+                    out[t] = intro
+    return out
+
+
 def fetch_short_descriptions(titles, wiki='en'):
     """Fetch Wikidata short descriptions for a list of article titles.
 

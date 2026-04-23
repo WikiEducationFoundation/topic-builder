@@ -22,6 +22,7 @@ from mcp.server.fastmcp import FastMCP, Context
 from wikipedia_api import (
     api_query, api_query_all, api_get, normalize_title, wiki_api_url,
     get_rate_limit_stats, fetch_short_descriptions,
+    fetch_descriptions_with_fallback,
     reset_call_counters, get_call_counters,
 )
 import db
@@ -828,7 +829,7 @@ def preview_category_pull(category: str, depth: int = 3,
     overlap_count = len(articles) - new_count
 
     sample_titles = articles[:max(0, sample_size)]
-    descriptions = fetch_short_descriptions(sample_titles, wiki=wiki) if sample_titles else {}
+    descriptions = fetch_descriptions_with_fallback(sample_titles, wiki=wiki) if sample_titles else {}
     sample = [
         {
             'title': t,
@@ -1112,7 +1113,7 @@ def preview_harvest_list_page(title: str, sample_size: int = 50,
     overlap_count = len(links) - new_count
 
     sample_titles = links[:max(0, sample_size)]
-    descriptions = fetch_short_descriptions(sample_titles, wiki=wiki) if sample_titles else {}
+    descriptions = fetch_descriptions_with_fallback(sample_titles, wiki=wiki) if sample_titles else {}
     sample = [
         {
             'title': t,
@@ -1334,7 +1335,7 @@ def preview_search(query: str, limit: int = 50,
             'results': [],
         }, indent=2, ensure_ascii=False)
 
-    descriptions = fetch_short_descriptions(titles, wiki=wiki)
+    descriptions = fetch_descriptions_with_fallback(titles, wiki=wiki)
     existing = db.get_all_titles(topic_id)
 
     results = []
@@ -1402,20 +1403,26 @@ def preview_similar(seed_article: str, limit: int = 50, note: str = "",
 def fetch_descriptions(limit: int = 2000, time_budget_s: int = 60,
                        note: str = "",
                        topic: str | None = None, ctx: Context = None) -> str:
-    """Fetch Wikidata short descriptions for articles in the current topic
-    that don't have one yet, and persist them. Descriptions show up in
+    """Fetch short descriptions for articles in the current topic that
+    don't have one yet, and persist them. Descriptions show up in
     get_articles / get_articles_by_source output so the AI or user can judge
     relevance while paging or reviewing a source. export_csv also reuses them.
 
-    Auto-loops internally: each batch fetches up to `limit` titles (which
-    fetch_short_descriptions further batches as 50-per-API-call), then the
-    tool continues with the next undescribed chunk until either the topic is
+    On **enwiki**, sources the Wikidata short description (comprehensive
+    coverage). On **non-en wikis**, first tries Wikidata — which is sparse
+    outside English — then falls back to the first sentence of the
+    article's REST summary (MediaWiki's `/page/summary/{title}` endpoint).
+    The fallback is what makes cross-wiki topic builds usable: zhwiki /
+    jawiki / ptwiki previously came back with all-empty descriptions.
+
+    Auto-loops internally: each batch fetches up to `limit` titles, then
+    continues with the next undescribed chunk until either the topic is
     fully described or `time_budget_s` is exhausted. One call on a fresh
     topic typically drains the backlog; call again if `remaining_undescribed`
     is non-zero on return.
 
-    An article with no short-desc on Wikipedia is stored as an empty string
-    (so we don't re-ask next time).
+    An article with no short-desc on Wikipedia (and no REST extract on
+    non-en) is stored as an empty string so we don't re-ask next time.
 
     Args:
         limit: Max titles to fetch per internal batch (default 2000). Tune
@@ -1447,7 +1454,7 @@ def fetch_descriptions(limit: int = 2000, time_budget_s: int = 60,
         titles = db.get_undescribed_titles(topic_id, limit=limit)
         if not titles:
             break
-        desc_map = fetch_short_descriptions(titles, wiki=wiki)
+        desc_map = fetch_descriptions_with_fallback(titles, wiki=wiki)
         db.set_descriptions(topic_id, desc_map)
         total_fetched += len(titles)
         total_non_empty += sum(1 for v in desc_map.values() if v)
@@ -2532,7 +2539,7 @@ def export_csv(min_score: int = 0, scored_only: bool = False, note: str = "",
         else:
             descriptions[title] = stored
     if missing:
-        fetched = fetch_short_descriptions(missing, wiki=wiki)
+        fetched = fetch_descriptions_with_fallback(missing, wiki=wiki)
         db.set_descriptions(topic_id, fetched)
         descriptions.update(fetched)
 

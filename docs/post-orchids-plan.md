@@ -330,7 +330,10 @@ Alternative / additive: learn from context — if the topic already contains 100
 
 ---
 
-### 1.17 ☐ Non-English description fallback via REST page summary `[NEW — promoted from deferred]`
+### 1.17 ☑ Non-English description fallback via REST page summary `[NEW — promoted from deferred]`
+
+**Shipped 2026-04-22.** New `fetch_descriptions_with_fallback(titles, wiki)` in `wikipedia_api.py`: first pass Wikidata short-desc (unchanged), then on non-en wikis retries empty titles via `/api/rest_v1/page/summary/{title}` and stores the extract's first sentence. Applied to `fetch_descriptions`, `preview_search`, `preview_harvest_list_page`, `preview_category_pull`, and `export_csv`. Skipped on enwiki (Wikidata coverage there is comprehensive; no need to double API cost). First-sentence extraction uses a 30-char abbreviation guard + 200-char cap.
+
 
 **What.** When Wikidata short-desc is empty on a non-en wiki, fall back to the first-sentence of the article intro via the MediaWiki REST page-summary endpoint.
 
