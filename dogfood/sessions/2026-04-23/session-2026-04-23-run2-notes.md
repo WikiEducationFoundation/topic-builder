@@ -1,5 +1,11 @@
 # Dogfood session notes — 2026-04-23 (run 2, multi-topic arc)
 
+> **Historical log.** Observation notes from the 2026-04-23 multi-topic
+> dogfood arc (Pulitzer + 4 follow-ons). Conclusions have been distilled
+> into `docs/backlog/README.md` (notably the Tier 2 spot-check
+> primitives cluster and Tier 3 `topic_policy` items). Kept here for
+> evidence traceability; not actively updated.
+
 Second dogfood pass of the day, run against the patched `task.md` (autonomous
 spot-check override, `submit_feedback` field-separation warning, updated
 shapes-tested list). **Scope expanded mid-arc:** Sage told the autonomous

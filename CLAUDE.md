@@ -4,7 +4,7 @@
 
 An MCP server that helps an AI assistant identify every Wikipedia article belonging to an arbitrary subject, ending with a downloadable CSV ready for the Wiki Education [Impact Visualizer](https://github.com/WikiEducationFoundation/impact-visualizer). The AI drives the workflow; users steer it through conversation.
 
-The server runs at `https://topic-builder.wikiedu.org/mcp` and exposes ~27 tools (start/reset a topic, reconnaissance, gathering, scoring, cleanup, export, feedback). Two MCP clients matter right now: **Claude** (stateful sessions) and **ChatGPT** (stateless — opens a new session per tool call).
+The server runs at `https://topic-builder.wikiedu.org/mcp` and exposes ~45 tools across start/reset, reconnaissance, gathering, scoring, cleanup, export, and feedback. Two MCP clients matter right now: **Claude** (stateful sessions) and **ChatGPT** (stateless — opens a new session per tool call).
 
 ## How we're evolving this system
 
@@ -46,11 +46,9 @@ docs/                # plans and operational reference
     ├── auth.md                    # deferred: Wikipedia OAuth
     └── impact-visualizer.md       # deferred: IV handoff
 
-scripts/             # standalone helper scripts.
-                     # bootstrap_benchmark.py, benchmark_score.py,
-                     # monitor_dogfood.sh, session_status.py, smoke.sh
-                     # are active. `legacy/` holds pre-MCP one-offs kept
-                     # as shell-usable probing tools.
+scripts/             # standalone helpers for benchmark scoring, dogfood
+                     # monitoring, and host smoke tests. `legacy/` holds
+                     # pre-MCP one-offs kept as shell-usable probes.
 
 benchmarks/          # gold-standard topic audits + replay harness.
                      # 5 topics scaffolded 2026-04-23: apollo-11,
@@ -101,27 +99,18 @@ Tools follow a consistent shape so stateless clients keep working and usage is l
 
 Why both: **ChatGPT's MCP client caches tool schemas and doesn't reliably refresh them on server deploys.** If a new parameter lives only in the schema, ChatGPT may never see it. The server instructions are re-sent on every session init, so information there reliably reaches the AI regardless of client caching. This is load-bearing — don't skip the instructions update for non-obvious tool behavior.
 
-## Workflow principles the server enforces
+## Workflow principles
 
-`server_instructions.md` is where we encode workflow decisions for the AI. Current principles, each derived from specific dogfood observations (see feedback memories):
+Runtime workflow decisions (scoping discipline, rubric requirement,
+scope-edge probes, spot-check / gap-check wrap-up, feedback etiquette,
+the immutable per-topic wiki binding, etc.) live in
+`mcp_server/server_instructions.md` — that's what the AI reads at
+session start, and it's the canonical source for these principles.
 
-- **Scoping is iterative dialogue, not a one-shot clarification.** The AI confirms scope with the user in plain language *before* calling any gather tool. Don't accept a quick-pick answer and immediately start pulling categories.
-- **Centrality rubric is MANDATORY before any gather call.** The AI drafts a three-tier rubric (CENTRAL / PERIPHERAL / OUT) in its own voice via `set_topic_rubric`, anchored in the scope confirmation. Persisted across sessions.
-- **Don't ask for a target article count.** The tool's value is helping the user *discover* the natural size of a topic given their scope; a target makes the AI fit the result to an arbitrary number.
-- **Probe scope edges explicitly.** Biographies, `List of…` / `Outline of…` pages, "X in popular culture", geographic breakdowns, stubs. Ask about these — they're where topics unexpectedly explode or shrink.
-- **"Start fresh" means `start_topic(name, fresh=True)`.** Not bulk-remove-by-page.
-- **Topics are bound to a Wikipedia language edition.** `start_topic` takes a
-  `wiki` parameter (default `"en"`); the value is stored on the topic row
-  and every subsequent tool call for that topic queries that wiki. A topic's
-  wiki is immutable — if the user wants a different wiki, start a new topic.
-  Recon tools (`survey_categories`, `check_wikiproject`, `find_list_pages`)
-  also accept `wiki=`, defaulting to the active topic's wiki or `"en"`.
-- **Use `list_sources` then `remove_by_source(..., keep_if_other_sources=True)`** to prune noisy pulls, instead of iterating titles.
-- **SPOT CHECK before wrap-up.** Before final export, ask the user to name 3–5 specific articles they'd expect to find — niche examples, not the famous ones. Confirm presence, investigate misses (search / categories / WikiProjects), add the genuinely-on-topic misses, and seed `browse_edges` from found examples to surface more neighbors.
-- **GAP CHECK after SPOT CHECK.** Ask what other angles might have caught missed articles (Wikidata, SPARQL, PetScan, reading lists, awards, bibliographies, non-English wikis). Act on actionable suggestions; route the rest into `submit_feedback`'s `missed_strategies`.
-- **Offer feedback at the end.** `submit_feedback` is how we learn. Ask first; never call unprompted.
-
-When changing any of these, edit `mcp_server/server_instructions.md` and redeploy — behavior changes don't take effect until the server restarts.
+To change AI behaviour, edit `server_instructions.md` and redeploy —
+changes don't take effect until the server restarts. Each principle
+there is derived from specific dogfood observations; see the feedback
+memories for the evidence trail.
 
 ## Testing and verification
 

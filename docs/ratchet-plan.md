@@ -81,41 +81,19 @@ flags reach additions, audit them, and if they pass, append to
 - `docs/backlog/README.md` — open items with full evidence citations.
 - `docs/shipped.md` — log of what landed.
 
-## Prioritized candidates (from the backlog)
+## Prioritized candidates
 
-Shortlist: items with multi-session evidence AND expected measurable
-impact on the benchmark scoreboards. Ordered roughly by effort.
-
-### Tier 1 — small, high-leverage
-
-| # | Item | Est. effort | Why | Benchmarks likely to move |
-|---|---|---|---|---|
-| 1 | `fetch_article_leads` primitive — pull first 1–3 sentences of a Wikipedia article body as companion signal to shortdesc | ~2h | Arc + benchmark audits show shortdescs routinely mislead (Gloria Chisum, Meredith Gourdine); a companion lead would improve rubric judgment in-session and automate future benchmark audits | aa-stem (recall reach), hispanic-latino (audit-extension) |
-| 2 | Coverage-estimate field on `submit_feedback` (6.7 subset — schema only, no loop) | ~30 min | Low risk, high information value; gives us a signal the AI already reports informally | All (indirectly) |
-| 3 | Surface known-bug workarounds in `server_instructions.md` — e.g. "when using compound searches, split intitle: clauses" (Chunk 2 fixed the bug but an AI may still reach for the broken form) | ~30 min | Documentation work; protects against regression | All |
-
-### Tier 2 — medium effort, multi-session-validated
-
-| # | Item | Est. effort | Why | Benchmarks likely to move |
-|---|---|---|---|---|
-| 4 | `cross_wiki_diff(source_wiki, target_wiki)` — Stage 5.2 | 2–3 days | Three sessions explicitly asked for this. Directly unlocks orchids / phenomenology / Latino-STEM reach. Most likely item to move a benchmark's reach needle substantially | **orchids** (biggest reach target), hispanic-latino, aa-stem |
-| 5 | Spot-check support primitives cluster (6.8: `check_article_presence`, `verify_claim`, `list_rejections`) | 1 day | Supports the spot-check modality the AI already uses ad-hoc. `check_article_presence` specifically replaces a regex hack | apollo-11, crispr, phenomenology-class shapes |
-| 6 | `harvest_navbox` preview mode / template discovery | ~half day | Post-ship extensions of Chunk 6 | apollo-11, crispr (peripheral), pop-culture shapes |
-
-### Tier 3 — defer (single-session evidence or speculative)
-
-From `docs/backlog/README.md` Stage 6:
-- 6.9 `topic_policy(include_desc, exclude_desc)` — single session evidence (phenomenology); defer pending repeat
-- 6.4 Snapshot/diff — speculative
-- 6.5 Graph view — speculative; compelling but expensive and unclear payback
-- 6.6 Empty-topic nudge — speculative
-- 6.1 Batch category pulls — speculative
-- "Soft-redirect category hint" (smaller item) — single session (K-drama)
+See `docs/backlog/README.md` for the full list — items are grouped
+there by the same Tier 1 / 2 / 3 structure used below. This section
+is just the "what I'd pick up next" opinion.
 
 ## What I'd work on next (opinion)
 
-**Ship Tier 1 items 1–3 together.** Small, independent, each
-unambiguously good. Each benchmarks-re-run after that gives us:
+**Ship the Tier 1 bundle together.** The three items
+(`fetch_article_leads`, `coverage_estimate` field on `submit_feedback`,
+known-bug workarounds in `server_instructions.md`) are small,
+independent, and each unambiguously good. The benchmarks re-run
+after that gives us:
 - Evidence on whether `fetch_article_leads` improves rubric adherence
   (expect: better precision on weak-triangulation topics like
   phenomenology-class and aa-stem marginal cases).
@@ -123,11 +101,12 @@ unambiguously good. Each benchmarks-re-run after that gives us:
 - A small instruction-hygiene win.
 
 That's a one- or two-sitting package. **Then run the 5-benchmark
-ratchet against it** — that IS the first real ratchet cycle with a
+ratchet against it** — the first real ratchet cycle with a
 non-trivial expected gain.
 
-After that, **Tier 2 item 4** (`cross_wiki_diff`) is the biggest
-single-change leverage — but it's also a real 2–3 day build.
+After that, **Tier 2 `cross_wiki_diff`** is the biggest
+single-change leverage — but it's also a real 2–3 day build. It most
+directly unlocks orchids / phenomenology / Latino-STEM reach.
 
 ## Kick-off-and-leave-for-a-while mode
 
@@ -151,21 +130,3 @@ benchmark. Practically:
 A single orchestration script that does steps 2–4 in one command
 would be the natural next build if this workflow starts getting run
 regularly. For now, manual is fine.
-
-## Cleanup completed 2026-04-23
-
-- Deleted: `skill.md`, `docs/development-narrative.md`,
-  `scripts/benchmark.py` (superseded by `benchmark_score.py`),
-  `topics/` (empty legacy dir), `scripts/__pycache__`.
-- Moved: pre-MCP one-offs into `scripts/legacy/` so the primary
-  `scripts/` directory shows only active tools. Dogfood session
-  notes into `dogfood/sessions/2026-04-23/`.
-- Split: `docs/post-orchids-plan.md` (1001 lines) into
-  `docs/shipped.md` (compact one-liners, 42 items) and
-  `docs/backlog/README.md` (open items only, 14 items + deferred).
-- `CLAUDE.md` updated to reference the new layout.
-
-Remaining carried-forward references: `mcp_server/` is active
-production, `benchmarks/` is all active, `scripts/session_status.py` +
-`scripts/monitor_dogfood.sh` + `scripts/smoke.sh` are kept (used
-during dogfood + smoke workflows).

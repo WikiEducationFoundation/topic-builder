@@ -1,42 +1,58 @@
 # Backlog — open items
 
-Pending items from the improvements plan. Shipped items are logged in
-`../shipped.md`; see `../ratchet-plan.md` for the prioritized short-list.
+Pending items from the improvements plan, grouped by priority tier.
+Shipped items are logged in `../shipped.md`. `../ratchet-plan.md` is
+the "what to work on next" entry point and draws its shortlist from
+this doc.
 
 Sibling docs in this directory hold larger deferred plans:
 - `auth.md` — Wikipedia OAuth + paste-in-chat token flow.
 - `impact-visualizer.md` — publish_topic handle → Impact Visualizer import.
 
-This doc is the working backlog — add new items here as signals come
-in; promote items to `../shipped.md` when they land.
+Add new items here as signals come in; promote items to
+`../shipped.md` when they land.
 
 **Status legend:** ☐ not started · ◐ in progress · ☑ shipped · ✗ dropped
 
----
-
-## Stage 1 — Quick ship
-
-Small code changes, orchids-evidenced, each independently shippable. Target: one deploy per item or small group.
-
-### 1.8 ☐ `browse_edges(min_links="auto")` `[NEW]`
-
-**What.** Auto-calibrated threshold that targets 20–50 candidates.
-
-**Why.** Feedback: "I tried 10 seeds at `min_links=5` and got back only 2 candidates — both too general." Threshold semantics aren't intuitive.
-
-**Shape.** Start at `min_links=3`, probe upward until candidate count falls into the 20–50 band. Or reverse-engineer: compute a threshold from the seed count.
-
-**Open questions.** Deferred — low urgency, `browse_edges` wasn't central to orchids. Could slot into Stage 2 if it turns out to be a docstring tweak rather than new logic.
+**Tier meaning:**
+- **Tier 1** — small, high-leverage; ship as a bundle when convenient.
+- **Tier 2** — medium effort, multi-session-validated; ship individually.
+- **Tier 3** — deferred / speculative; revisit after Tier 1–2 land or as specific signals confirm.
+- Smaller one-liners that have been considered and deliberately deferred live at the bottom.
 
 ---
 
+## Tier 1 — small, high-leverage
+
+### ☐ `fetch_article_leads` primitive `[NEW — 2026-04-23 AA-STEM benchmark audit]`
+
+**What.** Pull the first 1–3 sentences of each article's body via the REST `/page/summary` endpoint, distinct from `fetch_descriptions`.
+
+**Why.** Wikidata shortdescs routinely mislead the AI about a subject's notability. Multiple examples observed on a 20-article sample during the AA-STEM benchmark audit: **Gloria Chisum** ("American academic" → actually applied-STEM researcher on pilot-vision eyewear), **William Hallett Greene** (shortdesc truncated → actually first Black meteorologist + Signal Corps station chief), **Meredith Gourdine** ("American long jumper" → also a plasma physicist and engineer). The enwiki REST fallback shipped in Chunk 6 only fires when Wikidata is empty; when Wikidata has *some* description, the richer article lead never reaches the AI.
+
+**Shape.** Would be used by (a) the AI during rubric-driven review / spot-check when shortdesc is ambiguous, (b) an eventual `verify_claim` tool (Tier 2 spot-check cluster) as the context input, and (c) external audits (benchmark gold-building) to reduce WebFetch-style round-trips. Could ship alongside or as an opt-in flag on `fetch_descriptions`.
+
+### ☐ `coverage_estimate` field on `submit_feedback` `[NEW — 2026-04-23 dogfood]`
+
+**What.** Add an optional `coverage_estimate: dict | None` parameter to `submit_feedback`, shape `{"confidence": 0.0–1.0, "rationale": str, "remaining_strategies": [str, ...]}`. Stored alongside existing feedback fields.
+
+**Why.** The AI already reports self-estimated completeness informally during dogfood wrap-ups — a structured field lets us (a) track the signal over time, (b) correlate AI confidence with benchmark recall, and (c) unlock the self-administered spot-check modality (Tier 2) by giving it a place to land its output.
+
+**Shape.** Schema change only — no instructions edits, no new tool. Nothing else needs to move. Relationship to existing `missed_strategies` field: `missed_strategies` = tool shapes we wish existed; `remaining_strategies` (inside `coverage_estimate`) = tool shapes that *do* exist but weren't applied this session.
+
+### ☐ Surface known-bug workarounds in `server_instructions.md` `[NEW]`
+
+**What.** Add explicit "AI-facing" warnings for known-dangerous search patterns that the server silently fixes. Example: compound `intitle:"A" OR intitle:"B"` queries return 0 on Cirrus; the server auto-splits (Chunk 1), but the AI might still hand-craft the broken form in other contexts.
+
+**Why.** Documentation work; protects against regression when the AI reaches for a pattern that only works because of a server-side workaround. Safer to name the gotcha explicitly.
+
+**Shape.** Audit the Chunk 1–6 post-orchids fixes, list any whose bug would still surface if the AI constructed similar queries against a different tool. One bullet each in `server_instructions.md`.
+
 ---
 
-## Stage 5 — Big build: Wikidata layer
+## Tier 2 — medium effort, multi-session-validated
 
-Consolidates backlog items #3 (Wikidata/SPARQL), #4 (PetScan), plus two new orchids-driven items. One substrate, four user-facing tools.
-
-### 5.2 ☐ `cross_wiki_diff(topic_a, topic_b)` `[NEW]`
+### ☐ `cross_wiki_diff(source_wiki, target_wiki)` `[formerly 5.2]`
 
 **What.** Take two topics on different wikis, return articles in A that have a sitelink to wiki B but aren't in topic B ("potential gap-fills"), and separately articles in A with no sitelink to B at all ("genuinely unique-to-A content"). Both directions useful.
 
@@ -45,7 +61,7 @@ Consolidates backlog items #3 (Wikidata/SPARQL), #4 (PetScan), plus two new orch
 Without this tool, the methodology works but is tedious — N preview_search calls per non-en topic. With it, the whole reconciliation collapses to one call per direction.
 
 **Shape.** For each article in topic A:
-- Look up Wikidata QID (cheap once 5.6 ships — otherwise resolve via pageprops).
+- Look up Wikidata QID (cheap now that `resolve_qids` has shipped).
 - Check sitelink to wiki B.
 - Classify into three partitions:
   - **`gap_fills`** — article has a B-wiki sitelink AND that B-title is *not* in topic B. Most valuable output: real articles on B that are missing from the user's B-topic. Candidates to add.
@@ -55,30 +71,43 @@ Without this tool, the methodology works but is tedious — N preview_search cal
 The AI's Q4 walkthrough made this partitioning explicit: "partition by title pattern heuristically (cheap): species (~60% of results) → translation candidates; cultural concepts (~25%) and biographies (~15%) → gap-fill candidates after a preview_search confirms relevance."
 
 **Open questions.**
-- Standalone via MediaWiki langlinks API vs. waiting for SPARQL (5.1). Langlinks is simpler and orchids needs it now; SPARQL version can come later. Ship standalone first.
+- Standalone via MediaWiki langlinks API vs. via `wikidata_query` SPARQL. Langlinks is simpler and orchids needs it now; SPARQL version can come later. Ship standalone first.
 - Separating `gap_fills` from `translation_candidates` needs a heuristic for "would this be valuable translated?" Probably: title looks like a species / formal name / institution → translation candidate if no B sitelink. Needs tuning with real data.
 - How does the AI know which direction to run first? Instruction guidance: "if your primary wiki is en and you have non-en parallel topics, run `cross_wiki_diff(non_en, en)` to find gap-fills to add to your en topic; run the reverse to catalog unique content."
 - Output size on big topics: 18K-article en topic diffed against 2K zh topic is 2K checks — manageable. En → pt with a full 18K sweep is bigger. Consider pagination / limit param.
 
-### 5.3 ☐ `completeness_check(topic)` `[NEW]`
+### ☐ Spot-check support primitives cluster `[formerly 6.8]`
 
-**What.** Compare a topic's contents against a Wikidata ground-truth count for its canonical class.
+**What.** Three small read-only primitives that make the self-administered spot-check loop efficient instead of abusive:
 
-**Why.** Turns "is my list complete?" from vibe-check into an answerable question. Feedback: "Wikidata says ~28K orchid species exist; your topic has 13K species; here are the top 100 species by sitelink count that you're missing."
+1. **`check_article_presence(titles=[...])`** — takes a titles list, returns `{title: {in_corpus | not_in_corpus | near_match}}`. Replaces the current N-individual-`preview_search` pattern or the 40-name alternation-regex hack on `get_articles(title_regex=...)`. Pulitzer feedback: "a titles-list-in, {in_corpus, not_in_corpus, near_match} dictionary out would make the spot-check loop a 3-tool flow instead of N individual preview_search calls."
+2. **`verify_claim(title, property, value)`** — structured check: does this Wikipedia article assert property=value? (e.g. "does the Walter V. Robinson article claim a Pulitzer Prize for Investigative Reporting?"). Replaces indirect `preview_search(query="\"Name\" \"Pulitzer Prize for Investigative\"")` quoted-phrase probes. Pulitzer feedback.
+3. **`list_rejections(show_reasons=True)`** — audit view of rejected titles + reasons. Pulitzer feedback: "made the session feel slightly blind on that axis." (Note: a `list_rejections` tool already exists; this is about surfacing the reasons alongside titles, not the titles alone.)
 
-**Shape.** Needs a "canonical class" per topic — either explicitly configured by the AI (`completeness_check(topic, wikidata_class="Q25308")` for Orchidaceae) or inferred from topic sources.
+**Why.** All three unblock the spot-check modality: hypothesize titles → check presence → classify misses → verify ambiguous cases → review rejection trail for consistency. With these, the loop is 3–5 calls instead of 20–30.
 
-**Open questions.** How does the tool know what "class" the topic is? Inference from dominant categories? Explicit AI-provided? Probably explicit, documented in instructions.
+**Shape.** Read-only; no state mutation. `check_article_presence` + `verify_claim` wrap existing MediaWiki surface. `list_rejections` extension is a SQL read. Cluster them in one deploy — they share design context.
 
-### 5.4 ☐ PetScan-style intersection `[backlog:#4]`
+**Open questions.**
+- `check_article_presence`: what's a `near_match`? Redirect-target match + case-insensitive title + diacritic-folded? Spell out.
+- `verify_claim`: Wikidata-first (structured) with article-text fallback, or article-text-only? Probably Wikidata-first.
+- Ship before or after the self-administered spot-check modality `server_instructions.md` update? Probably alongside.
 
-**What.** Compound category queries. "Articles in Category:Orchidaceae genera AND Category:Plants described in 1834."
+**Sequencing note.** Single-session evidence (Pulitzer) but tightly tied to the self-administered spot-check modality item, which has multi-session evidence. Reference: `dogfood/sessions/2026-04-23/session-2026-04-23-run2-notes.md`.
 
-**Shape.** Could wrap the existing `petscan.wmcloud.org` HTTP API, or build natively using `categorymembers` API with intersection logic.
+### ☐ `harvest_navbox` preview mode / template discovery `[NEW]`
 
-**Sequencing note.** Arguably subsumed by SPARQL in 5.1 (Wikidata supports category intersection queries). Decide after 5.1 scope is set — if SPARQL covers it, drop this; if not, keep.
+**What.** Post-ship extensions to the `harvest_navbox` tool that landed in the post-orchids chunk batch:
+1. **Preview mode** — `preview_harvest_navbox(template)` returning candidate title count + sample without committing, matching the `preview_*` convention.
+2. **Template discovery** — a helper that returns candidate navbox/infobox templates for a topic article, so the AI doesn't have to guess the template name.
 
-### 5.5 ☐ `resolve_category(wikidata_qid)` — per-wiki category-name helper `[NEW]`
+**Why.** `harvest_navbox` is the right tool for award / franchise / program shapes (apollo-11, crispr-gene-editing peripheral, pop-culture shapes) — but the AI has to know the exact template name, and has no dry-run surface before committing. Same friction `preview_harvest_list_page` / `preview_category_pull` resolved for their commit variants.
+
+**Shape.** Preview: small wrapper over existing `harvest_navbox` internals that returns count + sample. Discovery: given an article title, list templates used on that page (via `prop=templates`), filter to likely navboxes by name pattern.
+
+**Open questions.** Is template discovery worth a separate tool, or should `harvest_navbox` itself accept an article title and auto-find the navbox template? The latter is fewer surfaces; the former is more predictable.
+
+### ☐ `resolve_category(wikidata_qid)` — per-wiki category-name helper `[formerly 5.5]`
 
 **What.** Given a Wikidata QID (e.g. `Q25308` for Orchidaceae), return the category name on each wiki. Also per-wiki sitelink to the canonical article.
 
@@ -96,25 +125,91 @@ Six wikis, six different names, one QID underneath. Each wrong guess costs a rou
 **Open questions.**
 - What about articles, not just categories? Same shape: `resolve_article(qid, wikis=[...])`. Low cost to support both. Might be a single tool `resolve_wikidata_item(qid, as_type="category"|"article", wikis=[...])`.
   - Evidence this matters: the second orchids session found that Guido Pabst and Hoehne (both major Brazilian orchidologists) returned zero via direct title search on ptwiki, likely because they're titled differently under Portuguese conventions. `resolve_article(qid)` would find them by QID regardless of title convention — unblocks cross-wiki bio discovery in general.
-- Dependency: needs Wikidata API access (same infra as 5.1). Ship under the Wikidata layer.
+- Dependency: needs Wikidata API access (same infra as `wikidata_query`).
+
+### ☐ `completeness_check(topic)` `[formerly 5.3]`
+
+**What.** Compare a topic's contents against a Wikidata ground-truth count for its canonical class.
+
+**Why.** Turns "is my list complete?" from vibe-check into an answerable question. Feedback: "Wikidata says ~28K orchid species exist; your topic has 13K species; here are the top 100 species by sitelink count that you're missing."
+
+**Shape.** Needs a "canonical class" per topic — either explicitly configured by the AI (`completeness_check(topic, wikidata_class="Q25308")` for Orchidaceae) or inferred from topic sources.
+
+**Open questions.** How does the tool know what "class" the topic is? Inference from dominant categories? Explicit AI-provided? Probably explicit, documented in instructions.
+
+### ☐ Self-administered spot-check modality `[formerly 6.7]`
+
+**What.** Promote the "ask the user to name 3–5 niche examples" spot-check into a structured self-evaluation loop the AI can run without human input. Pairs with the Tier 1 `coverage_estimate` field — this item is the instruction changes that direct the AI into the loop.
+
+Recipe to encode in `server_instructions.md`: **hypothesize** a large, structured probe list (~50 candidate titles across ≥5 natural subdomains of the topic) → **verify** presence via `get_articles(title_regex=...)` or batched `preview_search` (or `check_article_presence` if the Tier 2 spot-check primitives have shipped) → **classify** each miss as variant-name-already-in-corpus / LLM-hallucination / real gap → **diagnose** miss-patterns into strategies ("five missed cultural-works → rerun preview_harvest_list_page on the cultural-tail list page, don't hunt each title") → **repair** → **estimate** remaining coverage → **iterate** until self-estimated coverage stabilizes or the user calls it. Explicitly authorize autonomous fabrication when no user is available.
+
+Optional: a mid-build `report_coverage_estimate(confidence, rationale, remaining_strategies)` tool so the estimate can be logged before `submit_feedback` fires — useful if we want live telemetry or a UI surface.
+
+**Why.** The 2026-04-23 Apollo 11 dogfood session stalled silently for 10 minutes waiting for user input the current spot-check instruction requires. Once unblocked, the AI executed essentially this loop in ~5 minutes — 13 `preview_search` probes, 3 spot-check gap-adds, `browse_edges(seeds=6)` yielding 10 more real gaps (notably Kennedy Space Center, which Category:Apollo program didn't tag). The workflow is good; the user-dependency is the break. Generalizing it gives us (a) an autonomous stopping criterion, (b) a per-topic completeness metric we can correlate against ratings and against benchmark audits, and (c) strategy-picker leverage — each *class* of miss is a lead into a whole class of misses, not one article.
+
+The 2026-04-23 dogfood `task.md` has already been patched to authorize the loop for dogfood sessions specifically (see §3 of "While you build"). That was a one-harness band-aid; this item is the durable fix so every caller benefits.
+
+**Shape.**
+- Instruction surface: ~40–60 lines in `server_instructions.md`, with concrete recipe + subdomain-axis examples for 2–3 topic shapes. Authorize autonomous fabrication explicitly; don't leave it implicit.
+- Helper tool (optional): `report_coverage_estimate(...)` mirrors `submit_feedback`'s shape for the mid-build case. Only ship if we want the mid-build telemetry; the end-of-session field alone covers the core need.
+
+**Open questions.**
+- **How many fabrication rounds?** Probably bound at 2–3 in the instructions. More than that is diminishing polish — LLM tails out.
+- **Blind to the corpus while fabricating, or after seeing `describe_topic`?** Blind probably surfaces better gaps (avoids enumerating what's already visibly present); post-describe probably produces higher-precision probes but lower gap-discovery rate. May be worth two modes, or an explicit "fabricate first, then look" rule in the instructions.
+- **How do we calibrate `confidence` over time?** Collect the self-reports; when we have gold-standard audits (`benchmarks/` directory), compare AI's confidence against ground-truth recall. Until then, capture and trust self-reports for relative comparison.
+
+**Sequencing note.** Wait for `cross_wiki_diff` and the spot-check primitives cluster to land before writing the instructions — those expand the strategy surface the coverage estimate reasons about, and the subdomain-axis examples want to name them. Full session context and signal-origin in `dogfood/sessions/2026-04-23/session-2026-04-23-notes.md`.
 
 ---
 
-## Stage 6 — Speculative / later tier
+## Tier 3 — deferred / speculative
 
-Items worth keeping on the roadmap but not committing to pre-build. Revisit after Stages 1–5 ship.
+Items worth keeping on the roadmap but not committing to pre-build. Revisit after Tier 1–2 land or as specific signals confirm.
 
-### 6.1 ☐ `get_category_articles_bulk(categories=[...])` batch variant `[NEW]`
+### ☐ `browse_edges(min_links="auto")` `[formerly 1.8]`
+
+**What.** Auto-calibrated threshold that targets 20–50 candidates.
+
+**Why.** Feedback: "I tried 10 seeds at `min_links=5` and got back only 2 candidates — both too general." Threshold semantics aren't intuitive.
+
+**Shape.** Start at `min_links=3`, probe upward until candidate count falls into the 20–50 band. Or reverse-engineer: compute a threshold from the seed count.
+
+**Open questions.** Low urgency — `browse_edges` wasn't central to orchids. Could be a docstring tweak rather than new logic.
+
+### ☐ `topic_policy(include_desc, exclude_desc)` — sticky scope rules `[formerly 6.9]`
+
+**What.** A new primitive that declares a topic's include/exclude policy as description patterns and has subsequent gather tools auto-apply it. Example: for Phenomenology, `include=/phenomenolog/i, exclude=/physics|particle|archaeolog|architectural/i`. After `topic_policy(...)`, future `get_category_articles` / `add_articles` / `harvest_list_page` calls skip candidates matching the exclude pattern automatically.
+
+**Why.** Phenomenology feedback: "After deciding 'physics phenomenology out, architectural phenomenology in,' subsequent pulls still pull physics-phenomenology-tagged articles. The sticky rejection list catches *specific titles*, but not the *policy*. A `topic_policy(...)` would let me articulate the rule once and have it auto-apply on all future pulls." Structural addition — not topic-specific. The shipped two-axis model covers per-article inclusion + centrality; this adds a per-topic *policy* axis that determines which candidates are evaluated at all.
+
+**Shape.** Per-topic table of `(pattern, include_or_exclude, mode)` rules; `topic_policy(include=[...], exclude=[...])` sets; `get_topic_policy(topic)` reads. Gather tools check candidates against the policy before commit. Storage alongside sticky rejections (similar precedent).
+
+**Open questions.**
+- Pattern language: substring? regex? key-value shortdesc axes (reuse `auto_score_by_description`'s rubric)?
+- Apply at gather-time (skip candidates) or review-time (flag for AI review)? Probably configurable per rule.
+- Stack with or replace sticky rejection list? Stack — rejection is "specific title"; policy is "class of title".
+
+**Sequencing note.** Single-session evidence so far (Phenomenology) but the pattern ("scope is stable across iterations; re-judging is wasted") is structural. Revisit when (a) a second session demands it, or (b) the self-administered spot-check loop encounters repeat-miss-classes the policy would have caught.
+
+### ☐ PetScan-style intersection `[formerly 5.4, backlog:#4]`
+
+**What.** Compound category queries. "Articles in Category:Orchidaceae genera AND Category:Plants described in 1834."
+
+**Shape.** Could wrap the existing `petscan.wmcloud.org` HTTP API, or build natively using `categorymembers` API with intersection logic.
+
+**Sequencing note.** Arguably subsumed by SPARQL via `wikidata_query` (Wikidata supports category intersection queries). Decide after testing whether SPARQL covers the common intersection shapes — if so, drop this; if not, keep.
+
+### ☐ `get_category_articles_bulk(categories=[...])` batch variant `[formerly 6.1]`
 
 **What.** One tool call that pulls multiple categories in sequence, returning merged results.
 
 **Why.** Second feedback: "Would let me pull 20 ptwiki genus categories in one call instead of 20 sequential calls. Most took under 10 seconds, but network overhead adds up." The per-genus fallback (when a root category is too broad to crawl at depth) becomes friction-free.
 
-**Shape.** Internally a loop over existing `get_category_articles`; respects cost budget from Stage 1.11 and the cooperative time budget from Stage 3. Returns per-category sub-results + merged article list.
+**Shape.** Internally a loop over existing `get_category_articles`; respects the shipped cost-budget + cooperative time-budget abstractions. Returns per-category sub-results + merged article list.
 
-**Sequencing note.** Easy to add after Stage 3's shared abstraction lands. Could arguably slot into Stage 1 if we decide it's high-leverage; parking in Stage 6 until real demand confirms.
+**Sequencing note.** Could slot up to Tier 2 if real demand confirms; parked here until then.
 
-### 6.2 ☐ `suggest_removals(source, max=50)` — LLM-assisted review `[NEW]`
+### ☐ `suggest_removals(source, max=50)` — LLM-assisted review `[formerly 6.2]`
 
 **What.** A tool that uses an LLM on the server side to flag likely-noise articles in a source, surfacing a ranked list for the calling AI to review.
 
@@ -127,9 +222,9 @@ Items worth keeping on the roadmap but not committing to pre-build. Revisit afte
 - Could also be done client-side: give the AI enough context and it runs its own review via `get_articles_by_source`. May not need a server-side primitive at all.
 - Model choice, prompt robustness, rubric construction — real engineering, not trivial.
 
-Leaning: wait to see if Stage 1 regex filters (1.5) + better cost telemetry actually leave this as the cleanup bottleneck. If not, skip.
+Leaning: wait to see if the shipped regex filters + cost telemetry actually leave this as the cleanup bottleneck. If not, skip.
 
-### 6.3 ☐ Save-query presets / macros `[NEW]`
+### ☐ Save-query presets / macros `[formerly 6.3]`
 
 **What.** Let the AI save a parametrized search as a named macro. E.g. `probe_botanist("Barbosa Rodrigues")` runs the `<name> botanist <domain>` search templates the AI already constructs ad-hoc.
 
@@ -137,9 +232,9 @@ Leaning: wait to see if Stage 1 regex filters (1.5) + better cost telemetry actu
 
 **Shape.** Tentative: a registry of named search templates scoped to a topic. `define_search_template(name, query_pattern)` then `run_template(name, args)`. Or simpler: a per-topic "search presets" table stored alongside rejections.
 
-**Sequencing note.** Speculative. Not orchids-urgent. Revisit if we see the AI repeatedly constructing the same search shape across topics.
+**Sequencing note.** Speculative. Revisit if we see the AI repeatedly constructing the same search shape across topics.
 
-### 6.4 ☐ Per-session watch / diff `[NEW]`
+### ☐ Per-session watch / diff `[formerly 6.4]`
 
 **What.** "What articles are in `category:Orchids` today that weren't last session?" — a delta operator over a topic's corpus across time.
 
@@ -147,9 +242,9 @@ Leaning: wait to see if Stage 1 regex filters (1.5) + better cost telemetry actu
 
 **Shape.** Snapshot + diff. `snapshot_topic(topic, name)` captures current state; `diff_snapshots(topic, name_a, name_b)` returns added/removed/changed articles. Could also diff against an implicit "last snapshot."
 
-**Sequencing note.** Speculative. Useful when long-lived topics become a real use case — currently topics are largely one-off builds.
+**Sequencing note.** Useful when long-lived topics become a real use case — currently topics are largely one-off builds.
 
-### 6.5 ☐ Graph view of topic via internal links `[NEW]`
+### ☐ Graph view of topic via internal links `[formerly 6.5]`
 
 **What.** Visualize how articles in a topic are connected via Wikipedia's internal link structure. Expose islands (disconnected subsets = likely orphan additions or noise) and bridges (articles linking many clusters = likely on-topic hubs worth expanding around).
 
@@ -157,9 +252,9 @@ Leaning: wait to see if Stage 1 regex filters (1.5) + better cost telemetry actu
 
 **Shape.** Fetch per-article outgoing links, build a subgraph restricted to the topic's article set, compute connected components + centrality. Output as JSON (cluster IDs, bridge candidates) or ultimately a visualization.
 
-**Sequencing note.** Far future. Needs a lot of Wikimedia API traffic (links per article) and a visualization layer. Not orchids-urgent. Park here as a north-star primitive for completeness debugging.
+**Sequencing note.** Far future. Needs a lot of Wikimedia API traffic (links per article) and a visualization layer. Park here as a north-star primitive for completeness debugging.
 
-### 6.6 ☐ Empty-topic detection and nudge `[NEW]`
+### ☐ Empty-topic detection and nudge `[formerly 6.6]`
 
 **What.** If a topic is created but has zero articles after N subsequent tool calls (or N minutes), surface a hint on the next tool call: "topic X is still empty — common starting points are `get_category_articles`, `harvest_list_page`, `search_articles`. What are you trying to do?"
 
@@ -167,83 +262,21 @@ Leaning: wait to see if Stage 1 regex filters (1.5) + better cost telemetry actu
 
 **Shape.** On each tool call for a topic, check whether the topic is > 5 minutes old AND has zero articles AND had no add-shaped call attempted. If all true, include a suggestion in the response.
 
-**Sequencing note.** Speculative until we see more of this pattern in the wild. Adjacent to 1.18 (resume nudge) but with a different trigger. Skip if 1.18 + 2.7 (common-task-to-tool mapping) resolve the issue.
-
-### 6.7 ☐ Self-administered spot-check as a first-class modality `[NEW — 2026-04-23 dogfood]`
-
-**What.** Promote today's "ask the user to name 3–5 niche examples" spot-check into a structured self-evaluation loop the AI can run without human input, and give `submit_feedback` a place to record the outcome. Two coordinated pieces, either shippable alone:
-
-1. **`server_instructions.md` edit** — add a spot-check loop section. Recipe: **hypothesize** a large, structured probe list (~50 candidate titles across ≥5 natural subdomains of the topic) → **verify** presence via `get_articles(title_regex=...)` or batched `preview_search` → **classify** each miss as variant-name-already-in-corpus / LLM-hallucination / real gap → **diagnose** miss-patterns into strategies ("five missed cultural-works → rerun preview_harvest_list_page on the cultural-tail list page, don't hunt each title") → **repair** → **estimate** remaining coverage → **iterate** until self-estimated coverage stabilizes or the user calls it. Explicitly authorize autonomous fabrication when no user is available.
-
-2. **`submit_feedback` schema extension** — new optional `coverage_estimate` field, shape `{"confidence": 0.0–1.0, "rationale": str, "remaining_strategies": [str, ...]}`. Stored alongside the existing feedback fields.
-
-Optional bonus: a mid-build `report_coverage_estimate(confidence, rationale, remaining_strategies)` tool so the estimate can be logged before `submit_feedback` fires — useful if we want live telemetry or a UI surface.
-
-**Why.** The 2026-04-23 Apollo 11 dogfood session stalled silently for 10 minutes waiting for user input the current spot-check instruction requires. Once unblocked, the AI executed essentially this loop in ~5 minutes — 13 `preview_search` probes, 3 spot-check gap-adds, `browse_edges(seeds=6)` yielding 10 more real gaps (notably Kennedy Space Center, which Category:Apollo program didn't tag). The workflow is good; the user-dependency is the break. Generalizing it gives us (a) an autonomous stopping criterion, (b) a per-topic completeness metric we can correlate against ratings and against benchmark audits, and (c) strategy-picker leverage — each *class* of miss is a lead into a whole class of misses, not one article.
-
-The 2026-04-23 dogfood `task.md` has already been patched to authorize the loop for dogfood sessions specifically (see §3 of "While you build"). That was a one-harness band-aid; this item is the durable fix so every caller benefits.
-
-**Shape.**
-- Instruction surface: ~40–60 lines in `server_instructions.md`, with concrete recipe + subdomain-axis examples for 2–3 topic shapes. Authorize autonomous fabrication explicitly; don't leave it implicit.
-- Schema: `coverage_estimate: dict | None` parameter on `submit_feedback`; persist alongside existing feedback fields; nothing else needs to move.
-- Helper tool (optional): `report_coverage_estimate(...)` mirrors `submit_feedback`'s shape for the mid-build case. Only ship if we want the mid-build telemetry; the end-of-session field alone covers the core need.
-
-**Open questions.**
-- **How many fabrication rounds?** Probably bound at 2–3 in the instructions. More than that is diminishing polish — LLM tails out.
-- **Blind to the corpus while fabricating, or after seeing `describe_topic`?** Blind probably surfaces better gaps (avoids enumerating what's already visibly present); post-describe probably produces higher-precision probes but lower gap-discovery rate. May be worth two modes, or an explicit "fabricate first, then look" rule in the instructions.
-- **How do we calibrate `confidence` over time?** Collect the self-reports; when we have gold-standard audits (`benchmarks/` directory), compare AI's confidence against ground-truth recall. Until then, capture and trust self-reports for relative comparison.
-- **Relationship to existing `missed_strategies` field.** Probably augment: `missed_strategies` = tool shapes we wish existed; `remaining_strategies` (inside `coverage_estimate`) = tool shapes that *do* exist but weren't applied this session. Different axes; both useful.
-
-**Sequencing note.** Plan-tier, not tweak-tier. Wait for Stage 5 (Wikidata primitives, cross-wiki diff) to land before writing the instructions — those expand the strategy surface the coverage estimate reasons about, and the subdomain-axis examples want to name them. Full session context and signal-origin in `dogfood/session-2026-04-23-notes.md`.
-
-### 6.8 ☐ Spot-check support primitives cluster `[NEW — 2026-04-23 dogfood run 2]`
-
-**What.** Three small read-only primitives that make the self-administered spot-check loop (6.7) efficient instead of abusive:
-
-1. **`check_article_presence(titles=[...])`** — takes a titles list, returns `{title: {in_corpus | not_in_corpus | near_match}}`. Replaces the current N-individual-`preview_search` pattern or the 40-name alternation-regex hack on `get_articles(title_regex=...)`. Pulitzer feedback: "a titles-list-in, {in_corpus, not_in_corpus, near_match} dictionary out would make the spot-check loop a 3-tool flow instead of N individual preview_search calls."
-2. **`verify_claim(title, property, value)`** — structured check: does this Wikipedia article assert property=value? (e.g. "does the Walter V. Robinson article claim a Pulitzer Prize for Investigative Reporting?"). Replaces indirect `preview_search(query="\"Name\" \"Pulitzer Prize for Investigative\"")` quoted-phrase probes. Pulitzer feedback.
-3. **`list_rejections(show_reasons=True)`** — audit view of rejected titles + reasons. Pulitzer feedback: "made the session feel slightly blind on that axis."
-
-**Why.** All three unblock 6.7: hypothesize titles → check presence → classify misses → verify ambiguous cases → review rejection trail for consistency. With these, the loop is 3–5 calls instead of 20–30.
-
-**Shape.** Read-only; no state mutation. `check_article_presence` + `verify_claim` wrap existing MediaWiki surface. `list_rejections` is a SQL read. Cluster them in one deploy — they share design context.
-
-**Open questions.**
-- `check_article_presence`: what's a `near_match`? Redirect-target match + case-insensitive title + diacritic-folded? Spell out.
-- `verify_claim`: Wikidata-first (structured) with article-text fallback, or article-text-only? Probably Wikidata-first.
-- Ship before or after 6.7's `server_instructions.md` update? Probably alongside.
-
-**Sequencing note.** Plan-tier. Single-session evidence (Pulitzer) but tightly tied to 6.7 which has multi-session evidence. Reference: `dogfood/session-2026-04-23-run2-notes.md`.
-
-### 6.9 ☐ `topic_policy(include_desc, exclude_desc)` — sticky scope rules `[NEW — 2026-04-23 dogfood run 2]`
-
-**What.** A new primitive that declares a topic's include/exclude policy as description patterns and has subsequent gather tools auto-apply it. Example: for Phenomenology, `include=/phenomenolog/i, exclude=/physics|particle|archaeolog|architectural/i`. After `topic_policy(...)`, future `get_category_articles` / `add_articles` / `harvest_list_page` calls skip candidates matching the exclude pattern automatically.
-
-**Why.** Phenomenology feedback: "After deciding 'physics phenomenology out, architectural phenomenology in,' subsequent pulls still pull physics-phenomenology-tagged articles. The sticky rejection list catches *specific titles*, but not the *policy*. A `topic_policy(...)` would let me articulate the rule once and have it auto-apply on all future pulls." Structural addition — not topic-specific. The two-axis model (Stage 4) covers per-article inclusion + centrality; this adds a per-topic *policy* axis that determines which candidates are evaluated at all.
-
-**Shape.** Per-topic table of `(pattern, include_or_exclude, mode)` rules; `topic_policy(include=[...], exclude=[...])` sets; `get_topic_policy(topic)` reads. Gather tools check candidates against the policy before commit. Storage alongside sticky rejections (similar precedent).
-
-**Open questions.**
-- Pattern language: substring? regex? key-value shortdesc axes (reuse `auto_score_by_description`'s rubric)?
-- Apply at gather-time (skip candidates) or review-time (flag for AI review)? Probably configurable per rule.
-- Stack with or replace sticky rejection list? Stack — rejection is "specific title"; policy is "class of title".
-
-**Sequencing note.** Plan-tier. Single-session evidence so far (Phenomenology) but the pattern ("scope is stable across iterations; re-judging is wasted") is structural. Revisit when (a) a second session demands it, or (b) 6.7's spot-check loop encounters repeat-miss-classes the policy would have caught.
-
----
+**Sequencing note.** Speculative until we see more of this pattern in the wild. Adjacent to the shipped resume-nudge (item 1.18) and COMMON TASK → TOOL mapping (item 2.7). Skip if those resolve the issue.
 
 ---
 
 ## Smaller items considered and deferred
 
-- **Source-label escaping for labels with colons/quotes.** Partially addressed by 1.14's slugification for `search_articles` labels, but `search:morelike:<seed>` labels with spaces/punctuation may still need attention. Revisit after 1.14 ships.
-- **`list_topics` per-user scoping.** Waits on auth. Re-flagged by the second feedback as a privacy concern ("I could see topics belonging to other users — Kochutensilien, Native American scientists, Seattle, educational psychology, upright bass"). `[backlog:#1]`
+One-liners that have been considered and deliberately deferred. Promote to a tier above if signal builds.
+
+- **Source-label escaping for labels with colons/quotes.** Partially addressed by 1.14's slugification for `search_articles` labels, but `search:morelike:<seed>` labels with spaces/punctuation may still need attention.
+- **`list_topics` per-user scoping.** Waits on auth. Flagged by orchids second feedback as a privacy concern ("I could see topics belonging to other users — Kochutensilien, Native American scientists, Seattle, educational psychology, upright bass"). `[backlog:#1]`
 - **Lower `survey_categories` warning threshold.** Didn't come up in orchids. Keep on backlog.
-- **Rate-limit backoff review.** Before shipping 1.1, read `wikipedia_api.py` and confirm that hitting a Wikimedia rate limit triggers actual exponential backoff, not just a counter increment. If the client is already doing the right thing, no work needed. If not, fix before cost-field logging lands — otherwise we'll be counting hits instead of avoiding them. `[NEW — investigate during 1.1]`
-- **`harvest_list_page` behavior on dewiki.** Kochutensilien user feedback (2026-04-22) complained "no direct tool support for extracting link targets from a Wikipedia list page" — which is literally `harvest_list_page`'s job. Either (a) they didn't discover the tool (addressed by 2.7 common-task-to-tool mapping), (b) they mean "display text vs. link target" in a way that suggests a dewiki-specific parsing quirk, or (c) the tool silently underperformed on their target page. Once 1.1 logging backfill lands, we'll be able to see whether this user actually invoked the tool. Investigate post-1.1. `[NEW — investigate post-1.1]`
-- **Hierarchical topic architecture (`start_topic(parent_topic=...)` + `reconcile_to_parent()`).** Considered and deferred. The Q6 answer in the third feedback round suggested parallel topics should be first-class children of a parent topic, with reconciliation baked into the API. **Decided to take the light-touch path instead:** `cross_wiki_diff` (5.2) stays the only new primitive; parallel topics remain siblings; users / AI compose the workflow. Reasoning: the cost of adding parent/child concepts to the schema and API surface outweighs the benefit until we see the manual composition pattern prove too friction-heavy in real use. Revisit if (a) cross-wiki is done with 5.2 and the AI still struggles to assemble the workflow, or (b) a user shape emerges where hierarchical topic relationships are central (e.g., long-running multi-wiki research projects). `[NEW — deferred 2026-04-22]`
+- **Rate-limit backoff review.** Confirm that hitting a Wikimedia rate limit triggers actual exponential backoff in `wikipedia_api.py`, not just a counter increment. If the client is already doing the right thing, no work needed.
+- **`harvest_list_page` behavior on dewiki.** Kochutensilien user feedback (2026-04-22) complained "no direct tool support for extracting link targets from a Wikipedia list page" — which is literally `harvest_list_page`'s job. Either (a) they didn't discover the tool (addressed by shipped COMMON TASK → TOOL mapping), (b) they mean "display text vs. link target" in a way that suggests a dewiki-specific parsing quirk, or (c) the tool silently underperformed on their target page. With logging backfill shipped, future dewiki sessions should show whether the tool gets reached for.
+- **Hierarchical topic architecture (`start_topic(parent_topic=...)` + `reconcile_to_parent()`).** Considered and deferred 2026-04-22. The Q6 answer in the third feedback round suggested parallel topics should be first-class children of a parent topic, with reconciliation baked into the API. **Decided to take the light-touch path instead:** `cross_wiki_diff` (Tier 2) stays the only new primitive; parallel topics remain siblings; users / AI compose the workflow. Reasoning: the cost of adding parent/child concepts to the schema and API surface outweighs the benefit until we see the manual composition pattern prove too friction-heavy in real use. Revisit if (a) `cross_wiki_diff` ships and the AI still struggles to assemble the workflow, or (b) a user shape emerges where hierarchical topic relationships are central (e.g., long-running multi-wiki research projects).
 - **Soft-redirect category hint on empty `survey_categories` result.** If `survey_categories` reports an existing category page with 0 articles (container/redirect category), emit a "try sibling X instead" hint. K-drama dogfood surfaced this on `Category:Korean television dramas` → should have pointed at `Category:South Korean television series`. Needs sibling-finding logic — probably scan for same-prefix categories via `prop=categories` on the empty category page. `[NEW — 2026-04-23 dogfood run 2]`
 - **`auto_score_by_description` substring-matching edge on proper-noun words.** Pulitzer feedback: `disqualifying=["city", "county"]` would reject "The Kansas City Star" and "Orange County Register" because the geographic word is part of the institution's proper name. Word-boundary match alone doesn't fix it ("City" IS a word). Possible approaches: case-sensitive lowercase-only match, exclude matches where the word is part of a proper-noun phrase, or an "exclude-unless-preceded-by-lowercase" mode. No obvious right answer — more thought required. `[NEW — 2026-04-23 dogfood run 2]`
-- **Shortdesc-only is often inadequate for centrality / rubric judgment — add `fetch_article_leads` primitive.** Discovered during the 2026-04-23 AA-STEM benchmark audit: multiple article Wikidata shortdescs materially mislead the AI about the subject's notability. Examples observed on a 20-article sample: **Gloria Chisum** ("American academic" → actually applied-STEM researcher on pilot-vision eyewear), **William Hallett Greene** (shortdesc truncated → actually first Black meteorologist + Signal Corps station chief), **Meredith Gourdine** ("American long jumper" → also a plasma physicist and engineer). The Chunk-2 enwiki REST fallback only fires when Wikidata is empty; when Wikidata has *some* description, the richer article lead never reaches the AI. Proposed primitive: `fetch_article_leads(titles=[...])` that pulls the first 1–3 sentences of each article's body via the REST `/page/summary` endpoint, distinct from `fetch_descriptions`. Would be used by (a) the AI during rubric-driven review / spot-check when shortdesc is ambiguous, (b) an eventual `verify_claim` (6.8) tool as the context input, and (c) by external audits (benchmark gold-building) to reduce WebFetch-style round-trips. Stage 1 complexity; could ship alongside or as an opt-in flag on `fetch_descriptions`. `[NEW — 2026-04-23 AA-STEM benchmark audit]`
 
 ---

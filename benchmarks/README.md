@@ -13,6 +13,21 @@ can have uneven effects across topic classes. Benchmarks let us answer "did
 this change improve things?" quantitatively instead of relying on
 ad-hoc impressions from dogfood sessions.
 
+## The five benchmarks
+
+Four of the five follow the standard layout below:
+
+- `apollo-11` — single historical event + cultural tail
+- `crispr-gene-editing` — scientific discipline with distinctive vocabulary
+- `african-american-stem` — intersectional biography
+- `orchids` — taxonomy at scale + cross-wiki (the marquee completeness test)
+
+The fifth, **`hispanic-latino-stem-us`**, is slightly nonstandard: it
+was bootstrapped from a 2026-04-17 dogfood session audit and integrated
+into the 5-benchmark suite later. It carries extra artifacts from that
+original pass (`calls.jsonl`, `baseline.md`, review-queue state) that
+the other four don't have. See its per-topic README for the full map.
+
 ## Per-topic layout (as of 2026-04-23)
 
 ```
@@ -88,15 +103,20 @@ python3 benchmarks/african-american-stem/apply_webfetch_resolutions.py
 
 ## Running a ratchet comparison
 
-`scripts/benchmark_score.py` is the intended scoreboard tool (not yet
-built — queued after this scaffolding). Given a fresh run's final
-state and usage log, it would produce a metric diff against
-`baseline.json` + the audited `gold.csv`:
+```
+python3 scripts/benchmark_score.py <slug> "<run-topic-name>"
+```
+
+Pulls the run topic's current corpus + usage-log entries from the
+deployed server, reads `gold.csv` + `baseline.json` locally, emits a
+scoreboard markdown report:
 
 - Precision / recall / reach vs. gold
 - Δ tool_call_count, Δ total_api_calls, Δ wall_time_s
 - Pass/fail gate per the ratchet rules (precision + recall non-
   regressing + ≥1 cost metric improvement)
+
+See `docs/ratchet-plan.md` for the full one-loop workflow.
 
 ## What does NOT go in version control
 
@@ -125,12 +145,20 @@ shared storage, do it through a private mechanism — not this repo.
 
 ## Design notes
 
-- **Scripted, not AI-driven.** Replays a fixed sequence of tool calls. This
-  isolates tool/prompt changes from AI behaviour changes — the latter is
-  a separate, harder problem not in scope here.
-- **Disposable DB.** The runner uses a tempdir DB; production data is not
-  touched. Wikipedia's live API is hit for real (that's what we're
-  measuring).
+- **Fresh AI-driven builds, scored against frozen gold.** Each ratchet
+  cycle starts a fresh dogfood session (autonomous via `dogfood/task.md`,
+  or a guided session) for each of the 5 benchmark topics under a new
+  topic name — the baseline topic is left untouched. The scoreboard
+  measures the new run against the audited `gold.csv`. AI behaviour
+  variance shows up in the results alongside tool changes; we accept
+  that tradeoff for now because the AI-driven workflow is what we
+  actually ship. A purely scripted replay harness is out of scope.
+- **`hispanic-latino-stem-us/calls.jsonl`** is a vestige of an earlier
+  scripted-replay experiment. It's preserved for historical reference
+  but the current ratchet does not consume it.
+- **Live API, real rate limits.** Wikipedia's live API is hit for real
+  (that's what we're measuring). Production topic state is untouched
+  — runs go under distinct topic names.
 - **Gold ages.** Wikipedia adds/removes/renames articles. Each gold set
   has a "last audited" date at the top of its scope.md; budget a quarterly
   refresh pass.

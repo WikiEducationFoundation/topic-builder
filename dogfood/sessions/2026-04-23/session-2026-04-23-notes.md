@@ -1,5 +1,11 @@
 # Dogfood session notes — 2026-04-23
 
+> **Historical log.** This file is the running observation log from the
+> 2026-04-23 Apollo 11 dogfood session. Conclusions have been distilled
+> into `docs/backlog/README.md` (notably the Tier 1 `coverage_estimate`
+> field and Tier 2 self-administered spot-check modality items). Kept
+> here for evidence traceability; not actively updated.
+
 Parallel Claude Code session is running `dogfood/task.md`. I'm monitoring the
 host (`172.232.161.125`) via `scripts/monitor_dogfood.sh` and capturing
 anything that looks like a build-plan signal. Not a retrospective — this is a

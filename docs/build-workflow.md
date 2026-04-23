@@ -158,6 +158,6 @@ Other stages: no intra-stage checkpoints unless a specific item triggers a pause
 
 ## Notes
 
-- No automated test suite exists. Verification is syntax check + schema inspection + live smoke. If an item would genuinely benefit from a test (e.g., the template-awareness parsing in 1.2), add a targeted one in `benchmarks/` or a new `tests/` dir — but don't invent testing for its own sake.
-- Benchmark replay (`scripts/benchmark.py`) regains meaning once 1.1's logging backfill ships — many mutation tools are currently invisible in `usage.jsonl`.
+- No automated test suite exists. Verification is syntax check + schema inspection + live smoke. If an item would genuinely benefit from a test, add a targeted one under `benchmarks/` — but don't invent testing for its own sake.
+- For measured-impact verification of a tool change, use the 5-topic ratchet (`docs/ratchet-plan.md` + `scripts/benchmark_score.py`).
 - If a stage kickoff reveals that items should be resequenced, say so there; don't silently reorder mid-stage.

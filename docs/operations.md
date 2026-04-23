@@ -1,10 +1,9 @@
-# Operations and backlog
+# Operations
 
-Working doc covering two things:
-1. How the server is deployed and administered day-to-day.
-2. The running list of things we've considered but haven't built.
-
-Keep this current as it diverges — if you do something operationally that's not written down here, add it. If you finish a backlog item, move it to a brief "done" section (or strike it).
+Admin reference for the deployed Topic Builder MCP server. Keep current
+— if you do something operationally that isn't written down here, add
+it. For the open backlog see `backlog/README.md`; for the shipped log
+see `shipped.md`.
 
 ---
 
