@@ -116,6 +116,7 @@ Roughly prioritized. Items live here until they ship or get explicitly dropped.
 
 ### Recently shipped
 
+- **2026-04-22** — suppress no-overlap warning on taxonomy pulls (`[plan 1.15]`). `_scope_drift_warning` now consults `_looks_taxonomic` — biology-flavored topic + Latin-genus-shaped category name silences the warning. Stops false positives on every `category:Bulbophyllum` pull for topic `orchids`.
 - **2026-04-22** — slugified search source labels (`[plan 1.14]`). `search_articles` labels now go through `_slugify_for_source_label`: preserves `:` separators, strips Latin diacritics, keeps Unicode letters (CJK etc.) intact, truncates at 60. Existing DB labels unchanged.
 - **2026-04-22** — rename `auto_score_by_title` → `auto_score_by_keyword(keywords=[...])` (`[plan 1.13]`). Explicit keywords (no topic-name fallback), optional `match_description=True`, language-agnostic. Empty keywords returns structured error with a non-English-wiki hint.
 - **2026-04-22** — `within_category` filter on search_articles + preview_search (`[plan 1.10]`). Thin wrapper that appends `incategory:"<cat>"` to the query. Single-level (CirrusSearch doesn't walk subcats); use `get_category_articles` for recursive. Response surfaces `effective_query` for audit.

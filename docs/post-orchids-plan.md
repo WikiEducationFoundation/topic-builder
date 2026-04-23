@@ -294,7 +294,10 @@ Leaning slugify — preserves human readability while making labels tractable. T
 
 ---
 
-### 1.15 ☐ Suppress no-word-overlap warning for obvious taxonomy pulls `[NEW]`
+### 1.15 ☑ Suppress no-word-overlap warning for obvious taxonomy pulls `[NEW]`
+
+**Shipped 2026-04-22.** `_looks_taxonomic(topic_name, category)` gates `_scope_drift_warning`. Suppresses when (topic name contains a biology keyword like "orchid"/"bird"/"plant"/"fungus"/… OR has a `-aceae`/`-idae`/`-ales`/`-phyta`/`-ae` suffix word) AND the category name matches a Latin-genus pattern (single capitalized ASCII word, 3+ chars). Accepted tradeoff: "Cognition" under an orchids topic gets suppressed (false negative for scope drift), but the plan explicitly called this marginal — the AI catches real noise via post-hoc review regardless.
+
 
 **What.** The "no word-level overlap between topic name and category name" warning fires on every Latin-genus pull (`category:Bulbophyllum`, `category:Cattleya`, etc.) for a topic named "orchids-pt", because Latin names share no characters with "orchid".
 

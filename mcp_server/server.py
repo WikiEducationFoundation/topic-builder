@@ -676,12 +676,42 @@ def _walk_category_tree(category: str, depth: int, exclude_set: set[str],
     return articles, visited_cats
 
 
+_TAXONOMY_KEYWORDS = {
+    'orchid', 'plant', 'tree', 'flower', 'flora', 'fungus', 'mushroom',
+    'alga', 'moss', 'fern', 'grass', 'lichen',
+    'bird', 'mammal', 'fish', 'reptile', 'amphibian', 'insect',
+    'beetle', 'butterfly', 'moth', 'spider', 'lizard', 'snake',
+    'frog', 'crustacean', 'mollusk', 'fauna', 'animal',
+    'species', 'genus', 'taxa', 'taxon', 'family',
+}
+_TAXONOMY_SUFFIXES = ('aceae', 'idae', 'ales', 'phyta', 'ae')
+
+
+def _looks_taxonomic(topic_name: str, category: str) -> bool:
+    """True when a topic + category combination is clearly taxonomic —
+    topic name signals biological classification AND the category name
+    looks like a Latin-binomial-producing genus (single capitalized
+    ASCII word of 3+ chars, e.g. "Bulbophyllum", "Cattleya", "Vanilla").
+    In that case the no-word-overlap warning is a near-100% false
+    positive and should be suppressed."""
+    topic_lower = topic_name.lower()
+    has_tax_keyword = any(k in topic_lower for k in _TAXONOMY_KEYWORDS)
+    has_tax_suffix = any(w.endswith(_TAXONOMY_SUFFIXES)
+                         for w in re.findall(r'\w+', topic_lower))
+    is_latin_genus = bool(re.fullmatch(r'[A-Z][a-z]{2,}', category.strip()))
+    return (has_tax_keyword or has_tax_suffix) and is_latin_genus
+
+
 def _scope_drift_warning(category: str, topic_name: str,
                          source_label: str, count: int) -> str | None:
     """Return a scope-drift warning string when a big category pull has no
     word-level overlap with the topic name (e.g. topic='orchids' pulling
-    category='Cognition'). None when the pull is OK."""
+    category='Cognition'). None when the pull is OK or when the pull is
+    clearly taxonomic (Latin genus name under a biology-flavored topic —
+    those are legitimate pulls even though they share zero words)."""
     if count <= 500 or not topic_name:
+        return None
+    if _looks_taxonomic(topic_name, category):
         return None
     stopwords = {"a", "an", "and", "of", "in", "on", "for", "to", "the", "by"}
     cat_words = {w for w in re.findall(r"\w+", category.lower()) if w not in stopwords}
