@@ -356,7 +356,10 @@ Alternative / additive: learn from context — if the topic already contains 100
 
 ---
 
-### 1.18 ☐ Auto-nudge on `resume_topic` after a feedback-less session `[NEW]`
+### 1.18 ☑ Auto-nudge on `resume_topic` after a feedback-less session `[NEW]`
+
+**Shipped 2026-04-22.** `_feedback_nudge_for_resume(topic_name)` scans usage.jsonl for tool calls on this topic. Fires when: (a) the most recent non-resume/non-start/non-feedback call is >24h ago, AND (b) no submit_feedback has been logged after that call, AND (c) the topic has ≥5 prior anchor calls (skip new / shallow builds — no point nudging someone who only did 2 calls yesterday). `resume_topic` returns a JSON envelope with `resumed` + `feedback_nudge` when the nudge fires; otherwise returns the plain start_topic string unchanged. Natural once-per-gap behavior falls out of the "last anchor ts" check — if the user resumes and does work, the anchor advances past 24h from the next resume.
+
 
 **What.** When `resume_topic` is called, check whether the previous session on this topic ended without a `submit_feedback` call. If so, and if the gap since last activity is more than ~24 hours, include a gentle prompt in the response.
 

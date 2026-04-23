@@ -271,14 +271,85 @@ def list_topics() -> str:
     return json.dumps(topics, indent=2, default=str)
 
 
+def _feedback_nudge_for_resume(topic_name: str,
+                               max_lines: int = 20000,
+                               gap_hours: int = 24,
+                               min_prior_calls: int = 5) -> str | None:
+    """On resume, check whether this topic's previous session ended > N
+    hours ago without a submit_feedback call. If so, return a nudge
+    string; otherwise return None. The nudge is surfaced to the AI only
+    once per gap — if the user kept working after a previous resume, the
+    "last tool call" timestamp advances and the gap check stops firing."""
+    log_path = os.path.join(LOG_DIR, 'usage.jsonl')
+    if not os.path.exists(log_path):
+        return None
+    try:
+        with open(log_path, 'r') as f:
+            lines = f.readlines()
+    except Exception:
+        return None
+
+    topic_entries = []
+    for line in lines[-max_lines:]:
+        try:
+            entry = json.loads(line)
+        except Exception:
+            continue
+        if entry.get('topic') == topic_name:
+            topic_entries.append(entry)
+    # Consider only non-resume tool calls for the "last activity" anchor —
+    # a prior resume doesn't count as real work. submit_feedback also
+    # doesn't anchor activity (we specifically want to know if feedback
+    # was given between the prior session and this resume).
+    anchor_entries = [e for e in topic_entries
+                      if e.get('tool') not in ('resume_topic', 'start_topic',
+                                               'submit_feedback')]
+    if len(anchor_entries) < min_prior_calls:
+        return None
+    last_anchor = anchor_entries[-1]
+    try:
+        last_ts = datetime.datetime.fromisoformat(
+            last_anchor['ts'].replace('Z', '+00:00'))
+    except Exception:
+        return None
+    now = datetime.datetime.now(datetime.timezone.utc)
+    hours_since = (now - last_ts).total_seconds() / 3600
+    if hours_since < gap_hours:
+        return None
+    # Any submit_feedback after the anchor? If so, no nudge.
+    for e in topic_entries:
+        if e.get('tool') == 'submit_feedback' and e.get('ts', '') > last_anchor.get('ts', ''):
+            return None
+
+    return (
+        f"Heads up: your last session on this topic ran {hours_since:.0f} hours "
+        f"ago and ended without submit_feedback. If anything from that session "
+        f"felt friction-heavy — tools that misbehaved, surprises, approaches "
+        f"that worked well — this is a good moment to call submit_feedback "
+        f"before continuing. The user can decline; don't call it unprompted."
+    )
+
+
 @mcp.tool()
 def resume_topic(name: str, ctx: Context = None) -> str:
-    """Resume an existing topic build.
+    """Resume an existing topic build. If this resume follows a gap of
+    more than 24 hours since the last tool call on this topic AND no
+    submit_feedback was recorded in the interim AND the prior session
+    had ≥5 tool calls, the response surfaces a `feedback_nudge` field
+    — a gentle prompt to consider capturing retrospective feedback
+    before diving back in.
 
     Args:
         name: The topic name to resume
     """
-    return start_topic(name, ctx=ctx)
+    resumed = start_topic(name, ctx=ctx)
+    nudge = _feedback_nudge_for_resume(name)
+    if nudge:
+        return json.dumps({
+            'resumed': resumed,
+            'feedback_nudge': nudge,
+        }, indent=2, ensure_ascii=False)
+    return resumed
 
 
 def _topic_cost_summary(topic_name: str, max_lines: int = 20000) -> dict | None:
