@@ -83,7 +83,10 @@ Pairs with 2.6 (event-triggered reflection guidance) and 1.18 (auto-nudge on res
 
 ---
 
-### 1.4 ☐ `preview_harvest_list_page` and `preview_category_pull` `[backlog:#5 + NEW]`
+### 1.4 ☑ `preview_harvest_list_page` and `preview_category_pull` `[backlog:#5 + NEW]`
+
+**Shipped 2026-04-22.** Two new tools with matched `preview_*` naming (Sage confirmed this convention over `dry_run=True` flags). Both share logic with their commit-variant siblings via two extracted helpers: `_fetch_list_page_links(title, wiki, main_content_only)` and `_walk_category_tree(category, depth, exclude_set, max_articles, wiki)`. Scope-drift warning extracted to `_scope_drift_warning()` and now fires on both `get_category_articles` and `preview_category_pull`. Preview tools only fetch descriptions for the sample (default 50), so preview cost stays close to the commit-variant cost even on 10K-article subtrees.
+
 
 **What.** Dry-run variants of `harvest_list_page` and `get_category_articles`. Return link count + sample of titles + new-vs-overlap ratio without committing.
 

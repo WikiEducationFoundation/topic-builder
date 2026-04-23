@@ -552,35 +552,17 @@ def get_wikiproject_articles(project_name: str, max_articles: int = 50000,
     return json.dumps(result, indent=2, ensure_ascii=False)
 
 
-@mcp.tool()
-def get_category_articles(category: str, depth: int = 3, exclude: list[str] | None = None,
-                          max_articles: int = 50000, note: str = "",
-                          topic: str | None = None, ctx: Context = None) -> str:
-    """Crawl a category tree and collect all articles. Adds them to the working list
-    with source 'category'.
-
-    Args:
-        category: Category name without "Category:" prefix
-        depth: Maximum depth to crawl (default 3, max 5)
-        exclude: Category names to skip (prune entire branches)
-        max_articles: Maximum articles to collect (default 50000)
-        note: Optional free-text observation for this call's log entry.
-              Use for mid-flow reflection; empty by default.
-        topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
-    """
-    _start = _start_call()
-    topic_id, wiki, err = _require_topic(ctx, topic)
-    if err:
-        return err
-
-    depth = min(depth, 5)
-    exclude_set = set(exclude or [])
-    articles = set()
-    visited_cats = set()
-
-    queue = collections.deque([(category, 0)])
+def _walk_category_tree(category: str, depth: int, exclude_set: set[str],
+                        max_articles: int, wiki: str) -> tuple[set[str], set[str]]:
+    """Breadth-first walk of a Wikipedia category tree. Returns (articles,
+    visited_cats) — mainspace titles collected from every category visited,
+    and the set of category names traversed. Shared between
+    get_category_articles and preview_category_pull."""
+    articles: set[str] = set()
+    visited_cats: set[str] = set()
     visited_cats.add(category)
 
+    queue = collections.deque([(category, 0)])
     while queue and len(articles) < max_articles:
         cat, d = queue.popleft()
 
@@ -612,6 +594,57 @@ def get_category_articles(category: str, depth: int = 3, exclude: list[str] | No
                     visited_cats.add(subcat)
                     queue.append((subcat, d + 1))
 
+    return articles, visited_cats
+
+
+def _scope_drift_warning(category: str, topic_name: str,
+                         source_label: str, count: int) -> str | None:
+    """Return a scope-drift warning string when a big category pull has no
+    word-level overlap with the topic name (e.g. topic='orchids' pulling
+    category='Cognition'). None when the pull is OK."""
+    if count <= 500 or not topic_name:
+        return None
+    stopwords = {"a", "an", "and", "of", "in", "on", "for", "to", "the", "by"}
+    cat_words = {w for w in re.findall(r"\w+", category.lower()) if w not in stopwords}
+    topic_words = {w for w in re.findall(r"\w+", topic_name.lower()) if w not in stopwords}
+    if cat_words and topic_words and not (cat_words & topic_words):
+        return (
+            f"This pull added {count} articles and the category '{category}' "
+            f"has no word-level overlap with the topic '{topic_name}'. "
+            f"It may be too broad or off-scope. If most of it turns out to be "
+            f"noise, use remove_by_source(\"{source_label}\", "
+            f"keep_if_other_sources=True) to drop everything that isn't also "
+            f"found via a more on-topic source."
+        )
+    return None
+
+
+@mcp.tool()
+def get_category_articles(category: str, depth: int = 3, exclude: list[str] | None = None,
+                          max_articles: int = 50000, note: str = "",
+                          topic: str | None = None, ctx: Context = None) -> str:
+    """Crawl a category tree and collect all articles. Adds them to the working list
+    with source 'category'.
+
+    Args:
+        category: Category name without "Category:" prefix
+        depth: Maximum depth to crawl (default 3, max 5)
+        exclude: Category names to skip (prune entire branches)
+        max_articles: Maximum articles to collect (default 50000)
+        note: Optional free-text observation for this call's log entry.
+              Use for mid-flow reflection; empty by default.
+        topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
+    """
+    _start = _start_call()
+    topic_id, wiki, err = _require_topic(ctx, topic)
+    if err:
+        return err
+
+    depth = min(depth, 5)
+    exclude_set = set(exclude or [])
+    articles, visited_cats = _walk_category_tree(
+        category, depth, exclude_set, max_articles, wiki)
+
     source_label = f"category:{category}"
     batch = [(title, source_label, None) for title in articles]
     added, updated = db.add_articles(topic_id, batch)
@@ -633,22 +666,98 @@ def get_category_articles(category: str, depth: int = 3, exclude: list[str] | No
     # category name and the topic name is a strong signal of scope drift
     # (e.g. topic="educational psychology", category="Cognition").
     _, topic_name, _ = _get_topic(ctx)
-    if added > 500 and topic_name:
-        STOPWORDS = {"a", "an", "and", "of", "in", "on", "for", "to", "the", "by"}
-        cat_words = {w for w in re.findall(r"\w+", category.lower()) if w not in STOPWORDS}
-        topic_words = {w for w in re.findall(r"\w+", topic_name.lower()) if w not in STOPWORDS}
-        if cat_words and topic_words and not (cat_words & topic_words):
-            result['warning'] = (
-                f"This pull added {added} articles and the category '{category}' "
-                f"has no word-level overlap with the topic '{topic_name}'. "
-                f"It may be too broad or off-scope. If most of it turns out to be "
-                f"noise, use remove_by_source(\"{source_label}\", "
-                f"keep_if_other_sources=True) to drop everything that isn't also "
-                f"found via a more on-topic source."
-            )
+    warning = _scope_drift_warning(category, topic_name, source_label, added)
+    if warning:
+        result['warning'] = warning
 
     log_usage(ctx, "get_category_articles", {"category": category, "depth": depth, "wiki": wiki},
               f"{len(articles)} articles, {len(visited_cats)} categories",
+              start_time=_start, note=note)
+    return json.dumps(result, indent=2, ensure_ascii=False)
+
+
+@mcp.tool()
+def preview_category_pull(category: str, depth: int = 3,
+                          exclude: list[str] | None = None,
+                          max_articles: int = 50000,
+                          sample_size: int = 50,
+                          note: str = "",
+                          topic: str | None = None,
+                          ctx: Context = None) -> str:
+    """Dry-run of get_category_articles. Walks the category tree and reports
+    article / category counts + a sampled preview with descriptions WITHOUT
+    committing anything. Use when you want to gauge the shape of a subtree
+    before deciding whether to pull it, or when a `survey_categories`
+    warning flagged the tree as potentially oversized.
+
+    Args:
+        category: Category name without "Category:" prefix
+        depth: Maximum depth to crawl (default 3, max 5)
+        exclude: Category names to skip (prune entire branches)
+        max_articles: Upper bound on articles to enumerate during preview.
+                      Same semantics as get_category_articles.
+        sample_size: How many titles to return in the sample (default 50).
+                     Descriptions are only fetched for the sample.
+        note: Optional free-text observation for this call's log entry.
+              Use for mid-flow reflection; empty by default.
+        topic: Optional topic name. Pass if your client doesn't maintain
+               an MCP session.
+    """
+    _start = _start_call()
+    topic_id, wiki, err = _require_topic(ctx, topic)
+    if err:
+        return err
+
+    depth = min(depth, 5)
+    exclude_set = set(exclude or [])
+    articles_set, visited_cats = _walk_category_tree(
+        category, depth, exclude_set, max_articles, wiki)
+
+    articles = sorted(articles_set)
+    existing = db.get_all_titles(topic_id)
+    new_count = sum(1 for t in articles if t not in existing)
+    overlap_count = len(articles) - new_count
+
+    sample_titles = articles[:max(0, sample_size)]
+    descriptions = fetch_short_descriptions(sample_titles, wiki=wiki) if sample_titles else {}
+    sample = [
+        {
+            'title': t,
+            'description': descriptions.get(t, ''),
+            'already_in_topic': t in existing,
+        }
+        for t in sample_titles
+    ]
+
+    would_be_source_label = f"category:{category}"
+    result = {
+        'wiki': wiki,
+        'root_category': category,
+        'depth': depth,
+        'excluded': sorted(exclude_set),
+        'total_articles': len(articles),
+        'categories_visited': len(visited_cats),
+        'new_to_topic': new_count,
+        'already_in_topic': overlap_count,
+        'sample': sample,
+        'would_be_source_label': would_be_source_label,
+        'note': (
+            'Nothing added to the working list. Review the sample + counts, '
+            'then call get_category_articles(category) to commit, or pass '
+            'exclude=[...] to prune branches first. Skip entirely if the '
+            'subtree is too broad.'
+        ),
+    }
+
+    _, topic_name, _ = _get_topic(ctx)
+    warning = _scope_drift_warning(category, topic_name, would_be_source_label, new_count)
+    if warning:
+        result['warning'] = warning
+
+    log_usage(ctx, "preview_category_pull",
+              {"category": category, "depth": depth, "wiki": wiki,
+               "sample_size": sample_size},
+              f"{len(articles)} articles ({new_count} new), {len(visited_cats)} categories",
               start_time=_start, note=note)
     return json.dumps(result, indent=2, ensure_ascii=False)
 
@@ -749,6 +858,57 @@ class _MainContentLinkExtractor(html.parser.HTMLParser):
                 return
 
 
+def _fetch_list_page_links(title: str, wiki: str,
+                           main_content_only: bool) -> tuple[list[str], bool]:
+    """Fetch mainspace links from a list/outline page.
+
+    Returns (links, main_content_only_actual). The second return reflects
+    whether the HTML parse path succeeded — when `main_content_only=True`
+    but the page's HTML came back empty (missing page, parse error), we
+    fall back to prop=links and return the second value as False so the
+    caller can surface that to the user."""
+    if main_content_only:
+        parse_params = {
+            'action': 'parse',
+            'page': title,
+            'prop': 'text',
+            'format': 'json',
+            'formatversion': '2',
+            'redirects': '1',
+            'disabletoc': '1',
+            'disableeditsection': '1',
+        }
+        data = api_get(wiki_api_url(wiki), parse_params)
+        html_text = data.get('parse', {}).get('text', '')
+        if html_text:
+            extractor = _MainContentLinkExtractor()
+            extractor.feed(html_text)
+            return [normalize_title(t) for t in extractor.links], True
+        main_content_only = False
+
+    params = {
+        'action': 'query',
+        'titles': title,
+        'prop': 'links',
+        'plnamespace': '0',
+        'pllimit': '500',
+        'format': 'json',
+        'formatversion': '2',
+    }
+    links = []
+    while True:
+        data = api_get(wiki_api_url(wiki), params)
+        if 'query' in data and 'pages' in data['query']:
+            for page in data['query']['pages']:
+                for link in page.get('links', []):
+                    links.append(normalize_title(link['title']))
+        if 'continue' in data:
+            params.update(data['continue'])
+        else:
+            break
+    return links, False
+
+
 @mcp.tool()
 def harvest_list_page(title: str, main_content_only: bool = True,
                       note: str = "",
@@ -778,61 +938,19 @@ def harvest_list_page(title: str, main_content_only: bool = True,
     if err:
         return err
 
-    if main_content_only:
-        parse_params = {
-            'action': 'parse',
-            'page': title,
-            'prop': 'text',
-            'format': 'json',
-            'formatversion': '2',
-            'redirects': '1',
-            'disabletoc': '1',
-            'disableeditsection': '1',
-        }
-        data = api_get(wiki_api_url(wiki), parse_params)
-        html_text = data.get('parse', {}).get('text', '')
-        if not html_text:
-            # Page missing / parse error — fall back to prop=links so caller
-            # still gets a coherent answer rather than zero links.
-            main_content_only = False
-        else:
-            extractor = _MainContentLinkExtractor()
-            extractor.feed(html_text)
-            links = [normalize_title(t) for t in extractor.links]
-
-    if not main_content_only:
-        params = {
-            'action': 'query',
-            'titles': title,
-            'prop': 'links',
-            'plnamespace': '0',
-            'pllimit': '500',
-            'format': 'json',
-            'formatversion': '2',
-        }
-        links = []
-        while True:
-            data = api_get(wiki_api_url(wiki), params)
-            if 'query' in data and 'pages' in data['query']:
-                for page in data['query']['pages']:
-                    for link in page.get('links', []):
-                        links.append(normalize_title(link['title']))
-            if 'continue' in data:
-                params.update(data['continue'])
-            else:
-                break
+    links, used_html = _fetch_list_page_links(title, wiki, main_content_only)
 
     source_label = f"list_page:{title}"
     batch = [(t, source_label, None) for t in links]
     added, updated = db.add_articles(topic_id, batch)
 
     log_usage(ctx, "harvest_list_page",
-              {"title": title, "wiki": wiki, "main_content_only": main_content_only},
+              {"title": title, "wiki": wiki, "main_content_only": used_html},
               f"{len(links)} links, {added} new", start_time=_start, note=note)
     return json.dumps({
         'wiki': wiki,
         'source_page': title,
-        'main_content_only': main_content_only,
+        'main_content_only': used_html,
         'links_found': len(links),
         'new_articles_added': added,
         'source_label': source_label,
@@ -840,7 +958,81 @@ def harvest_list_page(title: str, main_content_only: bool = True,
         'note': (
             f'To undo this harvest, use: remove_by_source("{source_label}"). '
             f'Pass main_content_only=False if you want the raw link set '
-            f'including navboxes and navigation chrome.'
+            f'including navboxes and navigation chrome. Use '
+            f'preview_harvest_list_page first if you want to inspect before '
+            f'committing.'
+        ),
+    }, indent=2, ensure_ascii=False)
+
+
+@mcp.tool()
+def preview_harvest_list_page(title: str, sample_size: int = 50,
+                              main_content_only: bool = True,
+                              note: str = "",
+                              topic: str | None = None,
+                              ctx: Context = None) -> str:
+    """Dry-run of harvest_list_page. Fetches the page's links but does NOT
+    add anything to the working list. Returns the link count, new-vs-
+    already-in-topic counts, and a sample of titles + Wikidata short
+    descriptions so the AI/user can inspect before committing.
+
+    Good for list pages you're not sure about — especially geographic or
+    biodiversity lists where navbox contamination is common even with
+    `main_content_only=True`, or "Outline of …" pages where you want to
+    know up front whether the curated content lives in navboxes.
+
+    Args:
+        title: Page title (e.g., "List of orchid genera").
+        sample_size: How many titles to return in the sample (default 50).
+                     Only the sample pays for description fetches; the
+                     full link list is cheap.
+        main_content_only: Same semantics as harvest_list_page. Default True.
+        note: Optional free-text observation for this call's log entry.
+              Use for mid-flow reflection; empty by default.
+        topic: Optional topic name. Pass if your client doesn't maintain
+               an MCP session.
+    """
+    _start = _start_call()
+    topic_id, wiki, err = _require_topic(ctx, topic)
+    if err:
+        return err
+
+    links, used_html = _fetch_list_page_links(title, wiki, main_content_only)
+    existing = db.get_all_titles(topic_id)
+    new_count = sum(1 for t in links if t not in existing)
+    overlap_count = len(links) - new_count
+
+    sample_titles = links[:max(0, sample_size)]
+    descriptions = fetch_short_descriptions(sample_titles, wiki=wiki) if sample_titles else {}
+    sample = [
+        {
+            'title': t,
+            'description': descriptions.get(t, ''),
+            'already_in_topic': t in existing,
+        }
+        for t in sample_titles
+    ]
+
+    would_be_source_label = f"list_page:{title}"
+    log_usage(ctx, "preview_harvest_list_page",
+              {"title": title, "wiki": wiki, "main_content_only": used_html,
+               "sample_size": sample_size},
+              f"{len(links)} links ({new_count} new)",
+              start_time=_start, note=note)
+    return json.dumps({
+        'wiki': wiki,
+        'source_page': title,
+        'main_content_only': used_html,
+        'total_links': len(links),
+        'new_to_topic': new_count,
+        'already_in_topic': overlap_count,
+        'sample': sample,
+        'would_be_source_label': would_be_source_label,
+        'note': (
+            'Nothing added to the working list. Review the sample, then '
+            'call harvest_list_page(title) to commit, or skip entirely '
+            'if the preview looks noisy. Pass main_content_only=False to '
+            'see the raw prop=links set including navigation chrome.'
         ),
     }, indent=2, ensure_ascii=False)
 
