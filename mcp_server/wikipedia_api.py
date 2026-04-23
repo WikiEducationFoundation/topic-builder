@@ -154,20 +154,22 @@ def normalize_title(title):
 
 def _first_sentence(text, max_chars=200):
     """Extract a best-effort first sentence from a plain-text REST extract.
-    Skips periods within the first 30 chars (likely abbreviations like
-    'Dr.' / 'Mt.') and caps at max_chars so long opening sentences don't
-    bloat the description column."""
+    Recognizes ASCII `.!?` followed by whitespace/eos AND full-width CJK
+    sentence-enders `。！？` (no whitespace needed — CJK doesn't space
+    between sentences). Skips any match within the first 30 chars (likely
+    an abbreviation like 'Dr.' / 'Mt.') and caps at max_chars so long
+    opening sentences don't bloat the description column."""
     if not text:
         return ''
     text = text.strip()
-    # Look for the first period followed by whitespace or end-of-string,
-    # past the 30-char threshold.
     import re
-    match = re.search(r'\.(?:\s|$)', text[30:])
+    match = re.search(r'(?:[.!?](?:\s|$)|[。！？])', text[30:])
     if match:
-        end = 30 + match.start() + 1
-        return text[:end][:max_chars]
-    # No clean sentence boundary — just truncate.
+        end = 30 + match.end()
+        result = text[:end]
+        if len(result) > max_chars:
+            return result[:max_chars].rstrip() + '…'
+        return result
     if len(text) > max_chars:
         return text[:max_chars].rstrip() + '…'
     return text
