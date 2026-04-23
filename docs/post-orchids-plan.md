@@ -670,34 +670,53 @@ Already multi-call internally after 1.6. Add budget + partial-return discipline 
 
 ---
 
-## Stage 4 — Design decision: scoring at scale `[backlog:design Q #7 — RESOLVED by Q&A round 3]`
+## Stage 4 — Two-axis topic model: inclusion × centrality `[reshaped 2026-04-22 from "scoring at scale" design-decision stage]`
 
-**Decision: option (a) — drop scoring from the default workflow, keep as opt-in quality cut, fix documentation gap.**
+**Reshape from original Stage 4.** Sage's read on IV + core/periphery reframed this stage from "drop scoring" to "make scoring structural." Topics now model two orthogonal axes:
 
-The AI's Q1 answer resolved this directly:
+- **Inclusion** (binary): presence in working list. Off-topic = `remove_articles` / `reject_articles`.
+- **Centrality** (nullable 1–10 gradient): how central to the topic. NULL = "in-topic, centrality unevaluated" (valid, common). IV's filter slider will drive off this column when ready.
 
-> "I treated scoring as a mechanical requirement for export rather than a meaningful relevance gradient. My cleanup pattern was binary — if something was noise I removed it via `remove_articles`; if it survived audits it was on-topic enough... For a single-reviewer taxonomy build with clear boundaries and no signal about downstream weighting semantics, scoring was overhead and I routed around it."
+Score 0 is deprecated (used to mean "off-topic noise" — conflated the two axes). No tool writes 0 anymore; off-topic articles get rejected instead.
 
-The AI also named the cases where 1–10 *would* earn its keep: contested-boundary topics, multi-reviewer workflows, core/extended distinctions on broadly-construed topics, and **downstream consumers that weight by score** — but only if the docs communicate the semantics. Key quote: *"If the tool docs said 'Impact Visualizer surfaces score-9+ articles first' or similar, I'd have been more deliberate."*
+### 4.1 ☑ `export_csv` works without scoring by default
 
-**What this implies for the build:**
+**Shipped retroactively** in 1.16 — `min_score=0` default includes unscored articles; `enriched=True` emits the score column blank when NULL. No new work in this stage.
 
-### 4.1 ☐ `export_csv` works without scoring by default
+### 4.2 ☑ Instructions rewrite around centrality-gradient model
 
-Drop the implicit requirement that `score_all_unscored` run before export. CSV exports whatever's in the topic; score column populates where scored, blank otherwise.
+**Shipped 2026-04-22 (Commit B).** Rewrote the scoring bullets in `server_instructions.md`:
+- New "TWO-AXIS TOPIC MODEL" bullet naming inclusion and centrality as independent decisions, deprecating score 0.
+- "WHEN TO SCORE CENTRALITY (and when not to)" bullet — score broad topics with real core/periphery distinction; skip for flat taxonomies where every article is a peer.
+- Rewrote the `auto_score_by_description` guidance around rejection semantics.
+- Rewrote the `export_csv` bullet to cover `enriched=True` and note NULL-scored articles ship with the rest.
+- Replaced the Stage-2 "skip scoring for taxonomy" bullet (which contradicted the new model) with the nuanced "score when there's a gradient worth capturing."
+- PIPELINE step 11 reframed from "bulk auto-score" to "bulk noise-rejection + optional centrality."
 
-### 4.2 ☐ Instructions guide on when scoring is valuable
+### 4.3 ☑ IV handoff doc — centrality roadmap
 
-Add a short rubric to `server_instructions.md`:
-- **Skip scoring** for: taxonomy topics with clear membership rules, species-dominated corpora, single-reviewer builds where the decision is binary in-or-out.
-- **Use scoring** for: biography-heavy topics with judgment calls, broadly-construed topics where you want core/extended distinction, any topic destined for a downstream consumer that weights by score.
-- **If using scoring,** consider a simple rubric: 9–10 canonical / core, 6–8 expanded / cultural-tangent, 3–5 speculative or borderline. Don't bother with fine gradients between 7 and 8 — they're indistinguishable downstream.
+**Shipped 2026-04-22 (Commit B).** Added `## Centrality score — current state and roadmap` section to `docs/impact-visualizer-handoff.md`:
+- Current state: enriched CSV carries centrality; default CSV stays 2-column IV-compatible.
+- Roadmap: IV filter slider ("show centrality ≥ N"), NULL handling ("included but unrated").
+- Updated the `publish_topic` payload spec to carry per-article centrality natively.
 
-### 4.3 ☐ Document downstream scoring semantics
+### 4.4 ☑ Rewrite `auto_score_by_description` to reject instead of writing score=0
 
-Impact Visualizer handoff doc (`docs/impact-visualizer-handoff.md`) is the place to spell out how IV actually uses the score column — or that it doesn't. Once that's clear, the score field's meaning follows.
+**Shipped 2026-04-22 (Commit A).** Switched from `db.set_scores({t: 0})` to `db.add_rejections(titles, reason="auto_score_by_description: <marker>")` plus `db.remove_articles(titles)`. Each rejection carries its specific reason (disqualifying:actor, missing_demographic, etc.) for audit. Legacy score=0 rows in existing DBs untouched. Response fields renamed: `scored_zero` → `rejected`, `would_score_zero` → `would_reject`, `survivors_unscored` → `survivors`. Dry-run + axis warning + samples_by_reason shape preserved.
 
-**What this does NOT change.** Existing scoring tools stay — `score_by_extract`, `auto_score_by_title` (after 1.13 fix), `auto_score_by_description`, `set_scores`, `score_all_unscored`. They're still useful for the cases above. What changes is that the AI is no longer pushed toward them as a wrap-up formality.
+### 4.5 ☑ `score_all_unscored` deprecation note in docstring
+
+**Shipped 2026-04-22 (Commit A).** No behavior change. Docstring now leads with "prefer leaving articles unscored" and frames the tool as "for deliberately stamping the remainder at a chosen centrality after review" — not a closing ceremony. Named the orchids failure mode (`score_all_unscored(8)` as wrap-up) directly.
+
+### 4.6 ☑ Rejection sample in gather responses
+
+**Shipped 2026-04-22 (Commit A).** Added `_apply_rejections(topic_id, candidates)` helper in `server.py` — uniform accounting across `get_category_articles`, `get_wikiproject_articles`, `harvest_list_page`, `search_articles`, `add_articles`. Responses now carry `rejected_sample: [{title, reason}, ...]` (up to 10) alongside the existing `rejected_skipped: N` count, so the AI sees which titles got blocked and why without a separate `list_rejections` call. `db.get_rejected_titles` → `db.get_rejections_map` (returns `{title: reason}`).
+
+### 4.7 ☑ Sweep for leftover old-model references
+
+**Shipped 2026-04-22 (Commit B).** Greps confirmed no stale references in `mcp_server/` or `docs/` — legacy references all in intentional explanatory context ("this tool used to write score=0") or in `development-narrative.md` (explicitly historical, left alone per CLAUDE.md). `unscored_only` / `scored_only` / `min_score` stay as legitimate filter predicates under the new model.
+
+**What this does NOT change.** Existing scoring tools stay — `score_by_extract`, `auto_score_by_keyword` (renamed from `auto_score_by_title` in 1.13), `auto_score_by_description` (now rejects), `set_scores`, `score_all_unscored` (deprecated in docstring only). What changes is the semantic model (score = centrality, not inclusion) and the rubber-stamp push at wrap-up is gone.
 
 ---
 

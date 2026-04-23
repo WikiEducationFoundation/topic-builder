@@ -30,9 +30,13 @@ patience) when the earlier steps have landed.
    seeds, then `search_similar` only if the preview is clean.
 10. **Edge browse** — `browse_edges` from peripheral on-topic articles
     to surface neighbors the broader pulls missed.
-11. **Bulk auto-score** — `auto_score_by_description` (safe, reads
-    Wikidata shortdescs). `auto_score_by_keyword` for taxonomy or
-    non-en topics where shortdesc coverage is thin.
+11. **Bulk noise-rejection** — `auto_score_by_description` rejects
+    articles whose Wikidata shortdesc disqualifies them (off-topic
+    professions, missing required axes) and records the reason on
+    the sticky rejection list. `auto_score_by_keyword` can assign
+    centrality scores in bulk for taxonomy or non-en topics where
+    keyword-matching is reliable. Both optional; skip if there's no
+    meaningful core/periphery distinction to capture.
 12. **Spot check + gap check** — before export, see the SPOT CHECK and
     GAP CHECK bullets below.
 13. **Export** — `export_csv` (use `enriched=True` for manual review
@@ -376,29 +380,73 @@ closest current primitive.
   cleaning it afterward is the most common way to inflate a topic with
   noise that is expensive to undo.
 
-- After pruning is done, use score_all_unscored to mark everything as scored for
-  export, rather than paging through and scoring individually.
+- TWO-AXIS TOPIC MODEL — these are independent decisions:
+  * **Inclusion** (binary): presence in the working list. If an article
+    doesn't belong in the topic at all, call `remove_articles` (or
+    `reject_articles` to make the block sticky across future gathers).
+    Absence from the list = out of the topic. Presence = in.
+  * **Centrality** (nullable 1–10 gradient): how central the article
+    is to the topic. 10 = canonical / the article the topic is
+    literally about. 7–9 = strongly central, first-tier. 4–6 = clearly
+    on-topic but not central (related figures, cultural context,
+    adjacent concepts). 1–3 = distant periphery (tangentially
+    connected). **NULL is valid** and means "in-topic, centrality
+    unevaluated" — many articles will stay NULL in normal use, and
+    the downstream consumer (Impact Visualizer) treats NULL as
+    "included but unrated." Skipping centrality scoring is fine.
+
+  Score 0 is deprecated and no longer written by any tool — off-topic
+  articles get `remove_articles` / `reject_articles`, not score=0.
+
+- WHEN TO SCORE CENTRALITY (and when not to):
+    * **Score** when the topic has a meaningful core / periphery
+      distinction — e.g. a broad subject where some articles are
+      canonical (*Orchidaceae*, *Orchid*, *Vanilla*) and others are
+      adjacent (*Cape Floristic Region*, *Smithsonian Institution*).
+      The 1–10 gradient lets IV's filter slider show "just the core"
+      vs "core + periphery" vs "everything."
+    * **Skip scoring** for flat / taxonomic topics where every article
+      is equally a member — e.g. "orchids of South Africa" where all
+      800 species are peers. A flat score communicates nothing.
+      Leave centrality NULL; IV displays them uniformly.
+
+  Score during review (after `fetch_descriptions`) — not at gather
+  time. The description lets you judge centrality from content
+  rather than source. Don't rubber-stamp at the end: if you find
+  yourself calling `score_all_unscored(8)` as a closing ceremony,
+  you're not scoring, you're adding noise. Prefer leaving articles
+  NULL to scoring them arbitrarily.
 
 - After gather and before heavy review, call fetch_descriptions so each
   article's Wikidata short description is stored and shows up in
   get_articles / get_articles_by_source / export_csv output. This makes
   mid-flow filtering far faster — you can judge relevance from
   "title + one-line description" without fetching extracts per article.
-  Batches of 500 titles per call; call it again if more remain.
+  On non-en wikis, the tool falls back to the REST page-summary first
+  sentence when Wikidata is empty, so the description column populates
+  either way.
 
-- After fetch_descriptions, use auto_score_by_description to mark obvious
-  noise as score=0 without manual review. You supply optional labeled axes
-  of required markers plus optional disqualifying markers. Anything missing
-  a match on any axis or hitting a disqualifying marker scores 0. Dry-run
-  by default; present breakdown_by_reason and samples_by_reason to the user
-  in plain language, let them tweak, then apply with dry_run=False.
+- After fetch_descriptions, use auto_score_by_description to REJECT
+  obvious noise without manual review. You supply optional labeled axes
+  of required markers plus optional disqualifying markers. Anything
+  missing a match on any axis or hitting a disqualifying marker is
+  rejected — removed from the working list AND added to the topic's
+  sticky rejection list so future gathers don't re-introduce the same
+  noise. Dry-run by default; present breakdown_by_reason and
+  samples_by_reason to the user in plain language, let them tweak,
+  then apply with dry_run=False.
+
+  (This tool used to write score=0; under the two-axis model it
+  now calls reject_articles instead. Score is reserved for
+  centrality.)
 
   IMPORTANT — `required_any` axes are powerful but dangerous for
   intersectional topics. Wikipedia shortdescs often elide implicit identity:
   a Mexican-American neuroscientist may be described as just "American
   neuroscientist." A demographic axis that requires "mexican/latino/..." in
-  the shortdesc will cut that article. Rule of thumb: only require an axis
-  when the shortdesc is expected to contain that dimension EVERY time.
+  the shortdesc will reject that article. Rule of thumb: only require
+  an axis when the shortdesc is expected to contain that dimension
+  EVERY time.
 
   Default strategy for intersectional biography topics:
     1) First pass — disqualifying markers only (no axes): actor, musician,
@@ -414,11 +462,16 @@ closest current primitive.
   like genuine topic members ("American engineer", "American chemist"),
   the axis is too strict.
 
-  Only writes score=0 — never positives. "Has markers" isn't sufficient
-  evidence of relevance. Positive scoring stays with humans.
+  Only rejects — never marks articles as in-topic. "Has markers" isn't
+  sufficient evidence of relevance. Inclusion stays with humans.
 
-- export_csv with default min_score=0 exports all articles in the working list.
-  No need to score first unless the user wants score-based filtering.
+- export_csv with default min_score=0 exports all articles in the working
+  list regardless of centrality (including NULL-scored articles). The
+  default two-column CSV (title, description) is Impact-Visualizer-
+  compatible. Pass `enriched=True` for a 5-column CSV with a header row
+  (title, description, score, source_labels, first_added_at) — useful
+  for manual review and future IV centrality-filter support. No need to
+  score before export.
 
 - SPOT CHECK: near the end, before the final export, ask the user to name
   3–5 specific articles they would expect to find in the list — niche

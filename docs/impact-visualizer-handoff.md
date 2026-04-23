@@ -8,6 +8,23 @@ Today's outcome of a TB session is a CSV the user downloads, then someone (curre
 
 Impact Visualizer has no web UI for topic creation. It's Rails Console + Rake. So this integration isn't duplicating an existing path — it's creating IV's first end-to-end topic-creation UX, via Topic Builder as the front door.
 
+## Centrality score — current state and roadmap
+
+Topic Builder now models two orthogonal axes per article (Stage 4):
+
+- **Inclusion** (binary): presence in the topic's working list. Articles removed / rejected are out; everything else is in.
+- **Centrality** (nullable 1–10 gradient): how central the article is to the topic. 10 is canonical; 1 is distant periphery. NULL is a valid, common state meaning "in-topic, centrality unevaluated" — not every topic needs centrality scoring (pure taxonomies leave it NULL by default).
+
+**Current CSV carriage.** TB's default export is still two-column (`title, description`, no header) — what Impact Visualizer's current CSV import expects. TB also supports `export_csv(enriched=True)`, which emits five columns + header: `title, description, score, source_labels, first_added_at`. Score is blank when NULL. The enriched variant is for manual review today; nothing in IV reads it yet.
+
+**Roadmap: IV filter slider.** Once IV is ready to consume centrality, add:
+
+- **Ingestion** — accept the enriched CSV (or the `publish_topic` JSON payload, which includes centrality natively when it lands). Persist centrality on `ArticleBagArticle` (or `Article`, depending on whether centrality varies across topics; it does — same article can be core in one topic and periphery in another, so the join table is the right home).
+- **UI** — a slider or threshold selector on the topic view: "show articles with centrality ≥ N." Default to showing all (NULL + any score ≥ 1). When the user drags up, NULL articles disappear along with low-scored ones; when dragging down, everything returns. This matches the AI's mental model: *"I rated these 7–10 as core; 4–6 as clearly on-topic but not central; the rest I left NULL."*
+- **Display behavior for NULL** — treat NULL as "included but unrated," show alongside scored articles when the threshold is 0 (the default), fade out or hide when the threshold is ≥ 1. The important property is that NULL never means "exclude from the topic" — that's what removal / rejection means.
+
+**What to do on the IV side before TB ships `publish_topic`.** Nothing required. The enriched CSV carries the column today for anyone who wants to consume it manually; once IV's import accepts the richer shape, TB's side is already producing it. Priority-wise, centrality-aware UI is a legitimate "ship when you have time" — the TB model supports it without IV coordination, and absence of the filter doesn't break anything.
+
 ## End-to-end user flow
 
 1. User finishes curating an article list in a TB conversation (existing flow).
@@ -84,12 +101,19 @@ Returns:
 {
   "handle": "tbp_a1b2c3...",
   "config": { "name": "...", "slug": "...", ... },
-  "articles": ["Article title 1", "Article title 2", ...],
+  "articles": [
+    {"title": "Article title 1", "centrality": 9},
+    {"title": "Article title 2", "centrality": null},
+    ...
+  ],
   "source_topic": "educational psychology",
   "created_at": "2026-04-16T...",
-  "article_count": 929
+  "article_count": 929,
+  "schema_version": 1
 }
 ```
+
+`centrality` is `null | 1..10` per article. IV's importer should store it so the topic-view filter slider has a column to drive from. Null means "in-topic, centrality unevaluated" — valid and common; do not treat as exclusion.
 
 Records `consumed_at`. Returns 404 once expired. Returns 404 for unknown handles. No auth beyond handle unguessability — the handle is a capability.
 
