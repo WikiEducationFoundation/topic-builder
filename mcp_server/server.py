@@ -908,17 +908,40 @@ def _cost_report(start_time: float) -> dict:
 
 
 def _walk_category_tree(category: str, depth: int, exclude_set: set[str],
-                        max_articles: int, wiki: str) -> tuple[set[str], set[str]]:
-    """Breadth-first walk of a Wikipedia category tree. Returns (articles,
-    visited_cats) — mainspace titles collected from every category visited,
-    and the set of category names traversed. Shared between
-    get_category_articles and preview_category_pull."""
+                        max_articles: int, wiki: str,
+                        deadline: float | None = None
+                        ) -> tuple[set[str], set[str], set[str], bool]:
+    """Breadth-first walk of a Wikipedia category tree with optional
+    cooperative time budget.
+
+    Returns a 4-tuple:
+      * articles — mainspace titles collected.
+      * fully_crawled — categories whose article enum AND subcat enum both
+        completed. Safe to add to `exclude_set` on a resume call (that
+        call will skip descending into them from the root).
+      * pending — categories dequeued but not yet processed when the
+        deadline fired. Empty when `timed_out` is False.
+      * timed_out — True iff `deadline` was set and the budget was
+        exhausted mid-walk. Callers should surface this to the AI so
+        it can decide whether to resume with the exclude= idiom or
+        narrow scope.
+
+    `deadline` is a `time.monotonic()`-scale wall-clock cutoff. When
+    None, the walk runs to completion.
+
+    Budget checks happen only between category-units of work (top of
+    loop). One category's article + subcat enum is treated as atomic so
+    the fully_crawled / pending split is always well-defined."""
     articles: set[str] = set()
-    visited_cats: set[str] = set()
-    visited_cats.add(category)
+    enqueued: set[str] = {category}
+    fully_crawled: set[str] = set()
 
     queue = collections.deque([(category, 0)])
+    timed_out = False
     while queue and len(articles) < max_articles:
+        if deadline is not None and time.monotonic() >= deadline:
+            timed_out = True
+            break
         cat, d = queue.popleft()
 
         params = {
@@ -945,11 +968,14 @@ def _walk_category_tree(category: str, depth: int, exclude_set: set[str],
                 subcat = item['title']
                 if subcat.startswith('Category:'):
                     subcat = subcat[len('Category:'):]
-                if subcat not in visited_cats and subcat not in exclude_set:
-                    visited_cats.add(subcat)
+                if subcat not in enqueued and subcat not in exclude_set:
+                    enqueued.add(subcat)
                     queue.append((subcat, d + 1))
 
-    return articles, visited_cats
+        fully_crawled.add(cat)
+
+    pending = {c for c, _ in queue}
+    return articles, fully_crawled, pending, timed_out
 
 
 _TAXONOMY_KEYWORDS = {
@@ -1006,16 +1032,32 @@ def _scope_drift_warning(category: str, topic_name: str,
 
 @mcp.tool()
 def get_category_articles(category: str, depth: int = 3, exclude: list[str] | None = None,
-                          max_articles: int = 50000, note: str = "",
+                          max_articles: int = 50000,
+                          time_budget_s: int = 240,
+                          note: str = "",
                           topic: str | None = None, ctx: Context = None) -> str:
-    """Crawl a category tree and collect all articles. Adds them to the working list
-    with source 'category'.
+    """Crawl a category tree and collect all articles. Adds them to the
+    working list with source 'category'.
+
+    Runs under a cooperative time budget (default 240s, under the MCP
+    transport's 300s hard cap). If the walk doesn't finish in time the
+    tool returns `timed_out: true` with partial results AND a resume
+    hint: `resume_suggestion` tells the AI how to call the tool again
+    to continue from where it stopped — typically by passing
+    `exclude=[fully-crawled branches]` so the next call skips already-
+    covered subtrees.
 
     Args:
         category: Category name without "Category:" prefix
         depth: Maximum depth to crawl (default 3, max 5)
-        exclude: Category names to skip (prune entire branches)
-        max_articles: Maximum articles to collect (default 50000)
+        exclude: Category names to skip (prune entire branches).
+                 On resume, pass the `exclude_suggestion` from the prior
+                 timed-out response to skip already-covered subtrees.
+        max_articles: Maximum articles to collect (default 50000).
+        time_budget_s: Wall-clock budget in seconds (default 240). Set
+                       lower for fast probes, higher only if you know
+                       the tree is bounded. Above ~280 risks hitting
+                       the MCP hard cap (300s).
         note: Optional free-text observation for this call's log entry.
               Use for mid-flow reflection; empty by default.
         topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
@@ -1027,8 +1069,9 @@ def get_category_articles(category: str, depth: int = 3, exclude: list[str] | No
 
     depth = min(depth, 5)
     exclude_set = set(exclude or [])
-    articles, visited_cats = _walk_category_tree(
-        category, depth, exclude_set, max_articles, wiki)
+    deadline = time.monotonic() + max(1, time_budget_s)
+    articles, fully_crawled, pending, timed_out = _walk_category_tree(
+        category, depth, exclude_set, max_articles, wiki, deadline=deadline)
 
     rejected_set = db.get_rejected_titles(topic_id)
     rejected_skipped = sum(1 for a in articles if a in rejected_set)
@@ -1045,12 +1088,32 @@ def get_category_articles(category: str, depth: int = 3, exclude: list[str] | No
         'excluded': sorted(exclude_set),
         'articles_found': len(articles),
         'rejected_skipped': rejected_skipped,
-        'categories_visited': len(visited_cats),
+        'categories_fully_crawled': len(fully_crawled),
+        'categories_pending': len(pending),
         'new_articles_added': added,
         'source_label': source_label,
         'total_in_working_list': db.get_status(topic_id)['total_articles'],
+        'timed_out': timed_out,
         'note': f'To undo this pull, use: remove_by_source("{source_label}")',
     }
+
+    if timed_out:
+        # Merge old excludes + newly-fully-crawled so the AI can pass
+        # one clean exclude list on resume. Cap pending_branches sample
+        # for readability on 300+-subcategory trees.
+        exclude_suggestion = sorted(exclude_set | fully_crawled)
+        result['resume_suggestion'] = {
+            'note': (
+                'Budget exhausted mid-walk. Call get_category_articles again '
+                f'with exclude=<this list> to skip already-crawled branches. '
+                'For deep or flat-and-wide trees, consider lowering depth, '
+                'narrowing to a specific subtree, or raising time_budget_s '
+                '(max practical ~280s under the MCP 300s hard cap).'
+            ),
+            'exclude': exclude_suggestion,
+            'pending_branches_sample': sorted(pending)[:50],
+            'pending_branches_total': len(pending),
+        }
 
     # Noisy-pull warning: large pull with no word-level overlap between the
     # category name and the topic name is a strong signal of scope drift
@@ -1061,9 +1124,12 @@ def get_category_articles(category: str, depth: int = 3, exclude: list[str] | No
         result['warning'] = warning
 
     result['cost'] = _cost_report(_start)
-    log_usage(ctx, "get_category_articles", {"category": category, "depth": depth, "wiki": wiki},
-              f"{len(articles)} articles, {len(visited_cats)} categories",
-              start_time=_start, note=note)
+    log_usage(ctx, "get_category_articles",
+              {"category": category, "depth": depth, "wiki": wiki,
+               "time_budget_s": time_budget_s},
+              f"{len(articles)} articles, {len(fully_crawled)} cats"
+              f"{' (timed out)' if timed_out else ''}",
+              start_time=_start, timed_out=timed_out, note=note)
     return json.dumps(result, indent=2, ensure_ascii=False)
 
 
@@ -1072,6 +1138,7 @@ def preview_category_pull(category: str, depth: int = 3,
                           exclude: list[str] | None = None,
                           max_articles: int = 50000,
                           sample_size: int = 50,
+                          time_budget_s: int = 240,
                           note: str = "",
                           topic: str | None = None,
                           ctx: Context = None) -> str:
@@ -1081,6 +1148,11 @@ def preview_category_pull(category: str, depth: int = 3,
     before deciding whether to pull it, or when a `survey_categories`
     warning flagged the tree as potentially oversized.
 
+    Honors the same cooperative time budget as get_category_articles and
+    returns `timed_out` + a `resume_suggestion` on partial walks — the
+    numbers you see are real partials, not "approximately this if we had
+    finished."
+
     Args:
         category: Category name without "Category:" prefix
         depth: Maximum depth to crawl (default 3, max 5)
@@ -1089,6 +1161,7 @@ def preview_category_pull(category: str, depth: int = 3,
                       Same semantics as get_category_articles.
         sample_size: How many titles to return in the sample (default 50).
                      Descriptions are only fetched for the sample.
+        time_budget_s: Wall-clock budget in seconds (default 240).
         note: Optional free-text observation for this call's log entry.
               Use for mid-flow reflection; empty by default.
         topic: Optional topic name. Pass if your client doesn't maintain
@@ -1101,8 +1174,9 @@ def preview_category_pull(category: str, depth: int = 3,
 
     depth = min(depth, 5)
     exclude_set = set(exclude or [])
-    articles_set, visited_cats = _walk_category_tree(
-        category, depth, exclude_set, max_articles, wiki)
+    deadline = time.monotonic() + max(1, time_budget_s)
+    articles_set, fully_crawled, pending, timed_out = _walk_category_tree(
+        category, depth, exclude_set, max_articles, wiki, deadline=deadline)
 
     articles = sorted(articles_set)
     existing = db.get_all_titles(topic_id)
@@ -1127,11 +1201,13 @@ def preview_category_pull(category: str, depth: int = 3,
         'depth': depth,
         'excluded': sorted(exclude_set),
         'total_articles': len(articles),
-        'categories_visited': len(visited_cats),
+        'categories_fully_crawled': len(fully_crawled),
+        'categories_pending': len(pending),
         'new_to_topic': new_count,
         'already_in_topic': overlap_count,
         'sample': sample,
         'would_be_source_label': would_be_source_label,
+        'timed_out': timed_out,
         'note': (
             'Nothing added to the working list. Review the sample + counts, '
             'then call get_category_articles(category) to commit, or pass '
@@ -1139,6 +1215,18 @@ def preview_category_pull(category: str, depth: int = 3,
             'subtree is too broad.'
         ),
     }
+    if timed_out:
+        result['resume_suggestion'] = {
+            'note': (
+                'Preview budget exhausted mid-walk — counts above are partial. '
+                'To commit the covered portion plus continue, call '
+                'get_category_articles with exclude=<this list>, or raise '
+                'time_budget_s on this preview to see a fuller picture.'
+            ),
+            'exclude': sorted(exclude_set | fully_crawled),
+            'pending_branches_sample': sorted(pending)[:50],
+            'pending_branches_total': len(pending),
+        }
 
     _, topic_name, _ = _get_topic(ctx)
     warning = _scope_drift_warning(category, topic_name, would_be_source_label, new_count)
@@ -1147,9 +1235,11 @@ def preview_category_pull(category: str, depth: int = 3,
 
     log_usage(ctx, "preview_category_pull",
               {"category": category, "depth": depth, "wiki": wiki,
-               "sample_size": sample_size},
-              f"{len(articles)} articles ({new_count} new), {len(visited_cats)} categories",
-              start_time=_start, note=note)
+               "sample_size": sample_size, "time_budget_s": time_budget_s},
+              f"{len(articles)} articles ({new_count} new), "
+              f"{len(fully_crawled)} cats"
+              f"{' (timed out)' if timed_out else ''}",
+              start_time=_start, timed_out=timed_out, note=note)
     return json.dumps(result, indent=2, ensure_ascii=False)
 
 
@@ -1250,14 +1340,23 @@ class _MainContentLinkExtractor(html.parser.HTMLParser):
 
 
 def _fetch_list_page_links(title: str, wiki: str,
-                           main_content_only: bool) -> tuple[list[str], bool]:
+                           main_content_only: bool,
+                           deadline: float | None = None,
+                           ) -> tuple[list[str], bool, bool]:
     """Fetch mainspace links from a list/outline page.
 
-    Returns (links, main_content_only_actual). The second return reflects
-    whether the HTML parse path succeeded — when `main_content_only=True`
-    but the page's HTML came back empty (missing page, parse error), we
-    fall back to prop=links and return the second value as False so the
-    caller can surface that to the user."""
+    Returns (links, main_content_only_actual, timed_out).
+    - `main_content_only_actual` reflects whether the HTML parse path
+      succeeded — when `main_content_only=True` but the page's HTML came
+      back empty (missing page, parse error), we fall back to prop=links
+      and return False so the caller can surface that to the user.
+    - `timed_out` is True iff the `prop=links` pagination loop hit the
+      deadline. The HTML-parse path is a single API call + in-memory
+      parse so it never times out meaningfully; this flag only fires on
+      the fallback path (or explicit main_content_only=False).
+
+    `deadline` is a time.monotonic()-scale cutoff. None means run to
+    completion."""
     if main_content_only:
         parse_params = {
             'action': 'parse',
@@ -1274,7 +1373,7 @@ def _fetch_list_page_links(title: str, wiki: str,
         if html_text:
             extractor = _MainContentLinkExtractor()
             extractor.feed(html_text)
-            return [normalize_title(t) for t in extractor.links], True
+            return [normalize_title(t) for t in extractor.links], True, False
         main_content_only = False
 
     params = {
@@ -1287,7 +1386,11 @@ def _fetch_list_page_links(title: str, wiki: str,
         'formatversion': '2',
     }
     links = []
+    timed_out = False
     while True:
+        if deadline is not None and time.monotonic() >= deadline:
+            timed_out = True
+            break
         data = api_get(wiki_api_url(wiki), params)
         if 'query' in data and 'pages' in data['query']:
             for page in data['query']['pages']:
@@ -1297,11 +1400,12 @@ def _fetch_list_page_links(title: str, wiki: str,
             params.update(data['continue'])
         else:
             break
-    return links, False
+    return links, False, timed_out
 
 
 @mcp.tool()
 def harvest_list_page(title: str, main_content_only: bool = True,
+                      time_budget_s: int = 240,
                       note: str = "",
                       topic: str | None = None, ctx: Context = None) -> str:
     """Extract article links from a List/Index/Glossary page. Adds them
@@ -1320,6 +1424,12 @@ def harvest_list_page(title: str, main_content_only: bool = True,
             navigation chrome — useful for "Outline of …" pages whose
             curated content lives in navigation templates, or for broad
             category-like list pages.
+        time_budget_s: Wall-clock budget in seconds (default 240). The
+            HTML-parse path (the default) is always one API call and
+            effectively never hits the budget. The prop=links fallback
+            path paginates and can time out on pages with tens of
+            thousands of links. On timeout, partial links are still
+            committed; the AI can retry with `main_content_only=True`.
         note: Optional free-text observation for this call's log entry.
               Use for mid-flow reflection; empty by default.
         topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
@@ -1329,7 +1439,9 @@ def harvest_list_page(title: str, main_content_only: bool = True,
     if err:
         return err
 
-    links, used_html = _fetch_list_page_links(title, wiki, main_content_only)
+    deadline = time.monotonic() + max(1, time_budget_s)
+    links, used_html, timed_out = _fetch_list_page_links(
+        title, wiki, main_content_only, deadline=deadline)
 
     rejected_set = db.get_rejected_titles(topic_id)
     rejected_skipped = sum(1 for t in links if t in rejected_set)
@@ -1340,9 +1452,12 @@ def harvest_list_page(title: str, main_content_only: bool = True,
     added, updated = db.add_articles(topic_id, batch)
 
     log_usage(ctx, "harvest_list_page",
-              {"title": title, "wiki": wiki, "main_content_only": used_html},
-              f"{len(links)} links, {added} new", start_time=_start, note=note)
-    return json.dumps({
+              {"title": title, "wiki": wiki, "main_content_only": used_html,
+               "time_budget_s": time_budget_s},
+              f"{len(links)} links, {added} new"
+              f"{' (timed out)' if timed_out else ''}",
+              start_time=_start, timed_out=timed_out, note=note)
+    result = {
         'wiki': wiki,
         'source_page': title,
         'main_content_only': used_html,
@@ -1351,6 +1466,7 @@ def harvest_list_page(title: str, main_content_only: bool = True,
         'new_articles_added': added,
         'source_label': source_label,
         'total_in_working_list': db.get_status(topic_id)['total_articles'],
+        'timed_out': timed_out,
         'cost': _cost_report(_start),
         'note': (
             f'To undo this harvest, use: remove_by_source("{source_label}"). '
@@ -1359,12 +1475,24 @@ def harvest_list_page(title: str, main_content_only: bool = True,
             f'preview_harvest_list_page first if you want to inspect before '
             f'committing.'
         ),
-    }, indent=2, ensure_ascii=False)
+    }
+    if timed_out:
+        result['resume_suggestion'] = {
+            'note': (
+                f'Budget exhausted during prop=links pagination. {len(links)} '
+                f'links were committed; there may be more on the page. Retry '
+                f'with main_content_only=True (single-API-call path, always '
+                f'finishes under budget) if that fits your use case — '
+                f'otherwise split the list page or raise time_budget_s.'
+            ),
+        }
+    return json.dumps(result, indent=2, ensure_ascii=False)
 
 
 @mcp.tool()
 def preview_harvest_list_page(title: str, sample_size: int = 50,
                               main_content_only: bool = True,
+                              time_budget_s: int = 240,
                               note: str = "",
                               topic: str | None = None,
                               ctx: Context = None) -> str:
@@ -1384,6 +1512,9 @@ def preview_harvest_list_page(title: str, sample_size: int = 50,
                      Only the sample pays for description fetches; the
                      full link list is cheap.
         main_content_only: Same semantics as harvest_list_page. Default True.
+        time_budget_s: Wall-clock budget in seconds (default 240). Same
+                       semantics as harvest_list_page — only the prop=links
+                       fallback path can time out.
         note: Optional free-text observation for this call's log entry.
               Use for mid-flow reflection; empty by default.
         topic: Optional topic name. Pass if your client doesn't maintain
@@ -1394,7 +1525,9 @@ def preview_harvest_list_page(title: str, sample_size: int = 50,
     if err:
         return err
 
-    links, used_html = _fetch_list_page_links(title, wiki, main_content_only)
+    deadline = time.monotonic() + max(1, time_budget_s)
+    links, used_html, timed_out = _fetch_list_page_links(
+        title, wiki, main_content_only, deadline=deadline)
     existing = db.get_all_titles(topic_id)
     new_count = sum(1 for t in links if t not in existing)
     overlap_count = len(links) - new_count
@@ -1413,9 +1546,10 @@ def preview_harvest_list_page(title: str, sample_size: int = 50,
     would_be_source_label = f"list_page:{title}"
     log_usage(ctx, "preview_harvest_list_page",
               {"title": title, "wiki": wiki, "main_content_only": used_html,
-               "sample_size": sample_size},
-              f"{len(links)} links ({new_count} new)",
-              start_time=_start, note=note)
+               "sample_size": sample_size, "time_budget_s": time_budget_s},
+              f"{len(links)} links ({new_count} new)"
+              f"{' (timed out)' if timed_out else ''}",
+              start_time=_start, timed_out=timed_out, note=note)
     return json.dumps({
         'wiki': wiki,
         'source_page': title,
@@ -1425,6 +1559,7 @@ def preview_harvest_list_page(title: str, sample_size: int = 50,
         'already_in_topic': overlap_count,
         'sample': sample,
         'would_be_source_label': would_be_source_label,
+        'timed_out': timed_out,
         'note': (
             'Nothing added to the working list. Review the sample, then '
             'call harvest_list_page(title) to commit, or skip entirely '
@@ -2818,15 +2953,28 @@ def get_articles(min_score: int | None = None, max_score: int | None = None,
 
 @mcp.tool()
 def filter_articles(resolve_redirects: bool = True, remove_disambig: bool = True,
-                    remove_lists: bool = True, note: str = "",
+                    remove_lists: bool = True,
+                    time_budget_s: int = 240,
+                    note: str = "",
                     topic: str | None = None, ctx: Context = None) -> str:
     """Clean up the working list: resolve redirects, remove disambiguation pages,
     remove list/index pages.
+
+    Runs under a cooperative time budget (default 240s, under the MCP
+    transport's 300s hard cap). On 18K-article topics the redirect +
+    disambig phases together make ~720 API calls and can exceed the
+    hard cap — if the budget is exhausted mid-phase, that phase's
+    partial work is DISCARDED (not applied) and the tool returns
+    `timed_out: true` + `phases_completed`. The AI can resume by
+    re-calling with the completed phase flags set to False.
 
     Args:
         resolve_redirects: Resolve redirect titles to canonical titles
         remove_disambig: Remove disambiguation pages
         remove_lists: Remove "List of...", "Index of...", etc.
+        time_budget_s: Wall-clock budget in seconds (default 240). API-
+                       heavy phases are ~2 API calls per 100 titles each;
+                       budget ~1s per 100 articles for a realistic estimate.
         note: Optional free-text observation for this call's log entry.
               Use for mid-flow reflection; empty by default.
         topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
@@ -2836,14 +2984,26 @@ def filter_articles(resolve_redirects: bool = True, remove_disambig: bool = True
     if err:
         return err
 
+    deadline = time.monotonic() + max(1, time_budget_s)
     all_articles = db.get_all_articles_dict(topic_id)
     stats = {'before': len(all_articles)}
+    phases_completed: list[str] = []
+    phases_skipped: list[str] = []
+    timed_out = False
+    timed_out_phase: str | None = None
 
-    # Resolve redirects
+    # Resolve redirects. If the budget exhausts mid-collection, the partial
+    # map is discarded (applying a partial map would give inconsistent state).
     if resolve_redirects:
         titles = list(all_articles.keys())
         redirect_map = {}
+        collection_complete = True
         for i in range(0, len(titles), 50):
+            if time.monotonic() >= deadline:
+                collection_complete = False
+                timed_out = True
+                timed_out_phase = 'redirects'
+                break
             batch = titles[i:i + 50]
             params = {'titles': '|'.join(batch), 'redirects': '1'}
             data = api_query(params, wiki=wiki)
@@ -2853,40 +3013,53 @@ def filter_articles(resolve_redirects: bool = True, remove_disambig: bool = True
                 for n in data['query'].get('normalized', []):
                     redirect_map[n['from']] = n['to']
 
-        new_articles = {}
-        redirected = 0
-        for title, article in all_articles.items():
-            resolved = title
-            for _ in range(5):
-                if resolved in redirect_map:
-                    resolved = redirect_map[resolved]
+        if collection_complete:
+            new_articles = {}
+            redirected = 0
+            for title, article in all_articles.items():
+                resolved = title
+                for _ in range(5):
+                    if resolved in redirect_map:
+                        resolved = redirect_map[resolved]
+                    else:
+                        break
+                resolved = normalize_title(resolved)
+                if resolved != title:
+                    redirected += 1
+                    # Title changed — the stored description was for the old
+                    # title and may be stale. Invalidate so fetch_descriptions
+                    # refreshes it.
+                    article = {**article, 'description': None}
+                if resolved not in new_articles:
+                    new_articles[resolved] = article
                 else:
-                    break
-            resolved = normalize_title(resolved)
-            if resolved != title:
-                redirected += 1
-                # Title changed — the stored description was for the old title
-                # and may be stale. Invalidate so fetch_descriptions refreshes it.
-                article = {**article, 'description': None}
-            if resolved not in new_articles:
-                new_articles[resolved] = article
-            else:
-                for s in article.get('sources', []):
-                    if s not in new_articles[resolved]['sources']:
-                        new_articles[resolved]['sources'].append(s)
-                if article.get('score') and (not new_articles[resolved].get('score') or
-                        article['score'] > new_articles[resolved]['score']):
-                    new_articles[resolved]['score'] = article['score']
+                    for s in article.get('sources', []):
+                        if s not in new_articles[resolved]['sources']:
+                            new_articles[resolved]['sources'].append(s)
+                    if article.get('score') and (not new_articles[resolved].get('score') or
+                            article['score'] > new_articles[resolved]['score']):
+                        new_articles[resolved]['score'] = article['score']
 
-        all_articles = new_articles
-        stats['redirects_resolved'] = redirected
-        stats['after_redirects'] = len(all_articles)
+            all_articles = new_articles
+            stats['redirects_resolved'] = redirected
+            stats['after_redirects'] = len(all_articles)
+            phases_completed.append('redirects')
+        else:
+            stats['redirects_partial'] = True
+            stats['redirects_probed'] = len(redirect_map)
+            phases_skipped.append('redirects (timed out — partial map discarded)')
 
     # Remove disambiguation pages
-    if remove_disambig:
+    if remove_disambig and not timed_out:
         titles = list(all_articles.keys())
         disambig = set()
+        collection_complete = True
         for i in range(0, len(titles), 50):
+            if time.monotonic() >= deadline:
+                collection_complete = False
+                timed_out = True
+                timed_out_phase = 'disambig'
+                break
             batch = titles[i:i + 50]
             params = {'titles': '|'.join(batch), 'prop': 'pageprops', 'ppprop': 'disambiguation'}
             data = api_query(params, wiki=wiki)
@@ -2894,14 +3067,21 @@ def filter_articles(resolve_redirects: bool = True, remove_disambig: bool = True
                 for page in data['query']['pages']:
                     if 'pageprops' in page and 'disambiguation' in page['pageprops']:
                         disambig.add(normalize_title(page['title']))
-        for t in disambig:
-            all_articles.pop(t, None)
-        stats['disambig_removed'] = len(disambig)
 
-    # Remove list pages and year-prefixed meta pages. The latter catches
-    # "2020 in Colombia", "2006 FIFA World Cup squads", "2021 deaths in …"
-    # style titles that routinely slip through search pulls for biography
-    # topics. Legitimate biographies rarely start with a 4-digit year.
+        if collection_complete:
+            for t in disambig:
+                all_articles.pop(t, None)
+            stats['disambig_removed'] = len(disambig)
+            phases_completed.append('disambig')
+        else:
+            stats['disambig_partial'] = True
+            stats['disambig_probed_so_far'] = len(disambig)
+            phases_skipped.append('disambig (timed out — partial set discarded)')
+    elif remove_disambig and timed_out:
+        phases_skipped.append('disambig (skipped — prior phase timed out)')
+
+    # Remove list pages and year-prefixed meta pages. No API cost; always
+    # runs if requested, regardless of budget.
     if remove_lists:
         list_pages = [t for t in all_articles if t.lower().startswith(
             ('list of ', 'lists of ', 'index of ', 'outline of '))]
@@ -2911,17 +3091,44 @@ def filter_articles(resolve_redirects: bool = True, remove_disambig: bool = True
             del all_articles[t]
         stats['lists_removed'] = len(list_pages)
         stats['meta_pages_removed'] = len(meta_pages)
+        phases_completed.append('lists')
 
     stats['final'] = len(all_articles)
+    stats['phases_completed'] = phases_completed
+    stats['phases_skipped'] = phases_skipped
+    stats['timed_out'] = timed_out
 
-    # Write back to DB
+    # Write back to DB (only the phases that completed applied changes).
     db.replace_all_articles(topic_id, all_articles)
+
+    if timed_out:
+        # Tell the AI how to continue: call again with the completed
+        # phases' flags set to False so we don't redo them.
+        remaining = {
+            'resolve_redirects': 'redirects' not in phases_completed,
+            'remove_disambig': 'disambig' not in phases_completed,
+            'remove_lists': 'lists' not in phases_completed,
+        }
+        stats['resume_suggestion'] = {
+            'note': (
+                f'Budget exhausted during the {timed_out_phase} phase. '
+                'The partial result from that phase was discarded (not '
+                'applied), so the DB is in a consistent state. Call '
+                'filter_articles again with the flags below to run only '
+                'the remaining phases.'
+            ),
+            'call_with': remaining,
+        }
 
     stats['cost'] = _cost_report(_start)
     log_usage(ctx, "filter_articles",
-              {"resolve_redirects": resolve_redirects, "remove_disambig": remove_disambig,
-               "remove_lists": remove_lists},
-              f"{stats['before']} → {stats['final']}", start_time=_start, note=note)
+              {"resolve_redirects": resolve_redirects,
+               "remove_disambig": remove_disambig,
+               "remove_lists": remove_lists,
+               "time_budget_s": time_budget_s},
+              f"{stats['before']} → {stats['final']}"
+              f"{' (timed out in ' + timed_out_phase + ')' if timed_out else ''}",
+              start_time=_start, timed_out=timed_out, note=note)
     return json.dumps(stats, indent=2)
 
 

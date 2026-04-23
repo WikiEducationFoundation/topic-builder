@@ -636,21 +636,33 @@ A short lookup table of user-verbalized intents to the right tool. Instructions-
 
 **Diagnostic quality requirement.** Partial-return messages must describe *what was covered*, not just "timed out." Second feedback called this out: on ptwiki, `get_category_articles` timed out on the root (313 direct subcategories) with no hint — AI couldn't tell whether to lower depth, narrow subtree, or retry. Each tool's partial-return schema should include counts like `subcategories_visited: 87, subcategories_pending: 226, articles_added_this_call: 1218`. The continuation token carries the state; the response carries human- and AI-readable progress.
 
-### 3.1 ☐ Chunked/resumable `get_category_articles` `[NEW]`
+### 3.1 ☑ Chunked/resumable `get_category_articles` `[NEW]`
+
+**Shipped 2026-04-22.** `_walk_category_tree` now accepts an optional `deadline: float` (time.monotonic() scale) and returns a 4-tuple: `(articles, fully_crawled, pending, timed_out)`. Budget checks happen at the top of the BFS loop; one category's article + subcat enum is atomic so `fully_crawled` / `pending` is always well-defined. `get_category_articles` gained `time_budget_s=240` param; on timeout the response includes `timed_out: true` + a `resume_suggestion` with `exclude=<sorted(prior_exclude | fully_crawled)>` plus a pending-branches sample (capped at 50 for readability). Plan's "both opaque token + transparent exclude=" option collapsed to transparent-only — the `exclude=` list is clean enough that opaque continuation tokens add complexity without value. `preview_category_pull` shares the same plumbing.
+
 
 Continuation state: set of visited categories + queue of pending categories. Token encodes both. Partial-return surfaces: direct subcategories fully crawled vs. pending vs. untouched (for the breadth-overrun case ptwiki exposed). Also include the list of fully-covered branch names so the AI can decide to retry specific branches independently.
 
 **Explicit `exclude=` resume idiom** (Q7 answer confirms this shape): in addition to opaque continuation tokens, the partial-return should include a list of fully-covered subcategories. The AI can then call `get_category_articles(category=<root>, exclude=[A, B, C, D])` to retry the uncovered branches. Simple, transparent, AI-legible — the AI's own wish: *"Crawled subcategories A, B, C fully; D partially (47/150); E, F, G not yet touched. Then I could retry with exclude=[A, B, C, D] to resume."*
 
-### 3.2 ☐ Chunked/resumable `filter_articles` `[NEW]`
+### 3.2 ☑ Chunked/resumable `filter_articles` `[NEW]`
+
+**Shipped 2026-04-22.** Reshape from plan's "offset-based resume" to "phase-based resume" after reading the code — resolve_redirects builds a full map before applying it, so mid-phase partial-map application would give inconsistent state. New shape: each phase (redirects / disambig / lists) checks the budget at its loop entry; if the budget exhausts mid-collection, that phase's partial work is **discarded (not applied)**, keeping the DB consistent. Response includes `phases_completed`, `phases_skipped`, `timed_out`, and `resume_suggestion.call_with` naming the completed phases as False so the next call skips them. The no-API `remove_lists` phase always runs if requested.
+
 
 Continuation state: "already processed up to offset N." Simpler — linear scan.
 
-### 3.3 ☐ Cooperative time budget on `harvest_list_page` `[NEW]`
+### 3.3 ☑ Cooperative time budget on `harvest_list_page` `[NEW]`
+
+**Shipped 2026-04-22 (shallow variant per kickoff reshape).** `_fetch_list_page_links` accepts `deadline` and returns a `timed_out` flag. Only the `prop=links` fallback path can actually time out — the `main_content_only=True` default is a single API call + in-memory HTML parse, always finishes under budget. On timeout, partial links are still committed (no state-consistency issue like filter_articles), and the `resume_suggestion` points the AI at `main_content_only=True` as the bounded alternative. Applied to both `harvest_list_page` and `preview_harvest_list_page`. No continuation token per the kickoff decision — the resume is either "retry with different params" or "accept the partial set."
+
 
 Rare but possible on very large list pages. Same pattern — return partial + token.
 
-### 3.4 ☐ Cooperative time budget on `fetch_descriptions` auto-loop `[NEW]`
+### 3.4 ☑ Cooperative time budget on `fetch_descriptions` auto-loop `[NEW]`
+
+**Shipped retroactively — already in place from 1.6 (commit `e594d0e`).** `fetch_descriptions` has `time_budget_s=60` (lower than the Stage 3 240s default because description fetch batches return fast — 60s drains most topics without burning through context on a longer retry cycle). Response already surfaces `batches_run`, `time_budget_exhausted`, `remaining_undescribed`. Continuation state is implicit ("drain undescribed titles"): no token needed since the DB always knows what's unfetched. Not aligned to the `timed_out` field name used by 3.1/3.2/3.3 — kept as-is rather than churn working code for cosmetic consistency.
+
 
 Already multi-call internally after 1.6. Add budget + partial-return discipline so it plays nice with other work in the same session. Continuation in this case is trivially "call again" — the tool already knows what's undescribed.
 
