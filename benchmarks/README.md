@@ -13,40 +13,90 @@ can have uneven effects across topic classes. Benchmarks let us answer "did
 this change improve things?" quantitatively instead of relying on
 ad-hoc impressions from dogfood sessions.
 
-## Per-topic layout
+## Per-topic layout (as of 2026-04-23)
 
 ```
 benchmarks/<topic-slug>/
-├── scope.md        — Plain-language scope, every ambiguity explicitly
-│                     resolved. Frozen; revisit deliberately with a version
-│                     bump.
-├── gold.csv        — Authoritative on-topic article list. Columns:
-│                     title, on_topic, best_source_strategy, justification,
-│                     notes. Validated-negative articles are also recorded
-│                     so tools that cut noise can be tested too.
-├── petscan.md      — If applicable: the PetScan (or SPARQL) query the
-│                     org uses as its non-AI baseline for this topic, plus
-│                     when last run and a raw-result snapshot.
-├── calls.jsonl     — Scripted "exemplar" tool-call sequence that a good
-│                     AI run would make. One JSON object per line:
-│                     {"tool": "...", "args": {...}}
-└── README.md       — Per-topic notes: origin, pending work, known limits.
+├── scope.md            — Plain-language scope, ambiguities resolved. Frozen.
+├── rubric.txt          — Three-tier CENTRAL / PERIPHERAL / OUT rubric.
+│                         Used by audit.py for classification.
+├── gold.csv            — Authoritative article list with on_topic ∈
+│                         {in, peripheral, out}. Rebuilt by audit.py;
+│                         WebFetch / manual overlays applied via
+│                         per-topic helper scripts.
+├── baseline.json       — Arc-run metrics: tool_call_count, total_api_calls,
+│                         wall_time_s, final_article_count, single_sourced
+│                         %, ai_self_rating, precision/recall/reach vs.
+│                         gold. A future run compares against this.
+├── audit.py            — Frozen classifier that produces gold.csv's
+│                         on_topic column. Reproducibly re-runnable if
+│                         scope / rubric change.
+├── audit_summary.md    — Classifier's auto-generated output. Regenerated
+│                         whenever audit.py runs; don't hand-edit.
+├── audit_notes.md      — Human-written commentary — judgment calls,
+│                         edge cases, reach targets. Curated; NOT
+│                         overwritten by audit.py.
+├── README.md           — Per-topic notes: origin, status, ratchet targets.
+└── (optional)
+    ├── medicine_blocklist.txt            — AA STEM only: cross-referenced.
+    ├── apply_webfetch_resolutions.py     — AA STEM only: overlays 20
+    │                                       hand-verified classifications
+    │                                       after audit.py runs.
+    └── baseline.md, review_queue.json,   — hispanic-latino-stem-us only:
+        gold-readable.csv, …                preserved from 2026-04-17 audit.
 ```
 
-## Running the benchmark
+## Workflow
+
+**Bootstrap a new benchmark topic:**
 
 ```
-python3 scripts/benchmark.py <topic-slug>
+bash scripts/smoke.sh scripts/bootstrap_benchmark.py "<Topic Name>"
+scp <from /tmp/benchmark-<slug>/> benchmarks/<slug>/
 ```
 
-Reads gold.csv + calls.jsonl from the topic's directory, replays the call
-sequence against a disposable temporary SQLite DB (so the production DB is
-untouched), and emits a markdown report comparing the resulting working
-list to the gold set — precision, recall, noise count, per-strategy
-contribution, session cost in tool calls.
+This produces `baseline.json` (arc-run metrics from usage.jsonl +
+feedback.jsonl + live DB) and `gold.csv` (corpus snapshot with
+`on_topic=pending_audit` on every row).
 
-If a baseline report exists at `benchmarks/<slug>/baseline.md`, the runner
-emits a delta against it (did this change help?).
+**Write scope.md + rubric.txt** by hand using the existing benchmarks
+as templates. These are the frozen human decisions that the classifier
+depends on.
+
+**Write audit.py** — per-topic classifier. Five existing examples
+(apollo-11, crispr-gene-editing, african-american-stem, orchids,
+hispanic-latino-stem-us) demonstrate the range: enumerative, keyword-
+rules, source-trust, blocklist cross-reference. Keep the classifier
+rules aligned with scope.md.
+
+**Run the audit:**
+
+```
+python3 benchmarks/<slug>/audit.py
+```
+
+This rewrites `gold.csv`'s `on_topic` column and regenerates
+`audit_summary.md`. It does NOT touch `audit_notes.md` (human-written)
+or `apply_webfetch_resolutions.py`-style overlay scripts.
+
+**Apply overlays** (if any — e.g. AA STEM has 20 WebFetch-resolved
+cases):
+
+```
+python3 benchmarks/african-american-stem/apply_webfetch_resolutions.py
+```
+
+## Running a ratchet comparison
+
+`scripts/benchmark_score.py` is the intended scoreboard tool (not yet
+built — queued after this scaffolding). Given a fresh run's final
+state and usage log, it would produce a metric diff against
+`baseline.json` + the audited `gold.csv`:
+
+- Precision / recall / reach vs. gold
+- Δ tool_call_count, Δ total_api_calls, Δ wall_time_s
+- Pass/fail gate per the ratchet rules (precision + recall non-
+  regressing + ≥1 cost metric improvement)
 
 ## What does NOT go in version control
 

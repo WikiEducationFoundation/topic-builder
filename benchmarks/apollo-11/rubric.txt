@@ -1,0 +1,39 @@
+# Centrality rubric — Apollo 11 benchmark
+# Frozen 2026-04-23. A rubric change invalidates gold.csv and requires re-audit.
+
+CENTRAL — the mission itself, its crew (Armstrong, Aldrin, Collins) and
+  ground-support personnel, its spacecraft and launch/landing hardware,
+  the landing site and immediate lunar geology studied during the mission,
+  primary cultural works directly about the mission (films, books,
+  documentaries whose main subject is Apollo 11), things officially named
+  after the mission (lunar features, awards, vessels, schools), and
+  mission-specific artifacts, experiments, and memorabilia.
+
+PERIPHERAL — adjacent Apollo program missions (Apollo 8, 10, 12 — the
+  ones whose trajectories or personnel directly bear on 11), lunar
+  geology articles that provide essential context for the landing site,
+  later re-creations / anniversaries / reunions, crew biographies'
+  non-Apollo-11 aspects (pre-astronaut careers, post-mission life) when
+  the article is primarily about the person rather than the mission,
+  and general Apollo program infrastructure that 11 used but wasn't
+  unique to it (Saturn V, Lunar Module as classes).
+
+OUT — general spaceflight history not specific to Apollo 11 or its
+  immediate program neighbors; non-Apollo Moon programs (Luna, Chang'e,
+  Surveyor, Chandrayaan); generic Moon / astronomy / selenology articles;
+  Apollo-adjacent figures without a meaningful 11 connection; conspiracy-
+  theory articles whose main subject is conspiracy discourse rather than
+  11 itself; broad "space exploration in popular culture" articles that
+  only mention 11 in passing.
+
+# Notes for auditors:
+# - "Primary cultural works" means the work's main subject is Apollo 11
+#   (e.g. "First Man" biopic). Works that feature 11 as one scene among
+#   many are OUT.
+# - Crew biographies are CENTRAL (the person IS Apollo 11's crew). The
+#   PERIPHERAL carve-out is for content WITHIN a crew biography that's
+#   about the person separate from the mission — this doesn't typically
+#   affect inclusion, just scoring.
+# - The "things officially named after" clause is meant to be generous —
+#   schools, streets, craters, awards all count even if the article about
+#   them only mentions Apollo 11 once as the namesake.

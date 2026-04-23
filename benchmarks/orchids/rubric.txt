@@ -1,0 +1,49 @@
+# Centrality rubric — orchids benchmark
+# Frozen 2026-04-23. A rubric change invalidates gold.csv.
+
+CENTRAL — Wikipedia articles about orchids (Orchidaceae family) and
+  their immediate biology: species, genera, natural hybrids, cultivars,
+  and notable individual plants; orchid-focused taxonomy; named
+  orchid-related institutions (botanical gardens specializing in
+  orchids, orchid societies); orchid-focused cultural works (books,
+  documentaries, paintings centered on orchids); orchid phytochemistry
+  (compounds identified in or isolated from orchids); orchid pests,
+  pathogens, and symbionts where the article's subject is the
+  interaction with orchids; and people whose primary notability is
+  orchid-specific work (orchidologists, orchid breeders, orchid
+  hunters, orchid growers, orchid hybridizers).
+
+PERIPHERAL — General botanists, naturalists, biologists, explorers,
+  or botanical illustrators whose work includes orchid taxonomy but
+  whose primary notability isn't orchid-specific. Also: related
+  botanical gardens without orchid specialization; cultural works
+  that include orchids among many subjects (East Asian Four
+  Gentlemen art tradition if the broader work is the article's
+  subject); plant-collector biographies where some species are
+  orchids.
+
+OUT — Non-orchid plants, generic flowering plants not in Orchidaceae,
+  non-botanical topics pulled in by name collision or lexical noise
+  (semiconductor companies sharing a species epithet, actors sharing
+  a botanist's name, anthologies that mention orchids only in
+  passing), and bios of non-botanical figures swept up by cross-wiki
+  reconciliation without orchid-specific work.
+
+# Notes for auditors:
+# - At 18,122 articles, this benchmark uses a keyword-rule classifier
+#   with source-trust (articles pulled from category:Orchids or
+#   orchid-list-pages are trusted as on-topic taxa, since orchid
+#   builds only harvest orchid-relevant lists by construction).
+# - Sample-audit via WebFetch is the recommended validation path:
+#   pull 30–100 random articles from each bucket, verify against
+#   their Wikipedia articles, and refine classifier rules if
+#   precision on the sample drops below a threshold.
+# - Orchid phytochemistry is CENTRAL (orchid-specific compounds); the
+#   classifier marks "Chemical compound" + category:Orchids as IN.
+# - Cultural-tail coverage: East Asian Four Gentlemen tradition
+#   (Chinese poetry / painting featuring orchids) is IN via the
+#   orchid-cultural-tail criterion when the article's primary subject
+#   is the orchid cultural role. The specific authors/artists (Qu Yuan,
+#   Guan Daosheng) are tangential and currently OUT; a future audit
+#   could lift them to PERIPHERAL if we want broader cultural-tail
+#   coverage.

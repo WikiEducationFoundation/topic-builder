@@ -1,0 +1,53 @@
+# Centrality rubric — CRISPR gene editing benchmark
+# Frozen 2026-04-23. A rubric change invalidates gold.csv.
+
+CENTRAL — articles whose primary subject is CRISPR biology, CRISPR
+  editing mechanisms (Cas9, Cas12a, Cas3, guide RNA, PAM, anti-CRISPR,
+  tracrRNA, prime editing, base editing, CRISPRi/CRISPRa, etc.),
+  CRISPR-associated techniques and tools (GUIDE-Seq, genome-wide
+  screens, LEAPER, TIGR-Tas), the foundational scientists and pioneers
+  (Doudna, Charpentier, Zhang, Šikšnys, Barrangou, Mojica, Ishino,
+  Marraffini, Sontheimer, etc.), CRISPR-focused companies (CRISPR
+  Therapeutics, Editas, Intellia, Mammoth, Innovative Genomics
+  Institute), the He Jiankui affair and its figures, and FDA-approved
+  CRISPR gene therapies (Exagamglogene autotemcel, Verve's PCSK9
+  therapy, etc.).
+
+PERIPHERAL — diseases that CRISPR specifically targets (sickle cell
+  disease, beta thalassemia, PCSK9-related conditions), adjacent
+  genome-editing concepts (genome editing as a field, gene therapy,
+  genetic engineering), related molecular techniques (gene knockout /
+  knock-in / knockdown, gene targeting, recombinant DNA, RNA editing),
+  CRISPR-application projects (Colossal Biosciences dire wolf, woolly
+  mouse), organisms and biology from which CRISPR was derived
+  (Streptococcus pyogenes), context biographies (Chinese stem cell
+  researchers around He Jiankui), CRISPR-adjacent books and
+  documentaries (The Code Breaker, Human Nature, Make People Better),
+  and institutions/VCs meaningful for the CRISPR story (UC Berkeley,
+  Flagship Pioneering). These score 3–5 on the centrality axis.
+
+OUT — generic unrelated topics pulled in by lexical search noise
+  (Cement, Plastic, Submarine, Vehicle, Transport, Technology,
+  Integrated circuit, Incandescent light bulb, Non-fungible token,
+  Umeå, Sputnik crisis, Ark Invest as a generic asset manager, etc.),
+  broad biotech concepts that aren't CRISPR-specific (Genetically
+  modified animal / crops as general umbrella articles — borderline
+  with PERIPHERAL), and lists that merely mention CRISPR (List of
+  inventions and discoveries by women, Fully Automated Luxury
+  Communism as a political book).
+
+# Notes for auditors:
+# - "Pioneer" status: any scientist credited by major CRISPR histories
+#   (including popular works like The Code Breaker) is CENTRAL. Mere
+#   CRISPR-users without a foundational / methodology contribution
+#   are PERIPHERAL.
+# - Disease applications: the specific diseases CRISPR therapies are
+#   approved or under trial for are PERIPHERAL. Unrelated diseases
+#   that merely appear in gene-therapy discussion are OUT.
+# - Companies: a company whose core platform is CRISPR is CENTRAL.
+#   Ones adjacent (VC firms, asset managers) are PERIPHERAL at most,
+#   often OUT.
+# - Named books / films: if the work's subject is CRISPR or a CRISPR
+#   figure, CENTRAL. Works that touch CRISPR among broader subjects
+#   (history of biotech, future-of-humanity manifestos) → PERIPHERAL
+#   or OUT depending on emphasis.

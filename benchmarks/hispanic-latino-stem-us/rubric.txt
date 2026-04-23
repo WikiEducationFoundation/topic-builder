@@ -1,0 +1,56 @@
+# Centrality rubric — hispanic-latino-stem-us benchmark
+# Frozen 2026-04-23 (rubric); scope frozen 2026-04-17 (see scope.md).
+
+CENTRAL — Wikipedia biographies of Hispanic / Latino American people
+  (any Latin American Spanish-speaking heritage, Chicano/a self-
+  identified, or US-born with Latino ancestry) whose notability is
+  research-primary STEM work, with a meaningful US affiliation.
+  Fields per scope.md: natural sciences (physics, chemistry, biology,
+  astronomy, geology, meteorology, oceanography, ecology, neuroscience,
+  environmental science), mathematics, engineering (including
+  biomedical and aerospace), computer science, astronautics,
+  inventors / technologists, materials science, biochemistry,
+  microbiology, genetics, physiology. Physician-scientists (MD or
+  MD/PhD research-primary) are CENTRAL per scope explicit ruling.
+
+PERIPHERAL — STEM-trained Hispanic / Latino Americans whose primary
+  notability is now in administration, policy, or leadership
+  (university presidents, program officers, tech executives with
+  engineering backgrounds), but who retain a meaningful research
+  qualification. Also: early-career researchers still establishing
+  notability. Score 3–5 on the centrality axis.
+
+OUT — Per scope.md: Brazilian / Lusophone (not Latin American
+  Spanish-speaking heritage), peninsular Spanish (not Latin American
+  heritage), clinical-only medicine physicians without research
+  primary notability, social sciences (economists, psychologists,
+  sociologists, anthropologists, political scientists), STEM educators
+  without research, non-US-affiliated scientists, and all non-STEM
+  biographies (politicians, artists, writers, athletes, activists,
+  businesspeople without STEM-primary work).
+
+# Relationship to the existing gold.csv
+
+This benchmark was bootstrapped on 2026-04-17 and uses a BINARY
+classification (`on_topic=true` / `false`) — predating the 3-tier
+CENTRAL/PERIPHERAL/OUT framework adopted across the 5-benchmark
+suite in 2026-04-23. Mapping for cross-benchmark comparison:
+
+  on_topic=true  → in (CENTRAL) — all 314 positive entries are
+                   research-primary STEM biographies per scope.md;
+                   the audit didn't distinguish STEM-active-researcher
+                   from STEM-admin at the time. If a future audit
+                   pass wants PERIPHERAL granularity, the handful of
+                   STEM-admin cases can be downgraded individually.
+  on_topic=false → out (OUT)
+
+Future audit: the current corpus has 1,246 articles not yet in the
+binary gold. Those are candidates for both reach-audit (growing gold)
+and classification via the 3-tier rubric.
+
+# Notes for future auditors
+
+- Physician-scientists are explicit IN per scope's ambiguity rulings.
+- Brazilian / peninsular Spanish are explicit OUT.
+- STEM educators without research are OUT.
+- Edge cases: see `scope.md` "Ambiguity rulings" section.

@@ -1,0 +1,47 @@
+# Centrality rubric — African American people in STEM benchmark
+# Frozen 2026-04-23. A rubric change invalidates gold.csv.
+
+CENTRAL — Wikipedia biographies of people of African American / Black
+  American heritage, whose notability is research-primary STEM work,
+  with a meaningful US affiliation (US-born, or significant research
+  career at US institutions). Fields include natural sciences
+  (physics, chemistry, biology, astronomy, geology, meteorology,
+  oceanography, ecology, neuroscience, environmental science),
+  mathematics, engineering disciplines (including biomedical and
+  aerospace), computer science, astronautics, inventors /
+  technologists, materials science, biochemistry, microbiology,
+  genetics, physiology, nanotechnology, and related research-heavy
+  professions.
+
+PERIPHERAL — STEM-adjacent figures whose research contribution is
+  secondary to another role (science communicators, curators, STEM
+  administrators, program officers) but who retain a meaningful
+  research or engineering qualification. Also: early-career
+  researchers, STEM educators with a secondary research component
+  (vs. pure teaching/administration). Score 3–5 on the centrality
+  axis.
+
+OUT — Articles about people whose notability is primarily clinical
+  medicine without research component (practicing physicians noted
+  for clinical work, medical administration, or medical education),
+  pure social sciences (sociology, anthropology, economics, political
+  science, psychology, history, philosophy), humanities (literature,
+  poetry, journalism, law, religion), non-research business roles
+  (tech executives, investors, entrepreneurs without STEM-primary
+  notability), arts and entertainment (musicians, painters,
+  actors/actresses, athletes), pure military careers, politicians,
+  activists, and students. Articles in the AA STEM medicine
+  blocklist (topic id 8) are prima facie OUT unless the description
+  indicates research-primary physician-scientist status.
+
+# Notes for auditors:
+# - Research-primary physicians (lab work, clinical research programs,
+#   publication record as primary notability) ARE IN, consistent with
+#   the sister hispanic-latino-stem-us scope.
+# - The category sources (category:African-American scientists,
+#   category:African-American engineers) are strong IN signals;
+#   combine with a STEM profession in the description to classify IN.
+# - Mixed STEM + secondary activist/politician/entrepreneur roles are
+#   IN if the STEM profession is listed. Mixed STEM + primary-humanities
+#   roles (author+poet first, biologist listed secondary) should be
+#   audited individually.

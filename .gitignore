@@ -12,9 +12,18 @@ __pycache__/
 # See benchmarks/README.md for the norm.
 benchmarks/*/gold*.csv
 benchmarks/*/audit*.csv
-benchmarks/*/audit*.md
+benchmarks/*/audit_summary.md
 benchmarks/*/baseline*.md
 benchmarks/*/petscan_results*
 benchmarks/*/review_queue.json
 benchmarks/*/review_cursor.txt
 benchmarks/*/*.audit.*
+# Files that explicitly pair real individual names with judgments.
+# audit.py files encode classification rules that include named sets
+# of people ("astronauts who didn't fly Apollo 11", "CRISPR pioneers
+# who are PERIPHERAL", etc.); same judgment-pairing concern as gold.csv.
+benchmarks/*/medicine_blocklist.txt
+benchmarks/*/apply_*_resolutions.py
+benchmarks/*/audit.py
+# Per-run scoreboard archives (contain named reach/missed/OUT samples)
+benchmarks/*/runs/
