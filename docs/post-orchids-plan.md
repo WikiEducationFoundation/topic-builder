@@ -66,7 +66,10 @@ Pairs with 2.6 (event-triggered reflection guidance) and 1.18 (auto-nudge on res
 
 ---
 
-### 1.3 ☐ `preview_similar` tool `[NEW]`
+### 1.3 ☑ `preview_similar` tool `[NEW]`
+
+**Shipped 2026-04-22.** Delegates to `preview_search(morelike:<seed>, ...)` the same way `search_similar` delegates to `search_articles`. Kept as a separate tool (not a commit-flag on search_similar) to match 1.4's `preview_*` naming convention and avoid breaking cached ChatGPT client schemas.
+
 
 **What.** Read-only sibling to `search_similar` (morelike). Returns titles + descriptions + already-in-topic flags without committing.
 

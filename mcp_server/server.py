@@ -993,6 +993,33 @@ def preview_search(query: str, limit: int = 50, note: str = "",
     }, indent=2, ensure_ascii=False)
 
 
+@mcp.tool()
+def preview_similar(seed_article: str, limit: int = 50, note: str = "",
+                    topic: str | None = None, ctx: Context = None) -> str:
+    """Read-only preview of morelike: results for a seed article. Returns
+    titles + descriptions + already_in_topic flags WITHOUT adding anything
+    to the working list. Use this before `search_similar` — the AI/user can
+    review and then commit a filtered subset via add_articles, or skip
+    entirely if the seed turned out to be a bad choice.
+
+    `search_similar` pulls are especially prone to noise when the seed is a
+    biographical hub (a polymath's filmography, a politically-prominent
+    figure's broad edges) or when the seed is a novel/film whose adaptation
+    has its own strong edge graph. Preview first, commit second.
+
+    Args:
+        seed_article: Article title to find similar articles to.
+        limit: Max results to preview (default 50, capped at 100 by
+               preview_search).
+        note: Optional free-text observation for this call's log entry.
+              Use for mid-flow reflection; empty by default.
+        topic: Optional topic name. Pass if your client doesn't maintain
+               an MCP session.
+    """
+    return preview_search(f'morelike:{seed_article}', limit=limit, note=note,
+                          topic=topic, ctx=ctx)
+
+
 # ── Review aids ───────────────────────────────────────────────────────────
 
 @mcp.tool()
