@@ -252,7 +252,10 @@ Don't *refuse* — the AI can still proceed. Make the cost visible *before* the 
 
 ---
 
-### 1.13 ☐ `auto_score_by_title` rethink → `auto_score_by_keyword(keywords=[...])` `[NEW]`
+### 1.13 ☑ `auto_score_by_title` rethink → `auto_score_by_keyword(keywords=[...])` `[NEW]`
+
+**Shipped 2026-04-22.** Renamed (Sage confirmed no backward-compat concern). New signature requires explicit `keywords: list[str]` — no topic-name fallback. Params: `score=9` (was `threshold=7`; +2-to-10 implicit mapping dropped; cleaner to expose directly), `match_description=False` (search descriptions too), `overwrite_scored=False`. Error response when `keywords=[]` is structured JSON with a hint steering toward language-appropriate terms (`["ラン","兰","蘭"]` on ja/zh, Latin genera for taxonomy). `session_status.py` gets a legacy alias so old `auto_score_by_title` usage.jsonl entries still classify correctly in status reports.
+
 
 **What.** `auto_score_by_title` currently does a literal substring match of the topic name against each article title. That's broken for three common cases that the orchids session exposed. Replace or augment it.
 

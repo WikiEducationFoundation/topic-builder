@@ -116,6 +116,7 @@ Roughly prioritized. Items live here until they ship or get explicitly dropped.
 
 ### Recently shipped
 
+- **2026-04-22** — rename `auto_score_by_title` → `auto_score_by_keyword(keywords=[...])` (`[plan 1.13]`). Explicit keywords (no topic-name fallback), optional `match_description=True`, language-agnostic. Empty keywords returns structured error with a non-English-wiki hint.
 - **2026-04-22** — `within_category` filter on search_articles + preview_search (`[plan 1.10]`). Thin wrapper that appends `incategory:"<cat>"` to the query. Single-level (CirrusSearch doesn't walk subcats); use `get_category_articles` for recursive. Response surfaces `effective_query` for audit.
 - **2026-04-22** — `find_wikiprojects(keywords)` discovery tool (`[plan 1.9]`). Prefix-search on the Wikipedia: namespace to enumerate WikiProjects matching given keywords. Hard-enwiki. Addresses the orchids "tried WikiProject Plants, too broad, skipped WikiProjects" failure — AI now has an enumeration primitive to discover "WikiProject Orchids" before giving up.
 - **2026-04-22** — `remove_articles` batched DELETEs + clarified docstring (`[plan 1.7]`). Pre-flight: observed ~200-title cap is client-side truncation, not server. Server now batches deletes as `DELETE … WHERE title IN (…)` of up to 500 titles/query. Docstring redirects large removals (>200) to `remove_by_source` / `remove_by_pattern`.

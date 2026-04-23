@@ -47,7 +47,8 @@ STAGE_BY_TOOL = {
     "score_by_extract": "4. score",
     "score_all_unscored": "4. score",
     "set_scores": "4. score",
-    "auto_score_by_title": "4. score",
+    "auto_score_by_keyword": "4. score",
+    "auto_score_by_title": "4. score",  # legacy alias for historical log entries
     "browse_edges": "5. edge-browse",
     "search_similar": "5. edge-browse",
     "filter_articles": "6. cleanup",

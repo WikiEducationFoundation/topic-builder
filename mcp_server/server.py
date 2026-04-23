@@ -1520,13 +1520,43 @@ def set_scores(scores: dict[str, int], note: str = "",
 
 
 @mcp.tool()
-def auto_score_by_title(threshold: int = 7, note: str = "",
-                        topic: str | None = None, ctx: Context = None) -> str:
-    """Quick title-based scoring pass for obvious cases. Articles with clear topic
-    keywords in the title get auto-scored.
+def auto_score_by_keyword(keywords: list[str], score: int = 9,
+                          match_description: bool = False,
+                          overwrite_scored: bool = False,
+                          note: str = "",
+                          topic: str | None = None, ctx: Context = None) -> str:
+    """Fast-pass scoring for articles whose title (or description, if
+    `match_description=True`) contains any of the given keywords. Case-
+    insensitive substring match.
+
+    Takes explicit keywords — works on any Wikipedia language edition and
+    handles non-English topic names, Latin-binomial taxonomies, and
+    compound / suffixed topic names correctly. (This replaces the older
+    auto_score_by_title, which did a substring match of the topic name
+    against titles — broken for non-en wikis, taxonomic topics, and
+    topic-name suffixes like "orchids-pt".)
+
+    Typical use on a non-en topic:
+      auto_score_by_keyword(keywords=["orchid", "orchidaceae",
+                                      "蘭", "兰", "ラン",
+                                      "Bulbophyllum", "Cattleya"])
+
+    Typical use on a biography-heavy topic where scoring by title-match
+    is risky (false positives like "martial artist" matching "artist"):
+    leave this tool alone and use auto_score_by_description instead.
 
     Args:
-        threshold: Score to assign to keyword-matched articles (default 7)
+        keywords: Case-insensitive substring keywords. Include
+                  language-specific synonyms on non-en wikis, and
+                  common-genus names on taxonomy topics.
+        score: Score to assign to matched articles (default 9, capped at 10).
+        match_description: If True, match against the Wikidata short
+                  description as well as the title. Articles with no
+                  description are still considered (title-only).
+                  Descriptions must be fetched first
+                  (fetch_descriptions). Default False.
+        overwrite_scored: If False (default), skip articles that already
+                  have a score. If True, overwrite.
         note: Optional free-text observation for this call's log entry.
               Use for mid-flow reflection; empty by default.
         topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
@@ -1536,25 +1566,47 @@ def auto_score_by_title(threshold: int = 7, note: str = "",
     if err:
         return err
 
-    _, topic_name, _ = _get_topic(ctx)
-    topic_phrase = topic_name.lower()
+    if not keywords:
+        return json.dumps({
+            'error': 'Pass at least one keyword. Use language-appropriate '
+                     'terms — e.g. ["orchid","orchidaceae"] on en, '
+                     '["ラン","兰","蘭"] on ja/zh wikis, or common genus '
+                     'names for taxonomy topics.',
+        })
+
+    score = min(max(int(score), 1), 10)
+    kws_lower = [k.lower() for k in keywords if k]
     all_articles = db.get_all_articles_dict(topic_id)
 
-    scores = {}
+    scores: dict[str, int] = {}
     for title, article in all_articles.items():
-        if article.get('score') is not None:
+        if article.get('score') is not None and not overwrite_scored:
             continue
-        if topic_phrase in title.lower():
-            scores[title] = min(threshold + 2, 10)
+        haystack = title.lower()
+        if match_description:
+            desc = article.get('description') or ''
+            haystack += ' ' + desc.lower()
+        if any(kw in haystack for kw in kws_lower):
+            scores[title] = score
 
     if scores:
         db.set_scores(topic_id, scores)
 
-    unscored = sum(1 for a in all_articles.values() if a.get('score') is None) - len(scores)
-    log_usage(ctx, "auto_score_by_title", {"threshold": threshold, "phrase": topic_phrase},
+    unscored = sum(1 for a in all_articles.values()
+                   if a.get('score') is None) - len(scores)
+    log_usage(ctx, "auto_score_by_keyword",
+              {"keywords_count": len(kws_lower), "score": score,
+               "match_description": match_description},
               f"scored {len(scores)}, {unscored} still unscored",
               start_time=_start, note=note)
-    return f"Auto-scored {len(scores)} articles containing '{topic_phrase}' in title. ~{unscored} still unscored."
+    return json.dumps({
+        'scored': len(scores),
+        'score_applied': score,
+        'keywords': keywords,
+        'match_description': match_description,
+        'still_unscored': unscored,
+        'note': 'Set overwrite_scored=True to re-score articles that already have a score.',
+    }, indent=2, ensure_ascii=False)
 
 
 @mcp.tool()
