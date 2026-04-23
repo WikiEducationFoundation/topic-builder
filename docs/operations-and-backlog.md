@@ -116,6 +116,7 @@ Roughly prioritized. Items live here until they ship or get explicitly dropped.
 
 ### Recently shipped
 
+- **2026-04-22** — `harvest_list_page(main_content_only=True)` (default) (`[plan 1.2]`). Parses `action=parse` HTML with a stdlib `html.parser`, drops navboxes / sidebars / infoboxes / reflists / hatnotes and everything past See-also/External-links/References headings. Reads link targets from `title="..."` (captures redlinks alongside blue links). Validated against 5 list-page shapes; SA orchids list drops 809 of 1,503 navbox links while the transclusion-heavy genera / outline pages gain hundreds of links that `prop=links` missed. Opt out with `main_content_only=False` for raw-link behavior.
 - **2026-04-22** — observability backfill (`[plan 1.1]`). `log_usage` now fires on all 27 `@mcp.tool` entry points (previously 11 of 27); every entry carries `elapsed_ms`, `wikipedia_api_calls` (per-call, via ContextVar counter in `wikipedia_api.py`), `rate_limit_hits_this_call`, and `timed_out`. All logging tools gained an optional `note: str = ""` parameter — zero-ceremony way for the AI to attach a mid-flow observation to the log entry. Pre-flight confirmed existing rate-limit backoff is real (linear retry on 429 + Retry-After honoring), not just counter-only.
 - **2026-04-21** — multi-wiki support. `start_topic` takes a `wiki`
   parameter (default `"en"`); the value is persisted on the topic row

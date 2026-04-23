@@ -5,6 +5,7 @@ comprehensive article lists for any topic.
 """
 
 import csv
+import html.parser
 import json
 import collections
 import datetime
@@ -13,6 +14,7 @@ import os
 import re
 import threading
 import time
+import urllib.parse
 from pathlib import Path
 from mcp.server.fastmcp import FastMCP, Context
 
@@ -651,14 +653,122 @@ def get_category_articles(category: str, depth: int = 3, exclude: list[str] | No
     return json.dumps(result, indent=2, ensure_ascii=False)
 
 
+_MAIN_CONTENT_EXCLUDED_CLASSES = {
+    'navbox', 'navbox-styles', 'sidebar', 'sidebar-content',
+    'infobox', 'metadata', 'reflist', 'references',
+    'mw-editsection', 'catlinks', 'toc', 'thumbcaption',
+    'hatnote', 'dablink', 'shortdescription', 'noprint',
+    'mw-references-wrap',
+}
+_MAIN_CONTENT_EXCLUDED_SECTION_IDS = {
+    'See_also', 'External_links', 'References', 'Further_reading',
+    'Notes', 'Bibliography', 'Sources', 'Citations', 'Footnotes',
+}
+
+
+_VOID_ELEMENTS = {
+    'br', 'img', 'hr', 'input', 'meta', 'link', 'area', 'base',
+    'col', 'embed', 'source', 'track', 'wbr', 'param',
+}
+
+
+class _MainContentLinkExtractor(html.parser.HTMLParser):
+    """Walk a Wikipedia-rendered HTML fragment and collect <a href> targets
+    pointing to mainspace articles, excluding anything under navbox/sidebar/
+    reflist/etc. or past a See_also/External_links/References heading.
+
+    Uses a proper tag stack so end-tags only pop their matching open element
+    — naively counting depth by any endtag would let an <a></a> inside a
+    navbox prematurely exit the excluded region, which was the initial bug."""
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.links = []
+        self._seen = set()
+        self._stack = []  # list of (tag, is_excluded)
+        self._excluded_depth = 0
+        self._past_excluded_heading = False
+
+    def handle_starttag(self, tag, attrs):
+        attr_dict = dict(attrs)
+        classes = set(attr_dict.get('class', '').split()) if attr_dict.get('class') else set()
+        is_excluded = bool(classes & _MAIN_CONTENT_EXCLUDED_CLASSES)
+
+        if tag not in _VOID_ELEMENTS:
+            self._stack.append((tag, is_excluded))
+            if is_excluded:
+                self._excluded_depth += 1
+                return
+
+        if self._excluded_depth > 0:
+            return
+        # Headings use the heading element's own id OR a nested
+        # <span class="mw-headline" id="Section_Name"> depending on skin.
+        if tag in ('h2', 'h3', 'h4', 'span'):
+            elem_id = attr_dict.get('id', '')
+            if elem_id in _MAIN_CONTENT_EXCLUDED_SECTION_IDS:
+                self._past_excluded_heading = True
+                return
+        if self._past_excluded_heading:
+            return
+        if tag == 'a':
+            # Prefer the title="..." attribute — MediaWiki sets it to the
+            # target page title for both blue links (<a href="/wiki/X">) and
+            # red links (<a href="/w/index.php?title=X&redlink=1"> — which
+            # would be filtered out if we matched on href alone). For
+            # redlinks the title attribute ends with " (page does not
+            # exist)"; strip that suffix.
+            link_title = attr_dict.get('title', '').strip()
+            href = attr_dict.get('href', '')
+            # Only consider anchors that look like wiki links (internal
+            # links have either /wiki/ or /w/index.php?title=).
+            is_wiki_link = (href.startswith('/wiki/')
+                            or '/w/index.php?title=' in href)
+            if not is_wiki_link or not link_title:
+                return
+            if link_title.endswith(' (page does not exist)'):
+                link_title = link_title[:-len(' (page does not exist)')].strip()
+            # mainspace only — skip namespaced pages (File:, Category:, etc.)
+            if ':' in link_title:
+                return
+            if link_title in self._seen:
+                return
+            self._seen.add(link_title)
+            self.links.append(link_title)
+
+    def handle_endtag(self, tag):
+        # Pop the matching open tag. Real-world Wikipedia HTML has some
+        # unclosed <p> / <li> / <img> etc., so seek backward for the match
+        # and discard anything above it as malformed.
+        for i in range(len(self._stack) - 1, -1, -1):
+            if self._stack[i][0] == tag:
+                popped = self._stack[i:]
+                self._stack = self._stack[:i]
+                for _, was_excl in popped:
+                    if was_excl:
+                        self._excluded_depth -= 1
+                return
+
+
 @mcp.tool()
-def harvest_list_page(title: str, note: str = "",
+def harvest_list_page(title: str, main_content_only: bool = True,
+                      note: str = "",
                       topic: str | None = None, ctx: Context = None) -> str:
-    """Extract all article links from a List/Index/Glossary page. Adds them
+    """Extract article links from a List/Index/Glossary page. Adds them
     to the working list with source 'list_page'.
 
     Args:
         title: Page title (e.g., "Index of climate change articles")
+        main_content_only: If True (default), parse the rendered HTML and
+            collect links only from the article body — skipping navboxes,
+            sidebars, infoboxes, reference lists, and anything past a
+            "See also" / "External links" / "References" heading. This is
+            the right default for List/Index/Outline pages where navbox
+            noise routinely dominates the link count (68% in one observed
+            orchids case). Set False to fall back to the raw `prop=links`
+            API, which returns every mainspace link on the page including
+            navigation chrome — useful for "Outline of …" pages whose
+            curated content lives in navigation templates, or for broad
+            category-like list pages.
         note: Optional free-text observation for this call's log entry.
               Use for mid-flow reflection; empty by default.
         topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
@@ -668,42 +778,70 @@ def harvest_list_page(title: str, note: str = "",
     if err:
         return err
 
-    params = {
-        'action': 'query',
-        'titles': title,
-        'prop': 'links',
-        'plnamespace': '0',
-        'pllimit': '500',
-        'format': 'json',
-        'formatversion': '2',
-    }
-
-    links = []
-    while True:
-        data = api_get(wiki_api_url(wiki), params)
-        if 'query' in data and 'pages' in data['query']:
-            for page in data['query']['pages']:
-                for link in page.get('links', []):
-                    links.append(normalize_title(link['title']))
-        if 'continue' in data:
-            params.update(data['continue'])
+    if main_content_only:
+        parse_params = {
+            'action': 'parse',
+            'page': title,
+            'prop': 'text',
+            'format': 'json',
+            'formatversion': '2',
+            'redirects': '1',
+            'disabletoc': '1',
+            'disableeditsection': '1',
+        }
+        data = api_get(wiki_api_url(wiki), parse_params)
+        html_text = data.get('parse', {}).get('text', '')
+        if not html_text:
+            # Page missing / parse error — fall back to prop=links so caller
+            # still gets a coherent answer rather than zero links.
+            main_content_only = False
         else:
-            break
+            extractor = _MainContentLinkExtractor()
+            extractor.feed(html_text)
+            links = [normalize_title(t) for t in extractor.links]
+
+    if not main_content_only:
+        params = {
+            'action': 'query',
+            'titles': title,
+            'prop': 'links',
+            'plnamespace': '0',
+            'pllimit': '500',
+            'format': 'json',
+            'formatversion': '2',
+        }
+        links = []
+        while True:
+            data = api_get(wiki_api_url(wiki), params)
+            if 'query' in data and 'pages' in data['query']:
+                for page in data['query']['pages']:
+                    for link in page.get('links', []):
+                        links.append(normalize_title(link['title']))
+            if 'continue' in data:
+                params.update(data['continue'])
+            else:
+                break
 
     source_label = f"list_page:{title}"
     batch = [(t, source_label, None) for t in links]
     added, updated = db.add_articles(topic_id, batch)
 
-    log_usage(ctx, "harvest_list_page", {"title": title, "wiki": wiki},
+    log_usage(ctx, "harvest_list_page",
+              {"title": title, "wiki": wiki, "main_content_only": main_content_only},
               f"{len(links)} links, {added} new", start_time=_start, note=note)
     return json.dumps({
         'wiki': wiki,
         'source_page': title,
+        'main_content_only': main_content_only,
         'links_found': len(links),
         'new_articles_added': added,
         'source_label': source_label,
         'total_in_working_list': db.get_status(topic_id)['total_articles'],
-        'note': f'To undo this harvest, use: remove_by_source("{source_label}")',
+        'note': (
+            f'To undo this harvest, use: remove_by_source("{source_label}"). '
+            f'Pass main_content_only=False if you want the raw link set '
+            f'including navboxes and navigation chrome.'
+        ),
     }, indent=2, ensure_ascii=False)
 
 

@@ -49,7 +49,10 @@ Pairs with 2.6 (event-triggered reflection guidance) and 1.18 (auto-nudge on res
 
 ---
 
-### 1.2 ☐ `harvest_list_page(main_content_only=True)` `[NEW]`
+### 1.2 ☑ `harvest_list_page(main_content_only=True)` `[NEW]`
+
+**Shipped 2026-04-22.** Default True. Uses `action=parse&prop=text` + a stdlib `html.parser.HTMLParser` subclass that walks a proper tag stack, tracks excluded-subtree depth (`navbox`, `sidebar`, `infobox`, `reflist`, `hatnote`, `shortdescription`, `catlinks`, `toc`, `mw-editsection`, etc.), and drops everything past a `See_also` / `External_links` / `References` / `Further_reading` / `Notes` / `Bibliography` heading. Link extraction uses the `title="..."` attribute (not href), which captures **both blue links and redlinks** in one pass — matters on species lists where the majority are redlinks to articles that don't exist yet. Validated against 5 real list-page shapes: SA orchids list dropped 809 of 1,503 as navbox noise (matches plan's 838 estimate); `List of orchid genera` / `Outline of climate change` went from 1 → 819 / 279 because `prop=links` misses transcluded content that HTML rendering includes; `List of orchidologists` kept all 100 with zero false exclusions. Falls back to the old `prop=links` path when `main_content_only=False`, and automatically when the parse endpoint returns empty (e.g., missing page).
+
 
 **What.** New bool param. When True, only pull links from the article body's tables/lists, skipping navboxes, sidebars, see-also sections, sibling-list meta-navboxes.
 
