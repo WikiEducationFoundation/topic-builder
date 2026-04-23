@@ -151,3 +151,12 @@ Commit `38f1cba`.
 - Delete `docs/topic-strategies.md` (wisdom absorbed into `server_instructions.md`), `docs/development-narrative.md` (git history is the record), `skill.md` (prototype, superseded).
 - Move pre-MCP script one-offs into `scripts/legacy/`.
 - Dogfood tooling landed separately (commit `918f2ef`): `scripts/monitor_dogfood.sh`, `scripts/smoke.sh`, and `dogfood/task.md` autonomous-prompt tweaks.
+
+## Tier 1 ratchet bundle (2026-04-23+)
+
+First ratchet cycle after the backlog reorg. Small, independent
+items; ship individually, re-run the 5-benchmark ratchet after all
+three land.
+
+- **`coverage_estimate` field on `submit_feedback`.**
+  **Shipped 2026-04-23.** Optional `coverage_estimate: dict | None` parameter, shape `{"confidence": 0.0–1.0, "rationale": str, "remaining_strategies": [str, ...]}`. Stored in the feedback entry alongside the existing fields; `confidence` also added to the `usage.jsonl` log params so it's trendable without re-reading feedback.jsonl. Contrast with `missed_strategies`: this one is for tool shapes that *exist* but weren't applied this session (a coverage signal), while `missed_strategies` is for tool shapes we wished existed (a backlog signal).

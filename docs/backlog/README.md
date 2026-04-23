@@ -32,14 +32,6 @@ Add new items here as signals come in; promote items to
 
 **Shape.** Would be used by (a) the AI during rubric-driven review / spot-check when shortdesc is ambiguous, (b) an eventual `verify_claim` tool (Tier 2 spot-check cluster) as the context input, and (c) external audits (benchmark gold-building) to reduce WebFetch-style round-trips. Could ship alongside or as an opt-in flag on `fetch_descriptions`.
 
-### ☐ `coverage_estimate` field on `submit_feedback` `[NEW — 2026-04-23 dogfood]`
-
-**What.** Add an optional `coverage_estimate: dict | None` parameter to `submit_feedback`, shape `{"confidence": 0.0–1.0, "rationale": str, "remaining_strategies": [str, ...]}`. Stored alongside existing feedback fields.
-
-**Why.** The AI already reports self-estimated completeness informally during dogfood wrap-ups — a structured field lets us (a) track the signal over time, (b) correlate AI confidence with benchmark recall, and (c) unlock the self-administered spot-check modality (Tier 2) by giving it a place to land its output.
-
-**Shape.** Schema change only — no instructions edits, no new tool. Nothing else needs to move. Relationship to existing `missed_strategies` field: `missed_strategies` = tool shapes we wish existed; `remaining_strategies` (inside `coverage_estimate`) = tool shapes that *do* exist but weren't applied this session.
-
 ### ☐ Surface known-bug workarounds in `server_instructions.md` `[NEW]`
 
 **What.** Add explicit "AI-facing" warnings for known-dangerous search patterns that the server silently fixes. Example: compound `intitle:"A" OR intitle:"B"` queries return 0 on Cirrus; the server auto-splits (Chunk 1), but the AI might still hand-craft the broken form in other contexts.

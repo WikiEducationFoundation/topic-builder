@@ -4255,6 +4255,7 @@ def export_csv(min_score: int = 0, scored_only: bool = False,
 def submit_feedback(summary: str, what_worked: str = "", what_didnt: str = "",
                     missed_strategies: str = "",
                     rating: int | None = None, note: str = "",
+                    coverage_estimate: dict | None = None,
                     topic: str | None = None, ctx: Context = None) -> str:
     """Submit a brief retrospective on this topic-building session so the
     Wiki Education team can improve the tool. Offer to call this at the end
@@ -4279,6 +4280,20 @@ def submit_feedback(summary: str, what_worked: str = "", what_didnt: str = "",
         rating: Optional 1-10 rating of the overall experience.
         note: Optional free-text observation for this call's log entry.
               Use for mid-flow reflection; empty by default.
+        coverage_estimate: Optional dict capturing your self-estimated
+                           completeness at wrap-up. Shape:
+                             {"confidence": 0.0–1.0,
+                              "rationale": "one-sentence why",
+                              "remaining_strategies": ["strategy1", ...]}
+                           `confidence` is how complete you think the corpus
+                           is relative to the scope (not how confident you are
+                           that individual articles are on-topic). `rationale`
+                           explains the number briefly. `remaining_strategies`
+                           lists tool shapes that DO exist but weren't applied
+                           this session and might find more articles (contrast
+                           with `missed_strategies`, which is for tool shapes
+                           you wished existed). Omit if you don't have a
+                           considered estimate — don't fabricate one.
         topic: The topic name this feedback is about. Pass explicitly if your
                client doesn't maintain an MCP session.
     """
@@ -4302,6 +4317,8 @@ def submit_feedback(summary: str, what_worked: str = "", what_didnt: str = "",
         "what_didnt": what_didnt,
         "missed_strategies": missed_strategies,
     }
+    if coverage_estimate is not None:
+        entry["coverage_estimate"] = coverage_estimate
     if tid or topic:
         try:
             lookup_id = tid
@@ -4315,7 +4332,10 @@ def submit_feedback(summary: str, what_worked: str = "", what_didnt: str = "",
             pass
 
     db.append_feedback(entry)
-    log_usage(ctx, "submit_feedback", {"topic": resolved_topic, "rating": rating},
+    log_params = {"topic": resolved_topic, "rating": rating}
+    if isinstance(coverage_estimate, dict) and "confidence" in coverage_estimate:
+        log_params["coverage_confidence"] = coverage_estimate.get("confidence")
+    log_usage(ctx, "submit_feedback", log_params,
               f"feedback recorded ({len(summary)} chars)",
               start_time=_start, note=note)
     return ("Thanks — feedback recorded. The Wiki Education team will review it. "
