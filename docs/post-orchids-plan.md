@@ -369,7 +369,10 @@ Pairs with 2.6 (instructions-side guidance on *when* to call submit_feedback, co
 
 ---
 
-### 1.19 ☐ Nudge on repeated bare `manual` source labels `[NEW]`
+### 1.19 ☑ Nudge on repeated bare `manual` source labels `[NEW]`
+
+**Shipped 2026-04-22 (grouped with 2.1).** Per-session counter `_session_bare_manual_counts` ticks up on every `add_articles(source="manual", ...)`. On the second such call, the response gains a `label_hint` field with concrete examples (`manual:veitch-cluster`, `manual:cross-wiki-reconciliation-nl`, `manual:spot-check`). Labeled calls (`source="manual:foo"`) don't tick the counter. Also: `add_articles` now returns structured JSON (was plain text) so the hint has somewhere to live without changing the prose return.
+
 
 **What.** When `add_articles(source="manual", ...)` is called for the second time in a session, return a soft warning in the response recommending a specific `manual:<context>` label.
 
@@ -454,7 +457,10 @@ Flagged in round 1 feedback as "a way to attach a 'rejection note' to removed ti
 
 No code. Edit `server_instructions.md` + redeploy. Low risk, fast feedback.
 
-### 2.1 ☐ Document the `manual:<label>` convention `[NEW]`
+### 2.1 ☑ Document the `manual:<label>` convention `[NEW]`
+
+**Shipped 2026-04-22 (grouped with 1.19).** server_instructions.md gained a dedicated `manual:<label> CONVENTION` bullet right after the source-label one. Covers the motivation (label documents *reason or method*, not just "by hand"), four concrete examples, and the signal about the in-band hint. add_articles docstring got the recommendation in commit [plan 1.1]. All three reinforcement points now in place.
+
 
 AI organically invented `manual:culture`, `manual:veitch-cluster`, `manual:biographies`, `manual:national-flowers`, `manual:thief-cluster` in the first batch of sessions, and later invented `manual:cross-wiki-reconciliation` when walking non-en topic additions back to enwiki. That last one is a particularly strong exemplar — the label documents not just "I added these by hand" but the specific methodology that surfaced them, making the audit trail self-describing.
 

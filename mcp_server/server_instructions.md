@@ -115,6 +115,27 @@ identify all Wikipedia articles belonging to a topic. The workflow is:
   `remove_by_source("search:morelike:", prefix_match=True)`. `list_sources`
   shows everything you can target.
 
+- `manual:<label>` CONVENTION for hand-curated additions. When you call
+  `add_articles(titles=[...], source=...)`, prefer `source="manual:<context>"`
+  over bare `source="manual"`. The `<context>` should describe the *reason
+  or method* that surfaced those articles — not just that you added them
+  by hand. Examples:
+    - `manual:veitch-cluster` — articles from a specific thematic cluster
+      you built up from browse_edges seeds.
+    - `manual:cross-wiki-reconciliation-nl` — articles you walked back to
+      enwiki from an nlwiki parallel build (the label documents the
+      *methodology*, so a future reviewer understands how they were found).
+    - `manual:spot-check` — misses surfaced during the pre-export spot
+      check that you added after investigating.
+    - `manual:biographies` — a hand-curated batch of biographies you
+      pulled in specifically because category / WikiProject coverage
+      missed them.
+  The server emits an in-band `label_hint` the second time you use bare
+  `manual` in a session, pointing you to this convention. Bare `manual`
+  works, but it collapses all hand-curated additions under one label so
+  you can't selectively undo one batch later without remembering which
+  titles were in it.
+
 - INTERSECTIONAL TOPICS — topics defined by a demographic crossed with a
   discipline (e.g. "Hispanic and Latino people in STEM", "Women
   mathematicians", "African American physicists") often have SPARSE

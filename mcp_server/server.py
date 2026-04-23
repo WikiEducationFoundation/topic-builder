@@ -42,6 +42,10 @@ usage_logger.addHandler(usage_handler)
 # own "current topic" so concurrent clients don't clobber each other's state.
 # Keyed by id(ctx.session); value is (topic_id, topic_name, wiki).
 _session_topics: dict[int, tuple[int, str, str]] = {}
+# Per-session count of bare `add_articles(source="manual", ...)` calls, used
+# to emit a one-shot nudge on the second such call (see 2.1 manual:<label>
+# convention). Labeled `manual:<context>` calls don't count here.
+_session_bare_manual_counts: dict[int, int] = collections.defaultdict(int)
 _session_lock = threading.Lock()
 
 
@@ -2037,7 +2041,35 @@ def add_articles(titles: list[str], source: str = "manual", score: int | None = 
     log_usage(ctx, "add_articles",
               {"source": source, "titles_count": len(titles), "score": score},
               f"added {added}, updated {updated}", start_time=_start, note=note)
-    return f"Added {added} new articles, updated {updated} (source: {source}). Total: {total}"
+
+    # In-band nudge: if this is the second+ bare 'manual' call in this
+    # session, recommend adopting manual:<context> naming. Fires once per
+    # session (counter only ticks up while source is exactly "manual"),
+    # so labeled calls don't get nagged.
+    hint = None
+    if source == 'manual':
+        with _session_lock:
+            _session_bare_manual_counts[_session_key(ctx)] += 1
+            count = _session_bare_manual_counts[_session_key(ctx)]
+        if count == 2:
+            hint = (
+                "You're using bare source='manual' more than once in this session. "
+                "Consider switching to source='manual:<context>' — e.g. "
+                "'manual:veitch-cluster' or 'manual:cross-wiki-reconciliation-nl'. "
+                "The <context> makes the audit trail self-describing and lets you "
+                "undo specific hand-curated groups via remove_by_source. "
+                "Call list_sources to see the labels currently in use."
+            )
+
+    result = {
+        'added': added,
+        'updated': updated,
+        'source': source,
+        'total_in_working_list': total,
+    }
+    if hint:
+        result['label_hint'] = hint
+    return json.dumps(result, indent=2, ensure_ascii=False)
 
 
 @mcp.tool()
