@@ -32,14 +32,6 @@ Add new items here as signals come in; promote items to
 
 **Shape.** Would be used by (a) the AI during rubric-driven review / spot-check when shortdesc is ambiguous, (b) an eventual `verify_claim` tool (Tier 2 spot-check cluster) as the context input, and (c) external audits (benchmark gold-building) to reduce WebFetch-style round-trips. Could ship alongside or as an opt-in flag on `fetch_descriptions`.
 
-### ☐ Surface known-bug workarounds in `server_instructions.md` `[NEW]`
-
-**What.** Add explicit "AI-facing" warnings for known-dangerous search patterns that the server silently fixes. Example: compound `intitle:"A" OR intitle:"B"` queries return 0 on Cirrus; the server auto-splits (Chunk 1), but the AI might still hand-craft the broken form in other contexts.
-
-**Why.** Documentation work; protects against regression when the AI reaches for a pattern that only works because of a server-side workaround. Safer to name the gotcha explicitly.
-
-**Shape.** Audit the Chunk 1–6 post-orchids fixes, list any whose bug would still surface if the AI constructed similar queries against a different tool. One bullet each in `server_instructions.md`.
-
 ---
 
 ## Tier 2 — medium effort, multi-session-validated

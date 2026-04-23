@@ -399,6 +399,49 @@ properties are usually the join axis for that topic shape.
   ("actor", "musician", etc.), or cross-checking against a demographic
   category's member list.
 
+- KNOWN SHARP EDGES — quirks in the underlying Wikipedia / Wikidata APIs
+  that have bitten prior sessions. The tools in this server fix or work
+  around the ones listed below at the call sites you'd expect — but if
+  you hand-craft a similar query through a different tool (or a raw
+  search / SPARQL), the underlying bug is still there. Know the shape so
+  you recognize it.
+    - **Compound Cirrus operators (`intitle:A OR intitle:B`) silently
+      return 0.** `search_articles` auto-splits compound `intitle:` OR
+      clauses and merges the results. Other Cirrus operators are likely
+      to have the same bug: `incategory:"A" OR incategory:"B"`,
+      `hastemplate:"A" OR hastemplate:"B"`, etc. If you build a compound
+      query anywhere that isn't auto-split (including a hand-written
+      query string), split it into separate calls and merge results
+      yourself.
+    - **`auto_score_by_description(disqualifying=[...])` substring-matches
+      inside proper-noun phrases.** `disqualifying=["city"]` will reject
+      "Kansas City Star" and "Orange County Register" because the word
+      is part of an institution's proper name. Prefer multi-word phrases
+      (`"city council"`), lowercase-specific terms, or
+      `qualifying=[...]` framing where possible. Spot-check the first
+      N rejections before committing.
+    - **`survey_categories` returning 0 on an existing category usually
+      means a container/redirect category, not a real empty one.** When
+      this happens, look for a sibling with the canonical name — e.g.
+      `Category:Korean television dramas` is a container; the real pull
+      is `Category:South Korean television series`. Scan `prop=categories`
+      on the empty category page, or try obvious name variants.
+    - **Wikidata short-descriptions are not a reliable sole signal.** They
+      are frequently empty, truncated to a lopsided fragment, or
+      misleading about a subject's notability. `fetch_descriptions` has
+      an enwiki REST fallback for *empty* Wikidata descriptions, but
+      misleading-but-nonempty ones (e.g. "American academic" for someone
+      whose notability is as an applied-STEM researcher on pilot-vision
+      eyewear) still reach you. When a shortdesc looks too thin to
+      justify the centrality you're about to assign, cross-check with
+      `preview_search` or `fetch_article_leads` (if available) before
+      scoring.
+    - **Large SPARQL / `wikidata_entities_by_property` results are
+      auto-truncated** at the transport layer. A truncated response
+      carries a marker — if you see it, your query was too broad. Add
+      `LIMIT`, narrow the class, or split by sitelink-count bands rather
+      than assuming you have the full set.
+
 - NOISE TAXONOMY — know what to expect from each gather strategy so you
   review efficiently instead of treating everything as uniformly suspect:
     - **Category crawls** — usually clean. Editor discipline on category
