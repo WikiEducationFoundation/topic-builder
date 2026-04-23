@@ -322,7 +322,10 @@ Alternative / additive: learn from context — if the topic already contains 100
 
 ---
 
-### 1.16 ☐ Export CSV enrichment `[NEW]`
+### 1.16 ☑ Export CSV enrichment `[NEW]`
+
+**Shipped 2026-04-22.** Added `enriched: bool = False` param. Default behavior unchanged (two-column `title, description`, no header — matches Impact Visualizer import). When `enriched=True`, writes a five-column CSV with a header row: `title, description, score, source_labels, first_added_at`. `source_labels` is pipe-separated to avoid collision with comma in label names. `wikidata_qid` skipped until 5.6 populates QIDs. Enriched file gets a `-enriched` suffix so both variants can coexist in the exports dir. IV compat check deferred per Sage — the opt-in flag preserves the IV path.
+
 
 **What.** `export_csv` currently outputs `title, description`. Add columns: `source_labels`, `score`, `wikidata_qid`, `first_added_at`.
 

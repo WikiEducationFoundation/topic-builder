@@ -254,14 +254,24 @@ def get_all_titles(topic_id):
 
 
 def get_all_articles_dict(topic_id):
-    """Get all articles as a dict of title -> {sources, score, description}.
+    """Get all articles as a dict of title -> {sources, score, description, created_at}.
     description is '' when fetched-but-empty and None when not-yet-fetched."""
     conn = _connect()
-    rows = conn.execute("SELECT title, score, sources, description FROM articles WHERE topic_id = ?",
-                        (topic_id,)).fetchall()
+    rows = conn.execute(
+        "SELECT title, score, sources, description, created_at "
+        "FROM articles WHERE topic_id = ?",
+        (topic_id,),
+    ).fetchall()
     conn.close()
-    return {r['title']: {'score': r['score'], 'sources': json.loads(r['sources']),
-                          'description': r['description']} for r in rows}
+    return {
+        r['title']: {
+            'score': r['score'],
+            'sources': json.loads(r['sources']),
+            'description': r['description'],
+            'created_at': r['created_at'],
+        }
+        for r in rows
+    }
 
 
 def get_status(topic_id):

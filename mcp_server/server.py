@@ -2792,7 +2792,9 @@ def filter_articles(resolve_redirects: bool = True, remove_disambig: bool = True
 
 
 @mcp.tool()
-def export_csv(min_score: int = 0, scored_only: bool = False, note: str = "",
+def export_csv(min_score: int = 0, scored_only: bool = False,
+               enriched: bool = False,
+               note: str = "",
                topic: str | None = None, ctx: Context = None) -> str:
     """Export the final article list as a downloadable CSV file.
 
@@ -2802,6 +2804,13 @@ def export_csv(min_score: int = 0, scored_only: bool = False, note: str = "",
         min_score: Minimum score to include (default 0 = export all articles).
                    Set to 7 to export only scored-and-relevant articles.
         scored_only: If True, only export articles that have been scored. Default False.
+        enriched: If False (default), emit the Impact-Visualizer-compatible
+                   two-column CSV: `title, description` with no header row.
+                   If True, emit a five-column CSV with a header row:
+                   `title, description, score, source_labels, first_added_at`.
+                   Use enriched=True for manual review / downstream analysis;
+                   keep the default for IV import. `source_labels` is pipe-
+                   separated to avoid colliding with commas in label names.
         note: Optional free-text observation for this call's log entry.
               Use for mid-flow reflection; empty by default.
         topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
@@ -2851,29 +2860,56 @@ def export_csv(min_score: int = 0, scored_only: bool = False, note: str = "",
     slug = topic_name.lower().replace(' ', '_').replace("'", '').replace('"', '')
     export_dir = os.path.join(os.environ.get("EXPORT_DIR", "/opt/topic-builder/exports"))
     os.makedirs(export_dir, exist_ok=True)
-    filename = f"topic-articles-{slug}.csv"
+    suffix = '-enriched' if enriched else ''
+    filename = f"topic-articles-{slug}{suffix}.csv"
     filepath = os.path.join(export_dir, filename)
 
     with open(filepath, 'w', encoding='utf-8-sig', newline='') as f:
         writer = csv.writer(f)
-        for title in titles:
-            writer.writerow([title, descriptions.get(title, '')])
+        if enriched:
+            writer.writerow(['title', 'description', 'score', 'source_labels',
+                             'first_added_at'])
+            for title in titles:
+                article = all_articles.get(title, {})
+                sources = article.get('sources') or []
+                writer.writerow([
+                    title,
+                    descriptions.get(title, ''),
+                    article.get('score') if article.get('score') is not None else '',
+                    '|'.join(sources),
+                    article.get('created_at') or '',
+                ])
+        else:
+            for title in titles:
+                writer.writerow([title, descriptions.get(title, '')])
 
     download_url = f"https://topic-builder.wikiedu.org/exports/{filename}"
 
-    log_usage(ctx, "export_csv", {"min_score": min_score, "scored_only": scored_only, "wiki": wiki},
+    log_usage(ctx, "export_csv",
+              {"min_score": min_score, "scored_only": scored_only,
+               "enriched": enriched, "wiki": wiki},
               f"{len(titles)} articles exported", start_time=_start, note=note)
+    note_suffix = (
+        f'The CSV has five columns (title, description, score, source_labels, '
+        f'first_added_at) with a header row. source_labels is pipe-separated. '
+        f'For Impact Visualizer import use enriched=False (the two-column '
+        f'default).' if enriched else
+        f'The CSV has two columns per row: article title and a Wikidata short '
+        f'description (empty if none). No header row. This is the '
+        f'Impact-Visualizer-compatible format — pass the same wiki on import. '
+        f'For richer output (score, source labels, timestamp), call export_csv '
+        f'with enriched=True.'
+    )
     return json.dumps({
         'wiki': wiki,
         'article_count': len(titles),
         'min_score': min_score,
+        'enriched': enriched,
         'download_url': download_url,
         'filename': filename,
         'note': (
-            f'Give the user the download link above. The CSV has two columns '
-            f'per row: article title and a Wikidata short description (empty '
-            f'if none). Titles refer to articles on {wiki}.wikipedia.org — '
-            f'pass the same wiki to Impact Visualizer on import.'
+            f'Give the user the download link above. {note_suffix} '
+            f'Titles refer to articles on {wiki}.wikipedia.org.'
         ),
     }, indent=2, ensure_ascii=False)
 
