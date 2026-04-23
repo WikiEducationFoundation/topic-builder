@@ -24,6 +24,7 @@ tool — the feedback you capture is the primary output, not the CSV.
    - **Kochutensilien** — dewiki, narrow concrete-object domain
    - **Native American scientists** — intersectional biography v2
    - **Seattle** — city / place topic
+   - **Apollo 11** — single historical event (crew + hardware + cultural tail)
 
 2. Propose 2–3 candidate topics in **shapes we haven't tested**. Candidate
    shapes worth exploring:
@@ -31,8 +32,6 @@ tool — the feedback you capture is the primary output, not the CSV.
      investigative reporting winners. Name-heavy, no WikiProject, biographical.
    - **Geographic feature** — e.g. Mountains of Kyrgyzstan, Lakes of Finland.
      Structural, near-zero biographies.
-   - **Single historical event** — e.g. Battle of Midway, Apollo 11.
-     Event-centric, military / aerospace mix with cultural tail.
    - **Contemporary pop culture** — e.g. K-drama actors, reality-TV
      franchises. Fast-evolving, navbox-heavy lists.
    - **Abstract concept / philosophy** — e.g. phenomenology, virtue ethics.
@@ -70,6 +69,37 @@ check → export. Two additions specifically for this session:
      scripts, side-step via external APIs, or invent parallel paths.
      The point is to surface what's missing, not to paper over it.
 
+3. **When the server instructions prompt for user input you can't
+   provide, substitute domain knowledge instead of halting.** The
+   autonomous session has no conversational partner — stopping to wait
+   is a silent dead-end that burns wall time and produces nothing. This
+   applies anywhere in `server_instructions.md`, but most concretely to
+   the pre-export spot-check step ("ask the user to name 3–5 specific
+   articles they'd expect to find"). Instead of asking, run the loop
+   yourself:
+   - **Fabricate a large, structured probe list** — target ~50 candidate
+     article titles, spanning at least 5 of the topic's natural
+     subdomains. For Apollo 11 that was crew / missions / hardware /
+     sites / science experiments / cultural works / things-named-after /
+     adjacent-but-excluded; for an academic field it'd be
+     founding-figures / sub-disciplines / key-works / institutions /
+     journals / adjacent-fields. Fabrication is free LLM tokens, and
+     hallucinated probes are harmless — they just fail to match and
+     drop out.
+   - **Verify presence efficiently** — `get_articles(title_regex=...)`
+     or batched `preview_search` handles the whole list in a few calls.
+   - **Classify each miss** — variant name already in corpus /
+     LLM hallucination / real gap. Only real gaps need remediation.
+   - **Pattern-match misses into strategies, not individual fetches.**
+     A cluster of missed "cultural work" probes is a signal to rerun
+     `preview_harvest_list_page` on the cultural-tail list page or to
+     fire a Wikidata query, not to hunt each title one at a time. The
+     diagnostic value is "which *strategy* would have caught this
+     class?" — that's where the leverage is.
+   - **Note the coverage you think remains** for your final feedback.
+     Record it as part of the wrap-up — we're tracking self-estimated
+     completeness as a signal alongside ratings.
+
 ## At the end, submit feedback
 
 Call `submit_feedback` with this structure:
@@ -90,6 +120,15 @@ Call `submit_feedback` with this structure:
   blockers you hit, rate accordingly — this is development signal, not
   a thank-you note. A 6 or 7 with specific `what_didnt` content is more
   useful to us than a 9 with vague comments.
+
+**Each field is a separate parameter on the `submit_feedback` tool
+call.** `summary`, `what_worked`, `what_didnt`, `missed_strategies`, and
+`rating` each take their own argument. Don't nest multiple fields
+inside `summary` using XML-like tags (`<parameter name="rating">7...</...>`)
+— that's the Claude tool-call internal syntax, not content. Past
+sessions have submitted with all content packed into `summary` and the
+other fields left empty or null; the result is captured but harder to
+read and impossible to aggregate.
 
 The server's normal guidance ("ask before calling submit_feedback") is
 **relaxed here**. Feedback at session end is expected, not optional —
