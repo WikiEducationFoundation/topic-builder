@@ -118,8 +118,8 @@ memories for the evidence trail.
 
 The project has no automated test suite. Verification is via:
 
-- **Syntax:** `python3 -c "import ast; ast.parse(open('mcp_server/server.py').read())"`.
-- **Tool schema check on the server:** copy the edited `server.py` to `/tmp/` on the host and run it through `mcp.list_tools()` to inspect what schemas the clients will see. See `docs/operations.md` for the one-liner.
+- **Syntax:** `python3 -m py_compile mcp_server/server.py` (the project's `.claude/settings.json` denies `python3 -c`; use `py_compile` or a throwaway script).
+- **Tool schema check on the server:** write a smoke as `/tmp/check_<whatever>.py` that imports from `server` and prints what you want to inspect, then run it on the host via `bash scripts/smoke.sh /tmp/check_<whatever>.py`. The wrapper reads `.env` internally, scp's the script to `/tmp/` on the host, and runs it through `/opt/topic-builder/venv/bin/python`. Don't hand-roll `source .env && scp ... && ssh ...` — it triggers permission prompts the wrapper was built to avoid. See `docs/operations.md` for additional admin one-liners.
 - **Live dogfood.** Build a small topic end-to-end in Claude and ChatGPT after a deploy. The Seattle / educational psychology topics are useful known shapes.
 
 ## Pointers for future work
