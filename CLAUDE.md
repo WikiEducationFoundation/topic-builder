@@ -19,25 +19,28 @@ mcp_server/          # production code
 └── deploy_landing.sh# landing-only deploy (no service restart)
 
 docs/                # plans and operational reference
-├── operations-and-backlog.md  # host layout, admin one-liners, backlog
-├── auth-plan.md               # deferred: Wikipedia OAuth + paste-in-chat token
-├── impact-visualizer-handoff.md # deferred: handle → IV import
-└── development-narrative.md   # historical context
+├── ratchet-plan.md    # current: how to use the benchmark ratchet
+├── shipped.md         # log of items that landed
+├── operations.md      # host layout, admin one-liners
+├── build-workflow.md  # how the AI works through backlog items
+└── backlog/           # open work — prioritized list + specific plans
+    ├── README.md                  # open-items list
+    ├── auth.md                    # deferred: Wikipedia OAuth
+    └── impact-visualizer.md       # deferred: IV handoff
 
 scripts/             # standalone helper scripts.
-                     # session_status.py and benchmark.py are current. The
-                     # older *.py files here are pre-MCP, kept for ad-hoc
-                     # use. New primary path is the MCP tools, not these
-                     # scripts.
+                     # bootstrap_benchmark.py, benchmark_score.py,
+                     # monitor_dogfood.sh, session_status.py, smoke.sh
+                     # are active. `legacy/` holds pre-MCP one-offs kept
+                     # as shell-usable probing tools.
 
-benchmarks/          # gold-standard topic audits + replay harness for
-                     # regression-testing tool/prompt changes. One
-                     # subdirectory per benchmark topic with frozen
-                     # scope.md, gold.csv, calls.jsonl. See benchmarks/README.md.
-
-topics/              # legacy CSV outputs from the script-based workflow.
-                     # Current exports live at /opt/topic-builder/exports/
-                     # on the server, served via /exports/<filename>.
+benchmarks/          # gold-standard topic audits + replay harness.
+                     # 5 topics scaffolded 2026-04-23: apollo-11,
+                     # crispr-gene-editing, african-american-stem,
+                     # hispanic-latino-stem-us, orchids. Each has
+                     # scope.md, rubric.txt, baseline.json, gold.csv
+                     # (gitignored — names + judgments). See
+                     # benchmarks/README.md for the workflow.
 ```
 
 ## Architecture at a glance
@@ -48,7 +51,7 @@ topics/              # legacy CSV outputs from the script-based workflow.
 - nginx fronts the service: `/` serves `landing.html`, `/exports/*` serves generated CSVs, `/mcp` proxies to the Python service on `127.0.0.1:8000`.
 - systemd unit `topic-builder.service` supervises the process.
 
-See `docs/operations-and-backlog.md` for the host layout, log locations, and administration recipes.
+See `docs/operations.md` for the host layout, log locations, and administration recipes.
 
 ## Deployment
 
@@ -106,20 +109,18 @@ When changing any of these, edit `mcp_server/server_instructions.md` and redeplo
 The project has no automated test suite. Verification is via:
 
 - **Syntax:** `python3 -c "import ast; ast.parse(open('mcp_server/server.py').read())"`.
-- **Tool schema check on the server:** copy the edited `server.py` to `/tmp/` on the host and run it through `mcp.list_tools()` to inspect what schemas the clients will see. See `docs/operations-and-backlog.md` for the one-liner.
+- **Tool schema check on the server:** copy the edited `server.py` to `/tmp/` on the host and run it through `mcp.list_tools()` to inspect what schemas the clients will see. See `docs/operations.md` for the one-liner.
 - **Live dogfood.** Build a small topic end-to-end in Claude and ChatGPT after a deploy. The Seattle / educational psychology topics are useful known shapes.
 
 ## Pointers for future work
 
-- `docs/operations-and-backlog.md` — admin reference + running backlog of ideas.
-- `docs/auth-plan.md` — deferred Wikipedia OAuth plan; paste-in-chat token flow.
-- `docs/impact-visualizer-handoff.md` — deferred integration ending a session with a pasteable handle that IV imports directly.
-- `docs/development-narrative.md` — historical context from the early (pre-MCP) phase.
+- `docs/ratchet-plan.md` — how to use the 5-benchmark ratchet for proving tool improvements; prioritized open shortlist.
+- `docs/backlog/README.md` — open items list.
+- `docs/backlog/auth.md` — deferred Wikipedia OAuth plan.
+- `docs/backlog/impact-visualizer.md` — deferred IV integration plan.
+- `docs/shipped.md` — log of items that landed.
+- `docs/operations.md` — admin reference.
 
 ## Legacy pieces still in the tree
 
-- **`scripts/*.py`** — the original local-workflow tools (`category_tree.py`, `wikiproject_articles.py`, `petscan_query.py`, etc.). They work, but nothing in the current server depends on them. Useful as one-off probing tools when you want to run a query from a shell without going through an MCP client.
-- **`topics/<slug>/articles.csv`** — old outputs from that workflow. Current CSV output lives on the server at `/opt/topic-builder/exports/`.
-- **`skill.md`** — an early draft of the Claude skill we eventually want to publish. Not authoritative; the current server instructions (`instructions=` in `server.py`) are the real prompt.
-
-These are kept around for reference; don't build new features on them.
+- **`scripts/legacy/*.py`** — pre-MCP local-workflow tools (`category_tree.py`, `wikiproject_articles.py`, etc.). Nothing in the current server depends on them. Useful as one-off probing tools when you want to run a query from a shell without going through an MCP client. Don't build new features on them.

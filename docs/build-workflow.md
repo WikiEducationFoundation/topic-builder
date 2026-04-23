@@ -1,6 +1,6 @@
 # Build workflow
 
-Operational companion to `docs/post-orchids-plan.md`. Defines how Claude works through plan items with minimal friction during extended autonomous build sessions.
+Operational companion to `docs/backlog/README.md`. Defines how Claude works through plan items with minimal friction during extended autonomous build sessions.
 
 Reader's TL;DR: stage-level checkpoints with Sage (kickoff + recap); per-item autonomy in between (implement → verify → commit → update plan → deploy → smoke). Ship per `.X` item unless a Sequencing note groups them. Pause only on unexpected.
 
@@ -49,7 +49,7 @@ One pass per plan `.X` item. Ship per item unless its Sequencing note groups it 
 2. **Implement.** Make the change. Small enough edits that a diff is reviewable.
 3. **Pre-commit verify.**
    - Syntax check: `python3 -c "import ast; ast.parse(open('mcp_server/server.py').read())"` (and same for any other Python file touched).
-   - Schema inspection (when the change affects tool signatures or docstrings): copy the edited `server.py` to `/tmp/` on the host and run it through `mcp.list_tools()` per `docs/operations-and-backlog.md`.
+   - Schema inspection (when the change affects tool signatures or docstrings): copy the edited `server.py` to `/tmp/` on the host and run it through `mcp.list_tools()` per `docs/operations.md`.
    - Nothing more unless the item needs it. No test suite exists; don't invent one.
 4. **Commit.** One commit per item (or per self-contained sub-change within an item). Message style matches existing repo convention:
    - Imperative, sentence case, no trailing period, ~60–70 chars.
@@ -57,9 +57,9 @@ One pass per plan `.X` item. Ship per item unless its Sequencing note groups it 
    - Include the plan item number at the end in brackets: `[plan 1.2]`.
    - Example: `Add main_content_only flag to harvest_list_page [plan 1.2]`.
    - Do NOT add `Co-Authored-By` or other trailers — the repo doesn't use them.
-5. **Update plan + backlog atomically.** Same commit updates:
-   - `docs/post-orchids-plan.md`: change the item's ☐ to ☑. Add a brief "Shipped: <short note>" line if the built shape diverged from the planned shape.
-   - `docs/operations-and-backlog.md`: one-liner under "Recently shipped" with today's date.
+5. **Update backlog + shipped log atomically.** Same commit updates:
+   - `docs/backlog/README.md`: remove the shipped item (or change ☐ to ☑ briefly before pruning next cleanup).
+   - `docs/shipped.md`: append a one-liner under the appropriate stage section.
 6. **Deploy.** Run `bash mcp_server/deploy.sh`. The script itself self-checks: `set -euo pipefail` aborts on any failure; the last step runs `systemctl is-active` + `curl 127.0.0.1:8000/mcp/`. If those pass, the deploy is good.
 7. **Smoke-test.** Call a read-only MCP tool relevant to the change — `get_status`, `list_topics`, or whatever verifies the change is live. If the change modified a specific tool's behavior, call that tool.
 8. **Next item.**
@@ -129,11 +129,11 @@ Pattern: imperative, sentence case, optional colon for namespacing, short and sp
 
 A fresh Claude should be able to pick up cold. Checklist:
 
-1. Read `docs/post-orchids-plan.md`. Find the next ☐ item in the current stage.
+1. Read `docs/backlog/README.md`. Find the next ☐ item in the current stage.
 2. Read that item's Shape / Why / Open questions fully.
 3. Read the source files it touches — don't trust memory of what's there.
 4. `git log --oneline -20` to see what's been committed. Cross-check against ☑ items.
-5. `cat docs/operations-and-backlog.md` and look at the "Recently shipped" section.
+5. `cat docs/shipped.md` to see what's landed recently.
 6. Read `CLAUDE.md` for project-wide conventions.
 7. Read memory files — especially `feedback_planning_rhythm.md` and `feedback_silent_routing_around.md`.
 8. Proceed with the per-item loop.
