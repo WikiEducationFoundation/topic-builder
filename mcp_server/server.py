@@ -14,6 +14,7 @@ import os
 import re
 import threading
 import time
+import unicodedata
 import urllib.parse
 from pathlib import Path
 from mcp.server.fastmcp import FastMCP, Context
@@ -1115,6 +1116,39 @@ def preview_harvest_list_page(title: str, sample_size: int = 50,
     }, indent=2, ensure_ascii=False)
 
 
+def _slugify_for_source_label(query: str, max_length: int = 60) -> str:
+    """Slugify a search query for use inside a source label.
+
+    Preserves ':' separators so CirrusSearch operator prefixes stay
+    readable (e.g. `morelike:the-orchid-thief`, `intitle:climate-change`).
+    Lowercases, strips Latin diacritics, replaces runs of non-word
+    characters with '-', collapses, and truncates to `max_length` without
+    leaving a trailing '-' or ':'. Unicode letters (CJK, Cyrillic, Arabic,
+    etc.) survive intact — dropping them entirely would collapse
+    `morelike:牧野富太郎` to `morelike` and lose all seed information on
+    non-ASCII seeds.
+
+    Used by `search_articles` / `preview_search` when building the
+    `search:<…>` source label. Existing DB rows keep their older
+    un-slugified labels."""
+    parts = query.split(':')
+    slugged_parts = []
+    for p in parts:
+        normalized = unicodedata.normalize('NFKD', p)
+        without_combining = ''.join(c for c in normalized
+                                    if not unicodedata.combining(c))
+        lower = without_combining.lower()
+        # \w with re.UNICODE matches Unicode letters + digits + underscore,
+        # so non-ASCII scripts survive; other punctuation / whitespace
+        # collapses to '-'.
+        slugged = re.sub(r'[^\w]+', '-', lower, flags=re.UNICODE).strip('-_')
+        slugged_parts.append(slugged)
+    label = ':'.join(slugged_parts).strip(':')
+    if len(label) > max_length:
+        label = label[:max_length].rstrip('-:_')
+    return label or 'unnamed'
+
+
 def _apply_within_category(query: str, within_category: str | None) -> str:
     """Append an `incategory:"…"` operator when within_category is set.
     CirrusSearch's incategory is single-level (not recursive); this keeps
@@ -1171,10 +1205,13 @@ def search_articles(query: str, limit: int = 500,
         results.append(item['title'])
 
     # Tag with the specific query so remove_by_source / get_articles_by_source
-    # can target one bad pull without blanket-touching all search-added articles.
-    # Use prefix_match=True on remove_by_source to clear a family of queries
-    # (e.g. "search:morelike:" drops every similarity pull at once).
-    source_label = f"search:{scoped_query}"
+    # can target one bad pull without blanket-touching all search-added
+    # articles. Slugify the query so labels are ASCII / lowercase / hyphenated
+    # (diacritics stripped, special chars replaced) — keeps list_sources
+    # output tractable. Use prefix_match=True on remove_by_source to clear a
+    # family of queries (e.g. "search:morelike:" drops every similarity
+    # pull at once — the "morelike:" prefix survives slugification).
+    source_label = f"search:{_slugify_for_source_label(scoped_query)}"
     batch = [(title, source_label, None) for title in results]
     added, updated = db.add_articles(topic_id, batch)
 

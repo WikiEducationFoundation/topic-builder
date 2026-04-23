@@ -272,7 +272,10 @@ Don't *refuse* — the AI can still proceed. Make the cost visible *before* the 
 
 ---
 
-### 1.14 ☐ Source-label slugification for `search_articles` commit variant `[NEW]`
+### 1.14 ☑ Source-label slugification for `search_articles` commit variant `[NEW]`
+
+**Shipped 2026-04-22.** `_slugify_for_source_label` preserves `:` operator separators (so `morelike:the-orchid-thief` stays intact), strips Latin combining diacritics, replaces punctuation/whitespace with `-`, and **preserves non-Latin Unicode letters** (CJK, Cyrillic, etc.) — without that escape hatch `morelike:牧野富太郎` would collapse to bare `morelike` and lose all seed info. Truncates at 60 chars; empty input → `"unnamed"`. Applied only at label creation time in `search_articles` — existing DB rows keep their legacy labels (plan decision). morelike-prefixed labels get the same treatment since the helper is query-agnostic.
+
 
 **What.** Clean up source labels produced by `search_articles(query)`. Today labels preserve the full query string including diacritics and special chars: `search:Laelia orquídea brasileira`. These pollute `list_sources` output and are hard to reference in `remove_by_source`.
 
