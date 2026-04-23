@@ -6,6 +6,24 @@ An MCP server that helps an AI assistant identify every Wikipedia article belong
 
 The server runs at `https://topic-builder.wikiedu.org/mcp` and exposes ~27 tools (start/reset a topic, reconnaissance, gathering, scoring, cleanup, export, feedback). Two MCP clients matter right now: **Claude** (stateful sessions) and **ChatGPT** (stateless — opens a new session per tool call).
 
+## How we're evolving this system
+
+Three user modes matter, and we optimize for depth:
+
+1. **Quick autonomous** — an AI builds a topic end-to-end without user involvement. Used in dogfood sessions to surface tool gaps.
+2. **Deep consultative** — a power user steers an AI through careful exploration, pushing for completeness. **This is the mode we optimize for** — serving it well makes mode 1 better too.
+3. **Guided** (end goal) — a published Claude web skill on claude.ai that a teacher or researcher can use to build a topic and download a CSV, without needing to know about MCP.
+
+Principles for changes:
+
+- **Completeness, not corpus size.** The goal is finding articles that belong to a topic, not inflating the count. A topic with 800 on-topic articles is better than one with 1200 mostly-on-topic articles.
+- **Measure improvements, don't just ship them.** The 5-topic benchmark ratchet (`docs/ratchet-plan.md`) is the proving ground. A tool change that doesn't pass the gate — precision + recall don't regress, ≥1 cost metric improves — doesn't land.
+- **Reach grows gold.** The aspirational axis isn't the gate — it's whether a run surfaces on-topic articles beyond current gold. Audited additions grow `gold.csv` and make future recall measurements honest.
+- **Centrality is AI judgment, not tool computation.** The server persists rubrics and scores; the AI drafts the rubric with the user and assigns scores. Don't build "compute score X from signal Y" features — lean into the AI + rubric.
+- **Evidence-based tool additions.** New tools emerge from observed failures in dogfood sessions (usually cross-validated across multiple sessions), not from speculation. Single-session signals go to the backlog's deferred tier.
+
+This shapes the backlog: items with multi-session evidence and measurable benchmark impact get prioritized; speculative items wait.
+
 ## Repository layout
 
 ```
@@ -88,6 +106,7 @@ Why both: **ChatGPT's MCP client caches tool schemas and doesn't reliably refres
 `server_instructions.md` is where we encode workflow decisions for the AI. Current principles, each derived from specific dogfood observations (see feedback memories):
 
 - **Scoping is iterative dialogue, not a one-shot clarification.** The AI confirms scope with the user in plain language *before* calling any gather tool. Don't accept a quick-pick answer and immediately start pulling categories.
+- **Centrality rubric is MANDATORY before any gather call.** The AI drafts a three-tier rubric (CENTRAL / PERIPHERAL / OUT) in its own voice via `set_topic_rubric`, anchored in the scope confirmation. Persisted across sessions.
 - **Don't ask for a target article count.** The tool's value is helping the user *discover* the natural size of a topic given their scope; a target makes the AI fit the result to an arbitrary number.
 - **Probe scope edges explicitly.** Biographies, `List of…` / `Outline of…` pages, "X in popular culture", geographic breakdowns, stubs. Ask about these — they're where topics unexpectedly explode or shrink.
 - **"Start fresh" means `start_topic(name, fresh=True)`.** Not bulk-remove-by-page.
