@@ -1,7 +1,7 @@
 # Shipped log
 
 Compact record of items shipped from the improvements plan.
-For the remaining open backlog, see `backlog.md`; for the full
+For the remaining open backlog, see `backlog/README.md`; for the full
 historical plan with Shape / Why / Open-questions per item, see
 the `docs/post-orchids-plan.md` snapshot in git history before
 2026-04-23's split.
@@ -106,3 +106,48 @@ the `docs/post-orchids-plan.md` snapshot in git history before
   **Shipped 2026-04-22.** Label-search wrapper around Wikidata's `wbsearchentities` action. Returns candidate entities (or properties — `entity_type="property"`) with QID/PID + label + description + aliases + match type. Single API call (~100ms), no SP…
 - **5.6** — Per-article Wikidata QID on the working list
   **Shipped 2026-04-22.** DB migration adds nullable `wikidata_qid TEXT` column to `articles` (new-DB schema + `init_db` migration hook for existing DBs). New `resolve_qids(limit=2000, time_budget_s=60)` MCP tool — lazy backfill via pageprops (1 call p…
+
+## Post-orchids dogfood chunks (2026-04-23)
+
+Emergent tool fixes from the 5-topic Codex dogfood arc, deployed
+iteratively via `deploy.sh` and batched into git commit `e19ea36`.
+
+- **Chunk 1 — `intitle:OR` silent-empty fix.** Cirrus returns 0 on compound `intitle:` clauses; `_split_intitle_or_query` splits and merges.
+- **Chunk 2 — `find_list_pages` widen + disambiguation filter.** Broader query, strips `(disambiguation)` hits.
+- **Chunk 3 — `harvest_list_page` caption-as-title fix.** Uses actual link target, not the display caption, as the article title.
+- **Chunk 4 — `wikidata_entities_by_property` sitelink_count + auto-trim.** Adds per-result sitelink count and trims when the response exceeds size cap.
+- **Chunk 5 — `wikidata_query` auto-truncate.** Oversized SPARQL responses truncated with a clear marker instead of blowing the transport.
+- **Chunk 6 — `fetch_descriptions` REST fallback on enwiki + deadline-aware.** Was non-en only; enwiki also has ~20% blank shortdescs on older biographies. Deadline lets large batches bail without locking titles as permanently empty.
+- **`harvest_navbox` primitive.** Extract article lists from navbox/infobox templates.
+- **`filter_articles` drops unresolved titles** instead of silently keeping them.
+- **Triangulation warning at export.** Flags low source-overlap when exporting.
+- **`find_wikiprojects` / `check_wikiproject` output shape harmonized.**
+
+Rubric system (same batch commit):
+
+- **`set_topic_rubric` / `get_topic_rubric` tools** + `centrality_rubric` column on `topics` (with migration). AI drafts a three-tier rubric (CENTRAL / PERIPHERAL / OUT) in its own voice at scoping time; persists across sessions.
+- **Rubric is MANDATORY before any gather call** — enforced in `server_instructions.md`.
+- **Shape → Wikidata property table** added to instructions (P166 awards, P31/P279*+P17 geographic, P101 discipline, P135 art movement).
+- **Main-article-as-list-page fallback pattern** documented for topics where `find_list_pages` returns nothing useful (awards, art movements, events).
+- **SPOT CHECK + GAP CHECK wrap-up discipline** added to instructions.
+
+## Benchmark ratchet infrastructure (2026-04-23)
+
+Scaffolding for measuring tool-change impact across 5 reference topics.
+Commit `8cc5e31`.
+
+- **5 benchmark scaffolds** — `apollo-11`, `crispr-gene-editing`, `african-american-stem`, `hispanic-latino-stem-us`, `orchids`. Each has `scope.md`, `rubric.txt`, `baseline.json`, human-written `audit_notes.md` (tracked) + local-only `gold.csv` / `audit.py` / `audit_summary.md` (gitignored — pair names with judgments).
+- **`scripts/bootstrap_benchmark.py`** — dumps baseline.json + gold.csv for a new benchmark topic from live server state.
+- **`scripts/benchmark_score.py`** — the scoreboard. Gate: precision + recall don't regress (1e-3 tolerance), ≥1 cost metric (wall_time / api_calls / tool_calls) strictly improves. Reach (audited on-topic reach beyond prior gold) tracked but non-gating.
+- **`.gitignore` hygiene** — tightened to allow `audit_notes.md` (was caught by overbroad `audit*.md` pattern).
+
+## Repo reorganization (2026-04-23)
+
+Commit `38f1cba`.
+
+- Split `docs/post-orchids-plan.md` (1001 lines) into `docs/shipped.md` + `docs/backlog/README.md`; add `docs/ratchet-plan.md` as the consolidated benchmark workflow entry point.
+- Move deferred plans into `docs/backlog/`: `auth.md`, `impact-visualizer.md`.
+- Rename `docs/operations-and-backlog.md` → `docs/operations.md`; drop redundant Backlog section.
+- Delete `docs/topic-strategies.md` (wisdom absorbed into `server_instructions.md`), `docs/development-narrative.md` (git history is the record), `skill.md` (prototype, superseded).
+- Move pre-MCP script one-offs into `scripts/legacy/`.
+- Dogfood tooling landed separately (commit `918f2ef`): `scripts/monitor_dogfood.sh`, `scripts/smoke.sh`, and `dogfood/task.md` autonomous-prompt tweaks.
