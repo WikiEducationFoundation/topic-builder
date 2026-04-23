@@ -60,6 +60,7 @@ One pass per plan `.X` item. Ship per item unless its Sequencing note groups it 
 5. **Update backlog + shipped log atomically.** Same commit updates:
    - `docs/backlog/README.md`: remove the shipped item (or change ☐ to ☑ briefly before pruning next cleanup).
    - `docs/shipped.md`: append a one-liner under the appropriate stage section.
+   - `mcp_server/landing.html`: if the item added, renamed, retired, or substantially changed a tool visible on the landing page's tool grid, update that entry in the same commit. See CLAUDE.md's "How to add a new tool" for the new-tool case; the reminder here covers the rename / retire / changed-behavior cases it doesn't. Pure internal changes (refactors, logging, bug fixes, instruction-only tweaks) don't need a landing update.
 6. **Deploy.** Run `bash mcp_server/deploy.sh`. The script itself self-checks: `set -euo pipefail` aborts on any failure; the last step runs `systemctl is-active` + `curl 127.0.0.1:8000/mcp/`. If those pass, the deploy is good.
 7. **Smoke-test.** Call a read-only MCP tool relevant to the change — `get_status`, `list_topics`, or whatever verifies the change is live. If the change modified a specific tool's behavior, call that tool.
 8. **Next item.**

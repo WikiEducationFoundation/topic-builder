@@ -99,6 +99,8 @@ Tools follow a consistent shape so stateless clients keep working and usage is l
 
 Why both: **ChatGPT's MCP client caches tool schemas and doesn't reliably refresh them on server deploys.** If a new parameter lives only in the schema, ChatGPT may never see it. The server instructions are re-sent on every session init, so information there reliably reaches the AI regardless of client caching. This is load-bearing — don't skip the instructions update for non-obvious tool behavior.
 
+**Also update `mcp_server/landing.html`.** The landing page at `https://topic-builder.wikiedu.org/` shows a human-readable tool surface (Reconnaissance / Gather / Review / Cleanup / Export sections). A new user-facing tool should get a one-line entry in the appropriate section so the page stays a reliable index of what's available. This step is easy to forget when the PR is server-side only — make it a reflex. `bash mcp_server/deploy_landing.sh` pushes just the HTML without restarting the service.
+
 ## Workflow principles
 
 Runtime workflow decisions (scoping discipline, rubric requirement,
