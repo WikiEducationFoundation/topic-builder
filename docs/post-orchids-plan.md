@@ -180,7 +180,10 @@ Updated playbook confirms WikiProjects are essentially en-only — which narrows
 
 ---
 
-### 1.10 ☐ `search_articles(within_category=...)` / scope-narrowed search `[NEW]`
+### 1.10 ☑ `search_articles(within_category=...)` / scope-narrowed search `[NEW]`
+
+**Shipped 2026-04-22.** Added `within_category: str | None` to both `search_articles` and `preview_search`. Appends `incategory:"<cat>"` to the query via a shared `_apply_within_category` helper. Single-level (CirrusSearch's `incategory:` does not walk subcats); documented in the docstring. Users who want union can pass `"A|B|C"`; users who want recursive should use `get_category_articles` instead. Response surfaces `effective_query` (the actual query sent to Wikipedia) and `within_category` so the AI can cite/audit scope.
+
 
 **What.** Optional filter param to scope full-text search to a category tree.
 

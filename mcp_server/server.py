@@ -1115,8 +1115,24 @@ def preview_harvest_list_page(title: str, sample_size: int = 50,
     }, indent=2, ensure_ascii=False)
 
 
+def _apply_within_category(query: str, within_category: str | None) -> str:
+    """Append an `incategory:"…"` operator when within_category is set.
+    CirrusSearch's incategory is single-level (not recursive); this keeps
+    the semantics close to a normal full-text search scoped to one
+    category's direct members. Use `get_category_articles` for recursive
+    walks or combine multiple with `within_category="A|B|C"` (CirrusSearch
+    treats `|` as OR in incategory expressions)."""
+    if not within_category:
+        return query
+    # Quote if the category contains spaces. Category titles use underscores
+    # in URLs but CirrusSearch accepts either form; quotes are safe.
+    return f'{query} incategory:"{within_category}"' if query else f'incategory:"{within_category}"'
+
+
 @mcp.tool()
-def search_articles(query: str, limit: int = 500, note: str = "",
+def search_articles(query: str, limit: int = 500,
+                    within_category: str | None = None,
+                    note: str = "",
                     topic: str | None = None, ctx: Context = None) -> str:
     """Search Wikipedia using CirrusSearch. Supports operators like intitle:,
     morelike:, hastemplate:, incategory:. Adds results to working list with source 'search'.
@@ -1124,6 +1140,12 @@ def search_articles(query: str, limit: int = 500, note: str = "",
     Args:
         query: Search query (e.g., 'intitle:"climate change"', 'morelike:Effects of climate change')
         limit: Maximum results (default 500)
+        within_category: If set, scope the search to articles that are direct
+                         members of this category. Single-level (not recursive)
+                         — CirrusSearch's `incategory:` doesn't walk subcats.
+                         For multiple categories (union), pass `"A|B|C"`.
+                         For a recursive sweep, use `get_category_articles`
+                         instead.
         note: Optional free-text observation for this call's log entry.
               Use for mid-flow reflection; empty by default.
         topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
@@ -1133,9 +1155,11 @@ def search_articles(query: str, limit: int = 500, note: str = "",
     if err:
         return err
 
+    scoped_query = _apply_within_category(query, within_category)
+
     params = {
         'list': 'search',
-        'srsearch': query,
+        'srsearch': scoped_query,
         'srnamespace': '0',
         'srlimit': str(min(limit, 500)),
         'srinfo': '',
@@ -1150,15 +1174,18 @@ def search_articles(query: str, limit: int = 500, note: str = "",
     # can target one bad pull without blanket-touching all search-added articles.
     # Use prefix_match=True on remove_by_source to clear a family of queries
     # (e.g. "search:morelike:" drops every similarity pull at once).
-    source_label = f"search:{query}"
+    source_label = f"search:{scoped_query}"
     batch = [(title, source_label, None) for title in results]
     added, updated = db.add_articles(topic_id, batch)
 
-    log_usage(ctx, "search_articles", {"query": query, "wiki": wiki},
+    log_usage(ctx, "search_articles",
+              {"query": query, "within_category": within_category, "wiki": wiki},
               f"{len(results)} results", start_time=_start, note=note)
     return json.dumps({
         'wiki': wiki,
         'query': query,
+        'within_category': within_category,
+        'effective_query': scoped_query,
         'source_label': source_label,
         'results_found': len(results),
         'new_articles_added': added,
@@ -1185,7 +1212,9 @@ def search_similar(seed_article: str, limit: int = 50, note: str = "",
 
 
 @mcp.tool()
-def preview_search(query: str, limit: int = 50, note: str = "",
+def preview_search(query: str, limit: int = 50,
+                   within_category: str | None = None,
+                   note: str = "",
                    topic: str | None = None, ctx: Context = None) -> str:
     """Run a Wikipedia search and return titles + short descriptions WITHOUT
     adding anything to the working list. Use this before committing broad
@@ -1200,6 +1229,9 @@ def preview_search(query: str, limit: int = 50, note: str = "",
         query: Same syntax as search_articles (intitle:, morelike:,
                incategory:, hastemplate:, etc.)
         limit: Max results to preview (default 50, capped at 100).
+        within_category: Same semantics as search_articles — scope results
+                         to direct members of this category. Single-level
+                         (not recursive); for union pass "A|B|C".
         note: Optional free-text observation for this call's log entry.
               Use for mid-flow reflection; empty by default.
         topic: Optional topic name. Pass if your client doesn't maintain an
@@ -1211,9 +1243,10 @@ def preview_search(query: str, limit: int = 50, note: str = "",
         return err
 
     limit = min(limit, 100)
+    scoped_query = _apply_within_category(query, within_category)
     params = {
         'list': 'search',
-        'srsearch': query,
+        'srsearch': scoped_query,
         'srnamespace': '0',
         'srlimit': str(limit),
         'srinfo': '',
@@ -1228,6 +1261,8 @@ def preview_search(query: str, limit: int = 50, note: str = "",
         return json.dumps({
             'wiki': wiki,
             'query': query,
+            'within_category': within_category,
+            'effective_query': scoped_query,
             'results_found': 0,
             'results': [],
         }, indent=2, ensure_ascii=False)
@@ -1247,12 +1282,16 @@ def preview_search(query: str, limit: int = 50, note: str = "",
             'already_in_topic': in_topic,
         })
 
-    log_usage(ctx, "preview_search", {"query": query, "limit": limit, "wiki": wiki},
+    log_usage(ctx, "preview_search",
+              {"query": query, "within_category": within_category,
+               "limit": limit, "wiki": wiki},
               f"{len(titles)} results ({new_count} new)",
               start_time=_start, note=note)
     return json.dumps({
         'wiki': wiki,
         'query': query,
+        'within_category': within_category,
+        'effective_query': scoped_query,
         'results_found': len(titles),
         'new_to_topic': new_count,
         'already_in_topic': len(titles) - new_count,
