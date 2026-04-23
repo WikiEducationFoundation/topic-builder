@@ -528,6 +528,8 @@
                 <div class="tool"><span class="tool-name">reset_topic</span><span class="tool-desc">Clear the current topic's working list and start over.</span></div>
                 <div class="tool"><span class="tool-name">get_status</span><span class="tool-desc">Article count, score distribution, source breakdown, per-topic cost aggregate.</span></div>
                 <div class="tool"><span class="tool-name">describe_topic</span><span class="tool-desc">Shape-of-corpus overview: title lengths, top first-words, suspicious patterns, source-shape stats.</span></div>
+                <div class="tool"><span class="tool-name">set_topic_rubric</span><span class="tool-desc">Persist a three-tier CENTRAL / PERIPHERAL / OUT rubric drafted after scope confirmation. Mandatory before any gather call.</span></div>
+                <div class="tool"><span class="tool-name">get_topic_rubric</span><span class="tool-desc">Re-read the current rubric mid-session or before export to sanity-check scope.</span></div>
                 <div class="tool"><span class="tool-name">survey_categories</span><span class="tool-desc">Survey Wikipedia's category tree without collecting yet.</span></div>
                 <div class="tool"><span class="tool-name">check_wikiproject</span><span class="tool-desc">Check whether a given WikiProject exists on Wikipedia.</span></div>
                 <div class="tool"><span class="tool-name">find_wikiprojects</span><span class="tool-desc">Discover enwiki WikiProjects by keyword &mdash; avoid giving up after one bad probe.</span></div>
@@ -541,13 +543,15 @@
                 <div class="tool"><span class="tool-name">preview_category_pull</span><span class="tool-desc">Dry-run of get_category_articles &mdash; counts + sample without committing.</span></div>
                 <div class="tool"><span class="tool-name">harvest_list_page</span><span class="tool-desc">Extract links from an Index or List page; default skips navboxes and references.</span></div>
                 <div class="tool"><span class="tool-name">preview_harvest_list_page</span><span class="tool-desc">Dry-run of harvest_list_page &mdash; inspect before committing.</span></div>
+                <div class="tool"><span class="tool-name">harvest_navbox</span><span class="tool-desc">Extract the article list from a navbox / infobox template &mdash; great for award, franchise, and program shapes.</span></div>
                 <div class="tool"><span class="tool-name">search_articles</span><span class="tool-desc">Search Wikipedia using CirrusSearch operators; supports within_category scoping.</span></div>
                 <div class="tool"><span class="tool-name">search_similar</span><span class="tool-desc">Find articles similar to a given one via morelike: &mdash; great for filling gaps.</span></div>
                 <div class="tool"><span class="tool-name">preview_search</span><span class="tool-desc">Run a search and return titles + descriptions without adding to the list.</span></div>
                 <div class="tool"><span class="tool-name">preview_similar</span><span class="tool-desc">Read-only morelike: preview &mdash; critical for noisy similarity seeds.</span></div>
                 <div class="tool"><span class="tool-name">browse_edges</span><span class="tool-desc">Follow outgoing links from confirmed articles.</span></div>
                 <div class="tool"><span class="tool-name">add_articles</span><span class="tool-desc">Manually add articles the AI identifies outside the gather tools.</span></div>
-                <div class="tool"><span class="tool-name">fetch_descriptions</span><span class="tool-desc">Pull Wikidata short descriptions, with REST-intro fallback for non-en wikis; auto-loops until done.</span></div>
+                <div class="tool"><span class="tool-name">fetch_descriptions</span><span class="tool-desc">Pull Wikidata short descriptions, with REST-intro fallback whenever the shortdesc is empty; auto-loops until done.</span></div>
+                <div class="tool"><span class="tool-name">fetch_article_leads</span><span class="tool-desc">Fetch the first N sentences of each article's body &mdash; use when a shortdesc looks thin or misleading and you need a richer read before scoring.</span></div>
                 <div class="tool"><span class="tool-name">score_by_extract</span><span class="tool-desc">Fetch article introductions so the AI can score centrality.</span></div>
                 <div class="tool"><span class="tool-name">set_scores</span><span class="tool-desc">Save centrality scores (1&ndash;10) for articles; 10 = canonical core, 1 = distant periphery.</span></div>
                 <div class="tool"><span class="tool-name">auto_score_by_keyword</span><span class="tool-desc">Bulk-score articles whose title or description contains any of the given keywords.</span></div>
