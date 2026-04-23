@@ -335,15 +335,18 @@ def list_rejections(topic_id):
              'rejected_at': r['rejected_at']} for r in rows]
 
 
-def get_rejected_titles(topic_id):
-    """Return the set of rejected titles for a topic. Cheap enough to call
-    once per gather-tool invocation."""
+def get_rejections_map(topic_id):
+    """Return a dict mapping rejected title -> reason for this topic.
+    Callers check `title in rejections_map` for the block, and can read
+    `rejections_map[title]` to surface the reason to the AI/user.
+    Cheap enough to call once per gather-tool invocation."""
     conn = _connect()
     rows = conn.execute(
-        "SELECT title FROM rejections WHERE topic_id = ?", (topic_id,)
+        "SELECT title, reason FROM rejections WHERE topic_id = ?",
+        (topic_id,),
     ).fetchall()
     conn.close()
-    return {r['title'] for r in rows}
+    return {r['title']: (r['reason'] or '') for r in rows}
 
 
 def get_status(topic_id):

@@ -852,9 +852,7 @@ def get_wikiproject_articles(project_name: str, max_articles: int = 50000,
         title = normalize_title(title)
         articles.append(title)
 
-    rejected_set = db.get_rejected_titles(topic_id)
-    rejected_skipped = sum(1 for t in articles if t in rejected_set)
-    articles = [t for t in articles if t not in rejected_set]
+    articles, rejected_skipped, rejected_sample = _apply_rejections(topic_id, articles)
 
     source_label = f"wikiproject:{project_name}"
     batch = [(title, source_label, None) for title in articles]
@@ -867,6 +865,7 @@ def get_wikiproject_articles(project_name: str, max_articles: int = 50000,
         'project': project_name,
         'articles_found': len(articles),
         'rejected_skipped': rejected_skipped,
+        'rejected_sample': rejected_sample,
         'new_articles_added': added,
         'existing_updated': updated,
         'source_label': source_label,
@@ -905,6 +904,38 @@ def _cost_report(start_time: float) -> dict:
             'query, or main_content_only=True.'
         )
     return report
+
+
+def _apply_rejections(topic_id: int, candidates,
+                      sample_limit: int = 10
+                      ) -> tuple[list[str], int, list[dict]]:
+    """Filter out titles that are in the topic's rejection list.
+
+    Returns (kept, rejected_count, rejected_sample):
+      * kept — input minus rejected, as a list, order preserved
+      * rejected_count — how many candidates were blocked
+      * rejected_sample — up to `sample_limit` {title, reason} entries
+        so the AI can see WHY those were blocked without a separate
+        list_rejections call.
+
+    Every gather tool funnels its candidate set through this helper so
+    the rejection surface is uniform (`rejected_skipped` + `rejected_sample`
+    in every response) and any future change lands in one place."""
+    rejections_map = db.get_rejections_map(topic_id)
+    if not rejections_map:
+        return list(candidates), 0, []
+    kept: list[str] = []
+    rejected_titles: list[str] = []
+    for t in candidates:
+        if t in rejections_map:
+            rejected_titles.append(t)
+        else:
+            kept.append(t)
+    sample = [
+        {'title': t, 'reason': rejections_map[t]}
+        for t in rejected_titles[:sample_limit]
+    ]
+    return kept, len(rejected_titles), sample
 
 
 def _walk_category_tree(category: str, depth: int, exclude_set: set[str],
@@ -1073,9 +1104,7 @@ def get_category_articles(category: str, depth: int = 3, exclude: list[str] | No
     articles, fully_crawled, pending, timed_out = _walk_category_tree(
         category, depth, exclude_set, max_articles, wiki, deadline=deadline)
 
-    rejected_set = db.get_rejected_titles(topic_id)
-    rejected_skipped = sum(1 for a in articles if a in rejected_set)
-    articles = {a for a in articles if a not in rejected_set}
+    articles, rejected_skipped, rejected_sample = _apply_rejections(topic_id, articles)
 
     source_label = f"category:{category}"
     batch = [(title, source_label, None) for title in articles]
@@ -1088,6 +1117,7 @@ def get_category_articles(category: str, depth: int = 3, exclude: list[str] | No
         'excluded': sorted(exclude_set),
         'articles_found': len(articles),
         'rejected_skipped': rejected_skipped,
+        'rejected_sample': rejected_sample,
         'categories_fully_crawled': len(fully_crawled),
         'categories_pending': len(pending),
         'new_articles_added': added,
@@ -1443,9 +1473,7 @@ def harvest_list_page(title: str, main_content_only: bool = True,
     links, used_html, timed_out = _fetch_list_page_links(
         title, wiki, main_content_only, deadline=deadline)
 
-    rejected_set = db.get_rejected_titles(topic_id)
-    rejected_skipped = sum(1 for t in links if t in rejected_set)
-    links = [t for t in links if t not in rejected_set]
+    links, rejected_skipped, rejected_sample = _apply_rejections(topic_id, links)
 
     source_label = f"list_page:{title}"
     batch = [(t, source_label, None) for t in links]
@@ -1463,6 +1491,7 @@ def harvest_list_page(title: str, main_content_only: bool = True,
         'main_content_only': used_html,
         'links_found': len(links),
         'rejected_skipped': rejected_skipped,
+        'rejected_sample': rejected_sample,
         'new_articles_added': added,
         'source_label': source_label,
         'total_in_working_list': db.get_status(topic_id)['total_articles'],
@@ -1657,9 +1686,7 @@ def search_articles(query: str, limit: int = 500,
     for item in api_query_all(params, 'search', max_items=limit, wiki=wiki):
         results.append(item['title'])
 
-    rejected_set = db.get_rejected_titles(topic_id)
-    rejected_skipped = sum(1 for t in results if t in rejected_set)
-    results = [t for t in results if t not in rejected_set]
+    results, rejected_skipped, rejected_sample = _apply_rejections(topic_id, results)
 
     # Tag with the specific query so remove_by_source / get_articles_by_source
     # can target one bad pull without blanket-touching all search-added
@@ -1683,6 +1710,7 @@ def search_articles(query: str, limit: int = 500,
         'source_label': source_label,
         'results_found': len(results),
         'rejected_skipped': rejected_skipped,
+        'rejected_sample': rejected_sample,
         'new_articles_added': added,
         'total_in_working_list': db.get_status(topic_id)['total_articles'],
         'note': f'To undo this pull, use: remove_by_source("{source_label}")',
@@ -2119,20 +2147,32 @@ def auto_score_by_description(
     note: str = "",
     topic: str | None = None, ctx: Context = None,
 ) -> str:
-    """Auto-score articles as 0 ("irrelevant") when their Wikidata short
-    description clearly disqualifies them. Use this after fetch_descriptions
-    to eliminate obvious noise without manual review, leaving a much smaller
-    ambiguous set to look at by hand.
+    """Reject articles whose Wikidata short description clearly disqualifies
+    them from the topic. Use this after fetch_descriptions to eliminate
+    obvious noise without manual review, leaving a much smaller ambiguous
+    set to look at by hand.
+
+    Rejected articles are removed from the working list AND added to the
+    topic's sticky rejection list (so future gathers — another
+    search_articles, a later category crawl — won't re-introduce them).
+    Each rejection records the specific marker that fired, so the audit
+    trail via list_rejections is self-describing.
+
+    (Under the centrality-gradient model: "in-topic" is a binary
+    decided by presence in the working list; this tool moves articles
+    out of the list based on description-marker evidence. It does NOT
+    set score=0 — score now means "topic centrality 1–10," and
+    disqualified articles are simply out, not scored-low.)
 
     TWO FAILURE MODES TO WATCH FOR:
 
     1. Implicit-axis leakage. If the topic is intersectional and one axis
        is often NOT stated in Wikipedia's shortdesc ("American
        neuroscientist" for a Mexican-American scientist, where the shortdesc
-       elides the ethnicity), requiring that axis cuts genuine topic members.
-       Prefer to only require axes that shortdescs reliably contain, or run
-       with disqualifying markers alone and keep axes off. The tool surfaces
-       a warning when axes dominate the cut.
+       elides the ethnicity), requiring that axis rejects genuine topic
+       members. Prefer to only require axes that shortdescs reliably
+       contain, or run with disqualifying markers alone and keep axes
+       off. The tool surfaces a warning when axes dominate the cut.
     2. Over-broad markers. A marker like "artist" matches "martial artist";
        "poll" matches "polling". Matching uses word boundaries to mitigate
        this but not every case is safe — review samples_by_reason on the
@@ -2140,12 +2180,12 @@ def auto_score_by_description(
 
     `required_any` is a dict of labeled axes. For each axis, the description
     must match at least one marker from that axis's list. An article missing
-    a match on ANY axis is scored 0. Axis labels appear in the breakdown so
+    a match on ANY axis is rejected. Axis labels appear in the breakdown so
     the AI can present cuts to the user in plain language (e.g. "450 had no
     profession marker" rather than "axis 2"). Pass an empty dict to rely on
     disqualifying markers alone (the safest mode).
 
-    `disqualifying` markers score the article 0 regardless of axis matches.
+    `disqualifying` markers reject the article regardless of axis matches.
     These tend to be the safest cutter for intersectional topics because
     off-scope professions (actor, musician, footballer, politician) are
     usually explicit in the shortdesc.
@@ -2154,10 +2194,10 @@ def auto_score_by_description(
     pre-normalized so hyphens become spaces ("Mexican-American chemist"
     matches marker "mexican american" or "american").
 
-    Only writes score=0 — never positives. "Has matching markers" is
+    Only rejects — never marks as in-topic. "Has matching markers" is
     necessary but not sufficient evidence of relevance (e.g. Brazilian-
     American physicists may or may not count depending on the user's
-    Latin/Hispanic scope). Positive scoring stays with humans.
+    Latin/Hispanic scope). Inclusion decisions stay with humans.
 
     Args:
         required_any: Labeled axes, each a list of markers. Example for
@@ -2168,21 +2208,21 @@ def auto_score_by_description(
                 "profession":  ["scientist","physicist","chemist","engineer",
                                 "mathematician","astronaut","inventor", ...],
               }
-        disqualifying: Markers that force score=0 regardless, e.g.
+        disqualifying: Markers that reject the article regardless, e.g.
                        ["actor","musician","footballer","politician"].
         overwrite_scored: If False (default), skip articles that already
-            have a score — don't clobber human judgment. If True, apply 0
-            even to articles with existing non-zero scores when they hit
-            disqualifying criteria.
+            have a centrality score — don't undo human judgment. If True,
+            reject even already-scored articles when disqualifying
+            criteria fire.
         dry_run: If True (default), preview counts + samples without
-                 applying. Set False to apply the score=0 writes.
+                 applying. Set False to apply the rejections.
         note: Optional free-text observation for this call's log entry.
               Use for mid-flow reflection; empty by default.
         topic: Optional topic name. Pass if your client doesn't maintain
                an MCP session.
 
-    Articles with NULL descriptions (not yet fetched) are skipped, not
-    auto-zeroed — run fetch_descriptions first to include them.
+    Articles with NULL descriptions (not yet fetched) are skipped —
+    run fetch_descriptions first to include them.
     """
     _start = _start_call()
     topic_id, wiki, err = _require_topic(ctx, topic)
@@ -2204,7 +2244,7 @@ def auto_score_by_description(
 
     all_articles = db.get_all_articles_dict(topic_id)
 
-    would_zero = []  # (title, desc, reason)
+    to_reject = []  # (title, desc, reason)
     survivors = []   # (title, desc)
     skipped_already_scored = 0
     skipped_no_description = 0
@@ -2227,11 +2267,11 @@ def auto_score_by_description(
                             if pat.search(desc_norm)), None)
         if disqual_hit:
             reason = f'disqualifying:{disqual_hit}'
-            would_zero.append((title, desc, reason))
+            to_reject.append((title, desc, reason))
             reason_counts[reason] += 1
             continue
 
-        # Axis check: missing a match on any axis → 0.
+        # Axis check: missing a match on any axis → reject.
         missing_axis = None
         for axis_name, patterns in axis_patterns.items():
             if not any(pat.search(desc_norm) for _, pat in patterns):
@@ -2239,24 +2279,34 @@ def auto_score_by_description(
                 break
         if missing_axis:
             reason = f'missing_{missing_axis}'
-            would_zero.append((title, desc, reason))
+            to_reject.append((title, desc, reason))
             reason_counts[reason] += 1
         else:
             survivors.append((title, desc))
 
-    if not dry_run and would_zero:
-        db.set_scores(topic_id, {t: 0 for t, _, _ in would_zero})
+    if not dry_run and to_reject:
+        # Group by reason to give each rejection its specific audit trail.
+        # reject_articles takes a single reason per call, so loop by reason.
+        reject_titles = [t for t, _, _ in to_reject]
+        by_reason: dict[str, list[str]] = {}
+        for t, _, r in to_reject:
+            by_reason.setdefault(r, []).append(t)
+        for reason, titles_for_reason in by_reason.items():
+            db.add_rejections(topic_id, titles_for_reason,
+                              f'auto_score_by_description: {reason}')
+        # also_remove=True behavior: drop from working list.
+        db.remove_articles(topic_id, reject_titles)
         log_usage(ctx, "auto_score_by_description",
                   {"axes": list(required_any.keys()),
                    "disqualifying_count": len(disqualifying)},
-                  f"scored 0: {len(would_zero)}",
+                  f"rejected: {len(to_reject)}",
                   start_time=_start, note=note)
     elif dry_run:
         log_usage(ctx, "auto_score_by_description",
                   {"axes": list(required_any.keys()),
                    "disqualifying_count": len(disqualifying),
                    "dry_run": True},
-                  f"would score 0: {len(would_zero)}",
+                  f"would reject: {len(to_reject)}",
                   start_time=_start, note=note)
 
     # Group samples by reason (up to 5 each) so the AI/user can spot patterns:
@@ -2265,24 +2315,28 @@ def auto_score_by_description(
     # the axis is probably cutting through legitimate members whose shortdesc
     # omits the demographic qualifier — a signal to drop that axis.
     samples_by_reason = {}
-    for t, d, r in would_zero:
+    for t, d, r in to_reject:
         samples_by_reason.setdefault(r, [])
         if len(samples_by_reason[r]) < 5:
             samples_by_reason[r].append({'title': t, 'description': d})
 
     result = {
         'dry_run': dry_run,
-        ('would_score_zero' if dry_run else 'scored_zero'): len(would_zero),
+        ('would_reject' if dry_run else 'rejected'): len(to_reject),
         'skipped_already_scored': skipped_already_scored,
         'skipped_no_description': skipped_no_description,
-        'survivors_unscored': len(survivors),
+        'survivors': len(survivors),
         'breakdown_by_reason': dict(reason_counts.most_common()),
         'samples_by_reason': samples_by_reason,
-        'sample_survivors_unscored': [
+        'sample_survivors': [
             {'title': t, 'description': d} for t, d in survivors[:10]
         ],
-        'note': ('Set dry_run=False to apply the score=0 writes.' if dry_run
-                 else 'Scores applied. Sample survivors above still need review.'),
+        'note': ('Set dry_run=False to apply the rejections. '
+                 'Rejected titles are added to the topic\'s sticky '
+                 'rejection list — future gathers will skip them.'
+                 if dry_run
+                 else 'Rejections applied. Sample survivors above still '
+                      'need review. Use list_rejections to audit.'),
     }
     if skipped_no_description:
         result['hint'] = (f'{skipped_no_description} articles have no '
@@ -2309,11 +2363,28 @@ def auto_score_by_description(
 def score_all_unscored(score: int = 8, note: str = "",
                        topic: str | None = None, ctx: Context = None) -> str:
     """Set a score for ALL currently unscored articles in one operation.
-    Use this after you've already pruned the list down to on-topic articles
-    and just need to mark everything as scored for export.
+
+    **Prefer leaving articles unscored** under the centrality-gradient
+    model: score means "how central to the topic" on a 1–10 scale, and
+    NULL is a valid state meaning "in-topic, centrality unevaluated."
+    A downstream consumer (Impact Visualizer) can filter on score when
+    it's set and treat NULL as "no centrality signal available."
+    Blanket-stamping every unscored article at one value collapses that
+    signal and is the failure mode the orchids dogfood flagged
+    (score_all_unscored(8) as a closing ceremony).
+
+    Legitimate uses:
+      * You've reviewed the entire working list, scored the articles you
+        care about, and want to deliberately mark the remainder at a
+        specific centrality (e.g. "everything else is periphery, 3").
+      * A pure-taxonomy topic where all members are equally central and
+        a flat score communicates that to IV intentionally.
+
+    If you just want to close out a session for export, call export_csv
+    directly — it no longer requires scoring.
 
     Args:
-        score: Score to assign to all unscored articles (default 8)
+        score: Score to assign to all unscored articles (default 8).
         note: Optional free-text observation for this call's log entry.
               Use for mid-flow reflection; empty by default.
         topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
@@ -2459,9 +2530,7 @@ def add_articles(titles: list[str], source: str = "manual", score: int | None = 
         return err
 
     normalized = [normalize_title(t) for t in titles]
-    rejected_set = db.get_rejected_titles(topic_id)
-    rejected_skipped = sum(1 for t in normalized if t in rejected_set)
-    keep = [t for t in normalized if t not in rejected_set]
+    keep, rejected_skipped, rejected_sample = _apply_rejections(topic_id, normalized)
     batch = [(t, source, score) for t in keep]
     added, updated = db.add_articles(topic_id, batch)
     total = db.get_status(topic_id)['total_articles']
@@ -2494,6 +2563,7 @@ def add_articles(titles: list[str], source: str = "manual", score: int | None = 
         'updated': updated,
         'source': source,
         'rejected_skipped': rejected_skipped,
+        'rejected_sample': rejected_sample,
         'total_in_working_list': total,
     }
     if hint:
