@@ -33,12 +33,24 @@ Per `benchmark_score.py`:
 
 - **Precision** vs. audited gold doesn't regress (within 0.001 tolerance)
 - **Recall** vs. audited gold doesn't regress (same tolerance)
-- **≥1 cost metric** improved — any of {tool_call_count, total_api_calls,
-  wall_time_s} must be strictly lower than baseline
+- **≥1 cost metric** improved — any of {tool_call_count, total_api_calls}
+  must be strictly lower than baseline
 
 A run that matches baseline exactly on every axis fails the gate (no
 improvement = no ratchet). That's intentional — we only promote when
 something genuinely got better.
+
+**Wall time is NOT in the gate.** Codex, Claude Code, and similar
+operator-approval harnesses prompt for permission on first use of each
+tool per session; the operator's click latency inflates wall-time
+without reflecting tool efficiency. The 2026-04-23 CRISPR ratchet run
+showed 1,783s wall vs. a 300s baseline — almost entirely permission-
+prompt overhead, not a real 6× slowdown. api_calls + tool_calls are the
+honest cost signals; wall-time is reported for visibility but doesn't
+count toward the gate. A subsequent Codex session that has already
+approved the full tool surface will have a cleaner wall-time number,
+but any new or rarely-used tool re-prompts, so the signal is never
+fully clean.
 
 ## "Reach" is the aspirational axis
 

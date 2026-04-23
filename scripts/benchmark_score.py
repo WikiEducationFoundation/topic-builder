@@ -10,10 +10,17 @@ Emits a scoreboard markdown report:
   - precision (run-corpus ∩ gold / run-corpus)
   - recall    (run-corpus ∩ gold / gold)
   - reach     (articles in run-corpus but not in gold — audit target)
-  - Δ tool_call_count, Δ total_api_calls, Δ wall_time_s vs. baseline
+  - Δ tool_call_count, Δ total_api_calls (gate cost metrics), and
+    Δ wall_time_s (informational only — see caveat below)
   - pass/fail gate per the ratchet rules:
       precision AND recall don't regress, AND
-      at least one cost metric improves
+      at least one of {tool_call_count, total_api_calls} improves
+
+Wall-time caveat: wall_time_s is NOT in the gate. Operator-approval
+flows (Codex prompts for permission on first use of each tool; Claude
+Code does similar) inflate wall-time without reflecting tool efficiency.
+We still report wall_time for visibility but don't let it satisfy the
+cost improvement requirement.
 
 Usage:
   python3 scripts/benchmark_score.py <benchmark-slug> <run-topic-name>
@@ -195,9 +202,12 @@ def score(slug, run_topic_name):
     tol = 1e-3
     prec_ok = precision >= baseline_prec - tol
     recall_ok = recall >= baseline_rec - tol
+    # Gate: wall_time_s is EXCLUDED — operator-approval flows (Codex
+    # first-tool-use prompts, etc.) inflate wall-time without reflecting
+    # tool efficiency. api_calls + tool_calls are the honest signals.
     cost_ok = any(
         d is not None and d < 0
-        for d in (wall_d, api_d, tool_d)
+        for d in (api_d, tool_d)
     )
     gate_pass = prec_ok and recall_ok and cost_ok
 
@@ -282,17 +292,22 @@ def format_scoreboard(s):
     L.append("")
     L.append("## Cost")
     L.append("")
-    L.append("| Metric | Run | Baseline | Δ |")
-    L.append("|---|---:|---:|---|")
+    L.append("Gate cost metrics are API calls + tool calls. Wall time is "
+             "reported informationally but does NOT count toward the gate — "
+             "operator-approval flows (Codex permission prompts on first "
+             "use of each tool) inflate it without reflecting tool efficiency.")
+    L.append("")
+    L.append("| Metric | Run | Baseline | Δ | In gate? |")
+    L.append("|---|---:|---:|---|---|")
     L.append(f"| Wall time (s) | {s['wall_time_s']} | "
              f"{s['wall_time_s'] - (s['wall_time_delta'] or 0)} | "
-             f"{fmt_delta(s['wall_time_delta'])} |")
+             f"{fmt_delta(s['wall_time_delta'])} | no (informational) |")
     L.append(f"| API calls | {s['total_api_calls']} | "
              f"{s['total_api_calls'] - (s['total_api_calls_delta'] or 0)} | "
-             f"{fmt_delta(s['total_api_calls_delta'])} |")
+             f"{fmt_delta(s['total_api_calls_delta'])} | yes |")
     L.append(f"| Tool calls | {s['tool_call_count']} | "
              f"{s['tool_call_count'] - (s['tool_call_count_delta'] or 0)} | "
-             f"{fmt_delta(s['tool_call_count_delta'])} |")
+             f"{fmt_delta(s['tool_call_count_delta'])} | yes |")
     L.append("")
 
     if s['gold_unaudited_count'] or s['gold_uncertain_count']:
