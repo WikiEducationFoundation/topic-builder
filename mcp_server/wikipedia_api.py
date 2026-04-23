@@ -217,6 +217,139 @@ def fetch_descriptions_with_fallback(titles, wiki='en'):
     return out
 
 
+# ── Wikidata SPARQL ────────────────────────────────────────────────────────
+#
+# query.wikidata.org has stricter rate limits than the per-wiki action API:
+# a 60s per-query hard cap, 5 req/s soft throttle, and a strict User-Agent
+# requirement. An in-memory TTL cache avoids re-hitting the endpoint for
+# repeated helper calls inside a session. The cache is process-local — it
+# resets on deploys, which is fine: miss cost is one query, not catastrophic.
+
+WIKIDATA_SPARQL_ENDPOINT = "https://query.wikidata.org/sparql"
+_wikidata_cache: dict[str, tuple[float, list[dict]]] = {}
+_WIKIDATA_CACHE_TTL_S = 3600  # 1 hour
+
+
+def _simplify_sparql_binding(binding: dict) -> dict:
+    """Flatten a SPARQL binding row to {var_name: value_str}.
+
+    Wikidata returns bindings as {var: {type, value, ...}}. We drop the
+    type metadata and simplify entity URIs to bare QIDs — the AI cares
+    about `Q25308`, not `http://www.wikidata.org/entity/Q25308`. Same
+    for property URIs (`P171` vs the full URI). Literal values pass
+    through untouched."""
+    row = {}
+    for var, cell in binding.items():
+        val = cell.get('value', '')
+        if cell.get('type') == 'uri':
+            if val.startswith('http://www.wikidata.org/entity/'):
+                val = val[len('http://www.wikidata.org/entity/'):]
+            elif val.startswith('http://www.wikidata.org/prop/'):
+                # Property URIs come in several flavors; last segment is the PID.
+                val = val.rsplit('/', 1)[-1]
+        row[var] = val
+    return row
+
+
+def wikidata_sparql(query: str, timeout: int = 60,
+                   use_cache: bool = True) -> list[dict]:
+    """Run a SPARQL query against query.wikidata.org.
+
+    Returns a list of simplified binding dicts — each dict maps SELECT
+    variable name to string value, with entity URIs reduced to bare QIDs.
+    Reuses `api_get`, so per-call counters + rate-limit backoff + User-Agent
+    handling come for free.
+
+    `use_cache=True` (default) hits an in-memory 1-hour TTL cache keyed
+    by the query text. Pass False for diagnostics or when you know data
+    has changed."""
+    import hashlib
+    cache_key = hashlib.sha256(query.encode('utf-8')).hexdigest()
+    if use_cache:
+        cached = _wikidata_cache.get(cache_key)
+        if cached and time.monotonic() - cached[0] < _WIKIDATA_CACHE_TTL_S:
+            return cached[1]
+
+    params = {'query': query, 'format': 'json'}
+    data = api_get(WIKIDATA_SPARQL_ENDPOINT, params, timeout=timeout)
+    if not isinstance(data, dict):
+        return []
+    bindings = (data.get('results', {}) or {}).get('bindings', []) or []
+    rows = [_simplify_sparql_binding(b) for b in bindings]
+
+    if use_cache:
+        _wikidata_cache[cache_key] = (time.monotonic(), rows)
+    return rows
+
+
+def wikidata_entities_by_property(property_id: str, value_qid: str,
+                                  wiki: str = 'en',
+                                  limit: int = 500) -> list[dict]:
+    """Common-case helper: find Wikidata entities whose `property_id` links
+    to `value_qid`, returning QID + label + per-wiki sitelink title +
+    description.
+
+    Both arguments are bare IDs — `"P171"` (parent taxon) + `"Q25308"`
+    (Orchidaceae) returns every entity whose parent taxon is Orchidaceae.
+    Result row shape:
+        {"qid": "Q...",
+         "label": "...",           # label in `wiki`'s language
+         "title": "...",           # sitelink title on <wiki>.wikipedia.org,
+                                   # empty if no sitelink exists
+         "description": "..."}     # Wikidata description, empty if none
+
+    Titles come with underscores replaced by spaces so they match the
+    working-list format.
+
+    Use this when you want "give me all the X whose Y is Z." For
+    compound queries or anything with multiple properties, drop down
+    to raw `wikidata_sparql`."""
+    # Be conservative: accept Q-id values only. Literal-valued properties
+    # like P50 (author) can still go through raw SPARQL — document in the
+    # MCP tool layer.
+    if not property_id.startswith('P') or not value_qid.startswith('Q'):
+        raise ValueError(
+            "property_id must start with 'P' (e.g. 'P171') and value_qid "
+            "must start with 'Q' (e.g. 'Q25308'). For literal-valued "
+            "queries, use wikidata_sparql directly."
+        )
+    limit = max(1, min(int(limit), 10000))
+    sparql = f"""
+    SELECT ?item ?itemLabel ?article ?description WHERE {{
+      ?item wdt:{property_id} wd:{value_qid} .
+      OPTIONAL {{
+        ?article schema:about ?item ;
+                 schema:isPartOf <https://{wiki}.wikipedia.org/> .
+      }}
+      OPTIONAL {{
+        ?item schema:description ?description .
+        FILTER(LANG(?description) = "{wiki}")
+      }}
+      SERVICE wikibase:label {{ bd:serviceParam wikibase:language "{wiki}". }}
+    }}
+    LIMIT {limit}
+    """
+    rows = wikidata_sparql(sparql)
+    title_prefix = f"https://{wiki}.wikipedia.org/wiki/"
+    out = []
+    for r in rows:
+        article_url = r.get('article', '')
+        title = ''
+        if article_url.startswith(title_prefix):
+            title = urllib.parse.unquote(
+                article_url[len(title_prefix):]).replace('_', ' ')
+        out.append({
+            'qid': r.get('item', ''),
+            'label': r.get('itemLabel', ''),
+            'title': title,
+            'description': r.get('description', ''),
+        })
+    return out
+
+
+# ── Wikipedia description helpers ─────────────────────────────────────────
+
+
 def fetch_short_descriptions(titles, wiki='en'):
     """Fetch Wikidata short descriptions for a list of article titles.
 

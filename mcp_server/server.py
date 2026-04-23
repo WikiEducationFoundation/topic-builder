@@ -24,6 +24,8 @@ from wikipedia_api import (
     get_rate_limit_stats, fetch_short_descriptions,
     fetch_descriptions_with_fallback,
     reset_call_counters, get_call_counters,
+    wikidata_sparql as _wikidata_sparql,
+    wikidata_entities_by_property as _wikidata_entities_by_property,
 )
 import db
 
@@ -812,6 +814,138 @@ def find_list_pages(subject: str, wiki: str | None = None,
     log_usage(ctx, "find_list_pages", {"subject": subject, "wiki": wiki},
               f"{len(pages)} pages", start_time=_start, note=note)
     return json.dumps(result, indent=2, ensure_ascii=False)
+
+
+# ── Wikidata ──────────────────────────────────────────────────────────────
+
+@mcp.tool()
+def wikidata_entities_by_property(property_id: str, value_qid: str,
+                                  wiki: str | None = None,
+                                  limit: int = 500,
+                                  note: str = "",
+                                  topic: str | None = None,
+                                  ctx: Context = None) -> str:
+    """Find Wikidata entities whose `property_id` links to `value_qid`, and
+    return each one's QID, label, sitelink title in the requested wiki,
+    and Wikidata description. Common use: "all entities whose parent taxon
+    is Orchidaceae" = `wikidata_entities_by_property("P171", "Q25308")`.
+
+    This is canonical ground truth that categories + search can miss. It
+    is particularly good for:
+      * Biological taxonomy: `P171` (parent taxon) + a genus/family QID
+      * Field-of-work / occupation joins: `P101` (field of work) +
+        a discipline QID for biographies a WikiProject missed
+      * Class membership: `P31` (instance of) + class QID for enumerating
+        members of a well-defined class
+
+    Does NOT add anything to the working list — review the result, then
+    call add_articles with the titles you want. Articles without a
+    sitelink on the requested wiki come back with empty `title`; those
+    are typically translation candidates (see `cross_wiki_diff` when it
+    ships). Run fetch_descriptions after committing to get Wikipedia
+    descriptions; the Wikidata description here is separate.
+
+    Args:
+        property_id: Wikidata property (e.g. "P171" for parent taxon).
+                     Must start with "P".
+        value_qid:   Wikidata entity (e.g. "Q25308" for Orchidaceae).
+                     Must start with "Q". For literal-valued properties,
+                     use wikidata_sparql directly.
+        wiki:        Wikipedia language code to resolve sitelinks + labels
+                     + description against. Defaults to the active topic's
+                     wiki, or "en".
+        limit:       Max rows (default 500, hard-capped at 10000).
+        note:        Optional free-text observation for this call's log
+                     entry. Use for mid-flow reflection; empty by default.
+        topic:       Optional topic name to infer the wiki from.
+    """
+    _start = _start_call()
+    wiki = _resolve_wiki(ctx, wiki, topic)
+    try:
+        rows = _wikidata_entities_by_property(
+            property_id, value_qid, wiki=wiki, limit=limit)
+    except ValueError as e:
+        return json.dumps({'error': str(e)}, indent=2)
+    except Exception as e:
+        return json.dumps({
+            'error': f'Wikidata query failed: {type(e).__name__}: {e}',
+            'hint': 'Check property/value QIDs are valid, or drop to '
+                    'wikidata_sparql for a diagnostic query.',
+        }, indent=2)
+
+    with_title = sum(1 for r in rows if r.get('title'))
+    log_usage(ctx, "wikidata_entities_by_property",
+              {"property": property_id, "value": value_qid,
+               "wiki": wiki, "limit": limit},
+              f"{len(rows)} entities, {with_title} on {wiki}",
+              start_time=_start, note=note)
+    return json.dumps({
+        'wiki': wiki,
+        'property': property_id,
+        'value': value_qid,
+        'total': len(rows),
+        'entities_with_sitelink': with_title,
+        'entities_without_sitelink': len(rows) - with_title,
+        'entities': rows,
+        'note': (
+            f'Review the results. To commit the ones with a {wiki}wiki '
+            f'sitelink as topic members, extract their titles and call '
+            f'add_articles(titles=[...], source="wikidata:{property_id}={value_qid}"). '
+            f'Entities without a sitelink have no article on {wiki}.wikipedia.org '
+            f'yet — they are typically translation candidates, not add candidates.'
+        ),
+    }, indent=2, ensure_ascii=False)
+
+
+@mcp.tool()
+def wikidata_query(sparql: str, note: str = "",
+                   topic: str | None = None, ctx: Context = None) -> str:
+    """Run a raw SPARQL query against query.wikidata.org. Use this only
+    when `wikidata_entities_by_property` can't express what you need —
+    compound joins, property paths, aggregates, literal-valued
+    properties, multi-hop traversals.
+
+    Returns simplified binding rows: each row is a dict keyed by SELECT
+    variable name. Entity URIs are reduced to bare QIDs (`Q25308` not
+    the full URL) so the AI can use them directly.
+
+    Cost: Wikidata has a 60s per-query hard cap and stricter rate limits
+    than per-wiki api.php. Expensive queries block future calls until
+    the server relaxes. A 1-hour in-process cache deduplicates repeated
+    queries within a session.
+
+    Good hygiene:
+      * Always include a LIMIT. Unlimited queries on broad classes
+        (e.g. every P31=Q5 person) will time out.
+      * Prefer labels via `SERVICE wikibase:label { bd:serviceParam
+        wikibase:language "en,<wiki>". }` — cheap.
+      * For entity lookups, prefer the `wdt:` predicate (truthy,
+        single-value) over `p:` + `ps:` (statement reification).
+
+    Args:
+        sparql: SPARQL query text (SELECT / ASK / CONSTRUCT all work,
+                SELECT most useful here).
+        note:   Optional free-text observation for this call's log entry.
+        topic:  Optional topic name (used only for log context; the
+                query itself is wiki-agnostic).
+    """
+    _start = _start_call()
+    try:
+        rows = _wikidata_sparql(sparql)
+    except Exception as e:
+        return json.dumps({
+            'error': f'SPARQL query failed: {type(e).__name__}: {e}',
+            'hint': 'Verify syntax at query.wikidata.org. Expensive or '
+                    'malformed queries are rejected.',
+        }, indent=2)
+    log_usage(ctx, "wikidata_query",
+              {"query_length": len(sparql)},
+              f"{len(rows)} rows",
+              start_time=_start, note=note)
+    return json.dumps({
+        'rows': rows,
+        'total': len(rows),
+    }, indent=2, ensure_ascii=False)
 
 
 # ── Gathering tools ───────────────────────────────────────────────────────
