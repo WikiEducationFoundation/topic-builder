@@ -116,6 +116,7 @@ Roughly prioritized. Items live here until they ship or get explicitly dropped.
 
 ### Recently shipped
 
+- **2026-04-22** — Stage 2 instructions bundle (`[plan 2.2, 2.3, 2.4, 2.5, 2.6, 2.7]`). server_instructions.md gained: 14-step PIPELINE + strengthened check_wikiproject step, COMMON TASK → TOOL table (12 rows, includes placeholders for unbuilt Stage 5 tools), CROSS-WIKI WORKFLOW section with per-wiki structural fingerprints, NOISE TAXONOMY bullet, COST AWARENESS bullet, REFLECTION bullet (when to drop `note=` vs call `submit_feedback`). Grew instructions from 249 → 466 lines.
 - **2026-04-22** — sticky rejection list (`[plan 1.22]`). New `rejections` table + tools: `reject_articles(titles, reason, also_remove=True)`, `list_rejections()`, `unreject_articles(titles)`. All gather tools (category, list_page, search, wikiproject, add_articles) filter out rejected titles before adding and report `rejected_skipped`. Topic-scoped, persists across sessions.
 - **2026-04-22** — `export_csv(enriched=True)` (`[plan 1.16]`). Default stays 2-column IV-compatible format. Enriched mode emits 5 columns + header: title, description, score, source_labels (pipe-separated), first_added_at. Filename gets `-enriched` suffix so both variants coexist.
 - **2026-04-22** — `describe_topic` diagnostic (`[plan 1.21]`). In-process shape-of-corpus overview: title-length distribution, top first words (spots dominant genera), suspicious-pattern counts, source-shape stats. No Wikipedia API calls. Levenshtein clustering skipped for now (no stdlib support).

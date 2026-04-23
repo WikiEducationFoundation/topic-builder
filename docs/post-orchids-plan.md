@@ -489,7 +489,10 @@ Name the pattern in three places so the next AI does it deliberately:
 
 Three reinforcement points (instruction + docstring + in-band hint) because the first Q&A round showed the AI itself recommended exactly this: "I'd suggest for the docstring of `add_articles`: explicitly recommend the `manual:<context>` convention. The tool could even nudge this — on the second `add_articles(source='manual', ...)` call in a session, warn..."
 
-### 2.2 ☐ Noise taxonomy into instructions `[NEW]`
+### 2.2 ☑ Noise taxonomy into instructions `[NEW]`
+
+**Shipped 2026-04-22 (Stage 2 bundle).** Added `NOISE TAXONOMY` bullet covering category crawls / genus-species lists / geographic lists / biography lists / `search_similar` as seed-topology-function / `browse_edges`. All five patterns documented with concrete numbers and exemplars from the orchids session.
+
 
 Port the playbook's hard-won pattern recognition into server_instructions.md:
 - Category crawls: usually clean (editor discipline is decent)
@@ -504,7 +507,10 @@ Port the playbook's hard-won pattern recognition into server_instructions.md:
 
 Orchids session proved all of these the hard way. Next AI shouldn't have to.
 
-### 2.3 ☐ Cross-wiki guidance `[NEW]`
+### 2.3 ☑ Cross-wiki guidance `[NEW]`
+
+**Shipped 2026-04-22 (Stage 2 bundle).** `CROSS-WIKI WORKFLOW` section added after `WIKI SELECTION`. Covers the "completeness-check" framing (21 missed enwiki articles only reachable via non-en walk-back), the six-step workflow pattern, the ~1–2h-per-wiki budget, and the four per-wiki structural fingerprints verbatim (zh/ja/pt/nl). Explicit note that reconciliation is manual until `cross_wiki_diff` (5.2) ships.
+
 
 The second orchids session demonstrated that cross-wiki work isn't just duplication prevention — it's a **completeness-check mechanism for the primary wiki**. Eight sessions of English-language discovery still missed 21 enwiki articles (including João Barbosa Rodrigues, father of Brazilian orchidology, and Qu Yuan, whose Li Sao established orchid symbolism in the Chinese canon). They're only reachable by following culturally-native chains of association from the orchid concept in that language.
 
@@ -532,7 +538,10 @@ Bake this framing and the concrete workflow into instructions:
 
 **Current limitation.** Reconciliation is manual today — per-article preview_search against the primary wiki. Collapses to one call once `cross_wiki_diff` (5.2) ships.
 
-### 2.4 ☐ Pipeline order from playbook `[NEW]`
+### 2.4 ☑ Pipeline order from playbook `[NEW]`
+
+**Shipped 2026-04-22 (Stage 2 bundle).** Replaced the terse 6-step list at the top of instructions with a 14-step opinionated pipeline. Strengthened the WikiProject step explicitly: added a standalone paragraph after the pipeline telling the AI NOT to skip on a first-probe negative, and calling out `find_wikiprojects` as the discovery primitive.
+
 
 The playbook's "recommended pipeline order" (survey → wikiproject → category → filter → fetch_descriptions → list-pages → targeted search → morelike → browse_edges → cleanup → score → export) is solid. Migrate to instructions. Current workflow doc is looser.
 
@@ -542,7 +551,10 @@ The playbook's "recommended pipeline order" (survey → wikiproject → category
 
 Then decide based on actual yield, not assumption.
 
-### 2.5 ☐ Cost-awareness guidance `[NEW]`
+### 2.5 ☑ Cost-awareness guidance `[NEW]`
+
+**Shipped 2026-04-22 (Stage 2 bundle).** `COST AWARENESS` bullet added, anchored on 1.11's `cost_warning` field and 1.12's per-topic cost summary. All five plan bullets ported; last one "good citizen of Wikimedia infrastructure" stays verbatim.
+
 
 Once 1.11 surfaces cost estimates to the AI, instructions should teach the AI to reason about them rather than ignore the warnings.
 
@@ -555,7 +567,10 @@ Specific bullets to add:
 
 This used to be tribal knowledge the AI re-derived every build. With 1.1 + 1.11 + 1.12 in place, the AI has real numbers to reason from.
 
-### 2.6 ☐ Event-triggered reflection guidance `[NEW]`
+### 2.6 ☑ Event-triggered reflection guidance `[NEW]`
+
+**Shipped 2026-04-22 (Stage 2 bundle).** `REFLECTION` bullet added with two subsections: "Drop a `note=` when" (4 triggers including timed_out, morelike-gone-sideways, unexpected noise, docstring gap) and "Call submit_feedback when" (4 triggers including first export_csv, major cleanup, resume nudge, wrap-up). Explicit framing: reserve notes for genuine surprise, not routine narration. Pairs with 1.1C (`note=`) and 1.18 (resume nudge).
+
 
 Pure instructions update. Nominates specific moments when the AI should capture an observation — either via the lightweight `note=` parameter on a tool call (1.1 part C) or via a proper `submit_feedback` call.
 
@@ -579,7 +594,10 @@ Pure instructions update. Nominates specific moments when the AI should capture 
 
 Pairs with 1.1 part C (the `note=` field itself) and 1.18 (resume-time nudge).
 
-### 2.7 ☐ "Common task → tool" mapping in instructions `[NEW]`
+### 2.7 ☑ "Common task → tool" mapping in instructions `[NEW]`
+
+**Shipped 2026-04-22 (Stage 2 bundle).** `COMMON TASK → TOOL` table added near the top (right after PIPELINE). 12 rows — covers the shipped tools plus three placeholders for Stage 5's `petscan_*`, `cross_wiki_diff`, `completeness_check` with italic "not yet built" markers and the closest-current-primitive for each. Explicit header note tells the AI to surface the not-yet-built state rather than fake the functionality.
+
 
 A short lookup table of user-verbalized intents to the right tool. Instructions-only.
 
