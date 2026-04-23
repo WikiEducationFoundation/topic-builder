@@ -24,13 +24,8 @@ Add new items here as signals come in; promote items to
 
 ## Tier 1 — small, high-leverage
 
-### ☐ `fetch_article_leads` primitive `[NEW — 2026-04-23 AA-STEM benchmark audit]`
-
-**What.** Pull the first 1–3 sentences of each article's body via the REST `/page/summary` endpoint, distinct from `fetch_descriptions`.
-
-**Why.** Wikidata shortdescs routinely mislead the AI about a subject's notability. Multiple examples observed on a 20-article sample during the AA-STEM benchmark audit: **Gloria Chisum** ("American academic" → actually applied-STEM researcher on pilot-vision eyewear), **William Hallett Greene** (shortdesc truncated → actually first Black meteorologist + Signal Corps station chief), **Meredith Gourdine** ("American long jumper" → also a plasma physicist and engineer). The enwiki REST fallback shipped in Chunk 6 only fires when Wikidata is empty; when Wikidata has *some* description, the richer article lead never reaches the AI.
-
-**Shape.** Would be used by (a) the AI during rubric-driven review / spot-check when shortdesc is ambiguous, (b) an eventual `verify_claim` tool (Tier 2 spot-check cluster) as the context input, and (c) external audits (benchmark gold-building) to reduce WebFetch-style round-trips. Could ship alongside or as an opt-in flag on `fetch_descriptions`.
+*(Drained 2026-04-23 — all three items shipped as the Tier 1 ratchet bundle.
+Run the 5-benchmark ratchet next; new Tier 1 items land here as signals come in.)*
 
 ---
 

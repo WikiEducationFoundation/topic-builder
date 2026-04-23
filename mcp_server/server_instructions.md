@@ -80,6 +80,7 @@ closest current primitive.
 | "articles in both category:X AND wikiproject:Y" (confidence core) | `get_articles(sources_all=["category:X", "wikiproject:Y"])` |
 | "block this title from coming back" | `reject_articles(titles, reason, also_remove=True)` — sticky across future gathers |
 | "shape of my corpus" / "what's weird in my topic?" | `describe_topic` — title stats, top first-words, suspicious patterns |
+| "this shortdesc looks misleading / too thin to judge" | `fetch_article_leads(titles=[...], sentences=3)` — fetches the first N sentences of each article's body. Non-persistent; use for disambiguation before scoring or rejecting. |
 | "topic build is saved? can I come back?" | `resume_topic(name)` |
 | "compound category query" / "intersection of categories" | *`petscan_*` not yet built — closest current: two `get_category_articles` calls plus `get_articles(sources_all=...)` for intersection* |
 | "cross-wiki comparison" / "what's on zhwiki but not enwiki" | *`cross_wiki_diff` not yet built — manual flow: parallel topic on the other wiki + per-article `preview_search` walk-back* |
@@ -434,8 +435,7 @@ properties are usually the join axis for that topic shape.
       whose notability is as an applied-STEM researcher on pilot-vision
       eyewear) still reach you. When a shortdesc looks too thin to
       justify the centrality you're about to assign, cross-check with
-      `preview_search` or `fetch_article_leads` (if available) before
-      scoring.
+      `preview_search` or `fetch_article_leads` before scoring.
     - **Large SPARQL / `wikidata_entities_by_property` results are
       auto-truncated** at the transport layer. A truncated response
       carries a marker — if you see it, your query was too broad. Add

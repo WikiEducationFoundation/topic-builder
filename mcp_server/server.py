@@ -23,6 +23,7 @@ from wikipedia_api import (
     api_query, api_query_all, api_get, normalize_title, wiki_api_url,
     get_rate_limit_stats, fetch_short_descriptions,
     fetch_descriptions_with_fallback, fetch_wikidata_qids,
+    fetch_article_leads as _fetch_article_leads,
     reset_call_counters, get_call_counters,
     wikidata_sparql as _wikidata_sparql,
     wikidata_entities_by_property as _wikidata_entities_by_property,
@@ -2773,6 +2774,72 @@ def fetch_descriptions(limit: int = 2000, time_budget_s: int = 60,
         'remaining_undescribed': remaining,
         'time_budget_exhausted': hit_budget,
         'note': tail,
+    }, indent=2, ensure_ascii=False)
+
+
+@mcp.tool()
+def fetch_article_leads(titles: list[str], sentences: int = 3,
+                        wiki: str | None = None, note: str = "",
+                        topic: str | None = None, ctx: Context = None) -> str:
+    """Fetch the first N sentences of each article's body (the article's
+    *lead*, not the Wikidata shortdesc). Use when a shortdesc looks thin
+    or misleading and you need a richer read before scoring, rejecting,
+    or accepting a candidate.
+
+    Distinct from `fetch_descriptions`: that tool bulk-fills the persistent
+    description column with Wikidata short-descs (plus an enwiki REST
+    fallback when they're empty). This tool is a targeted, non-persistent
+    probe against the article text itself, for disambiguating ambiguous
+    titles. Typical cases — all observed during the 2026-04-23 AA-STEM
+    audit — where shortdesc lies and the lead is needed:
+      - "American academic" → Gloria Chisum, applied-STEM researcher on
+        pilot-vision eyewear.
+      - Shortdesc truncated mid-title → William Hallett Greene, first
+        Black meteorologist + Signal Corps station chief.
+      - "American long jumper" → Meredith Gourdine, who was also a plasma
+        physicist and engineer.
+
+    Returns a dict title -> lead text. Empty string for missing pages.
+    Batched internally (20 titles per API call — MediaWiki's `exlimit`
+    cap when `exsentences` is in use); a 60-title call is 3 round-trips.
+
+    Args:
+        titles: List of article titles to fetch leads for. No backlog
+                drain — you pass exactly the titles you want.
+        sentences: How many sentences of the lead to return per title.
+                   Default 3. Capped at 5 (MediaWiki's `exsentences`
+                   accepts more but 5 is the useful ceiling for
+                   disambiguation; beyond that, use `score_by_extract`
+                   or read the article directly).
+        wiki: Override the wiki. Defaults to the current topic's wiki
+              (from the session or from `topic=`), falling back to 'en'.
+        note: Optional free-text observation for this call's log entry.
+              Use for mid-flow reflection; empty by default.
+        topic: Optional topic name. Used only to resolve the wiki when
+               `wiki` is not set; leads are not attached to topic state.
+    """
+    _start = _start_call()
+    if not isinstance(titles, list) or not titles:
+        return "Provide a non-empty list of titles."
+    resolved_wiki = _resolve_wiki(ctx, wiki, topic)
+    capped_sentences = max(1, min(5, int(sentences)))
+
+    leads = _fetch_article_leads(titles, wiki=resolved_wiki,
+                                 sentences=capped_sentences)
+    non_empty = sum(1 for v in leads.values() if v)
+
+    log_usage(ctx, "fetch_article_leads",
+              {"titles_count": len(titles), "sentences": capped_sentences,
+               "wiki": resolved_wiki},
+              f"{non_empty}/{len(titles)} non-empty",
+              start_time=_start, note=note)
+
+    return json.dumps({
+        'wiki': resolved_wiki,
+        'sentences': capped_sentences,
+        'count': len(leads),
+        'non_empty': non_empty,
+        'leads': leads,
     }, indent=2, ensure_ascii=False)
 
 

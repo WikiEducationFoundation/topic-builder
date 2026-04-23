@@ -241,6 +241,58 @@ def fetch_descriptions_with_fallback(titles, wiki='en', deadline=None):
     return out
 
 
+def fetch_article_leads(titles, wiki='en', sentences=3):
+    """Fetch the lead (first N sentences of the article body) for each title
+    via MediaWiki's `prop=extracts&exintro=1&exsentences=N&explaintext=1`.
+
+    Returns dict title -> lead text (empty string if the page is missing or
+    the extract comes back blank). Unlike `fetch_short_descriptions`
+    (Wikidata pageprops) or `fetch_rest_intros` (REST summary, one-round-
+    trip per title), this hits the action API with `exlimit=20` and
+    follows normalizations + redirects so the caller's title casing /
+    underscore quirks map to the canonical page. Use for disambiguating
+    ambiguous shortdescs, where the Wikidata one-liner lies about the
+    subject's notability (e.g. "American academic" for an applied-STEM
+    researcher, "American long jumper" for someone who is also a plasma
+    physicist). `sentences` is capped at 5.
+    """
+    sentences = max(1, min(5, int(sentences)))
+    out = {t: '' for t in titles}
+    for i in range(0, len(titles), 20):
+        batch = titles[i:i + 20]
+        data = api_query({
+            'titles': '|'.join(batch),
+            'prop': 'extracts',
+            'exintro': '1',
+            'explaintext': '1',
+            'exsentences': str(sentences),
+            'exlimit': '20',
+            'redirects': '1',
+        }, wiki=wiki)
+        query = data.get('query', {}) if isinstance(data, dict) else {}
+        chain = {t: t for t in batch}
+        for item in query.get('normalized', []):
+            for k, v in list(chain.items()):
+                if v == item.get('from'):
+                    chain[k] = item.get('to')
+        for item in query.get('redirects', []):
+            for k, v in list(chain.items()):
+                if v == item.get('from'):
+                    chain[k] = item.get('to')
+        extracts = {}
+        for page in query.get('pages', []):
+            if page.get('missing'):
+                continue
+            title = page.get('title')
+            extract = page.get('extract', '') or ''
+            if title:
+                extracts[title] = extract.strip()
+        for orig, target in chain.items():
+            if extracts.get(target):
+                out[orig] = extracts[target]
+    return out
+
+
 # ── Wikidata SPARQL ────────────────────────────────────────────────────────
 #
 # query.wikidata.org has stricter rate limits than the per-wiki action API:
