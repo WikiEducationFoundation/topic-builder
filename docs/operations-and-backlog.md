@@ -116,6 +116,7 @@ Roughly prioritized. Items live here until they ship or get explicitly dropped.
 
 ### Recently shipped
 
+- **2026-04-22** — `fetch_descriptions` auto-loop + higher defaults (`[plan 1.6]`). Default limit 500 → 2000; added `time_budget_s=60` parameter; tool auto-loops until the topic is fully described or budget exhausted. Response includes `batches_run` + `time_budget_exhausted` so callers know whether to re-invoke.
 - **2026-04-22** — `get_articles` regex filters + `sources_all` intersection (`[plan 1.5+1.20]`). Added `title_regex`, `description_regex` (case-insensitive Python re), and `sources_all` (require ALL listed sources — intersection, vs the existing `source` which is any / OR). Filter now runs fully in Python so `total_matching` is accurate across all combinations. Invalid regex returns a structured error.
 - **2026-04-22** — `preview_harvest_list_page` + `preview_category_pull` (`[plan 1.4]`). Dry-run siblings to harvest_list_page / get_category_articles. Return link/article count + new-vs-overlap + a sampled preview with descriptions without committing. Share logic via `_fetch_list_page_links` / `_walk_category_tree` helpers.
 - **2026-04-22** — `preview_similar(seed_article, limit=50)` (`[plan 1.3]`). Read-only sibling to `search_similar`. Returns titles + descriptions + already-in-topic flags without committing. Delegates to `preview_search(morelike:<seed>)`.

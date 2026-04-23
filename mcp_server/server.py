@@ -1215,19 +1215,31 @@ def preview_similar(seed_article: str, limit: int = 50, note: str = "",
 # ── Review aids ───────────────────────────────────────────────────────────
 
 @mcp.tool()
-def fetch_descriptions(limit: int = 500, note: str = "",
+def fetch_descriptions(limit: int = 2000, time_budget_s: int = 60,
+                       note: str = "",
                        topic: str | None = None, ctx: Context = None) -> str:
     """Fetch Wikidata short descriptions for articles in the current topic
     that don't have one yet, and persist them. Descriptions show up in
     get_articles / get_articles_by_source output so the AI or user can judge
     relevance while paging or reviewing a source. export_csv also reuses them.
 
-    Batches of 50 titles per API call. An article with no short-desc on
-    Wikipedia is stored as an empty string (so we don't re-ask next time).
+    Auto-loops internally: each batch fetches up to `limit` titles (which
+    fetch_short_descriptions further batches as 50-per-API-call), then the
+    tool continues with the next undescribed chunk until either the topic is
+    fully described or `time_budget_s` is exhausted. One call on a fresh
+    topic typically drains the backlog; call again if `remaining_undescribed`
+    is non-zero on return.
+
+    An article with no short-desc on Wikipedia is stored as an empty string
+    (so we don't re-ask next time).
 
     Args:
-        limit: Max titles to fetch in this call (default 500). If more
-               articles are undescribed afterward, call again to continue.
+        limit: Max titles to fetch per internal batch (default 2000). Tune
+               down if you want smaller, more interruptible chunks; up if
+               you want to minimize round-trips.
+        time_budget_s: Overall wall-clock budget for auto-loop (default 60s).
+               When exhausted the tool returns partial results with
+               remaining_undescribed set; the AI can call again to continue.
         note: Optional free-text observation for this call's log entry.
               Use for mid-flow reflection; empty by default.
         topic: Optional topic name. Pass if your client doesn't maintain an
@@ -1238,30 +1250,60 @@ def fetch_descriptions(limit: int = 500, note: str = "",
     if err:
         return err
 
-    titles = db.get_undescribed_titles(topic_id, limit=limit)
-    if not titles:
+    deadline = time.monotonic() + max(1, time_budget_s)
+    total_fetched = 0
+    total_non_empty = 0
+    batches = 0
+    hit_budget = False
+
+    while True:
+        if time.monotonic() >= deadline:
+            hit_budget = True
+            break
+        titles = db.get_undescribed_titles(topic_id, limit=limit)
+        if not titles:
+            break
+        desc_map = fetch_short_descriptions(titles, wiki=wiki)
+        db.set_descriptions(topic_id, desc_map)
+        total_fetched += len(titles)
+        total_non_empty += sum(1 for v in desc_map.values() if v)
+        batches += 1
+
+    remaining = db.count_undescribed(topic_id)
+    if remaining == 0 and total_fetched == 0:
+        log_usage(ctx, "fetch_descriptions",
+                  {"limit": limit, "time_budget_s": time_budget_s},
+                  "no undescribed articles", start_time=_start, note=note)
         return json.dumps({
             'fetched': 0,
             'remaining_undescribed': 0,
             'note': 'All articles in this topic already have descriptions (or were checked).',
         }, indent=2, ensure_ascii=False)
 
-    desc_map = fetch_short_descriptions(titles, wiki=wiki)
-    db.set_descriptions(topic_id, desc_map)
-
-    non_empty = sum(1 for v in desc_map.values() if v)
-    remaining = db.count_undescribed(topic_id)
-
-    log_usage(ctx, "fetch_descriptions", {"limit": limit},
-              f"fetched {len(titles)} ({non_empty} non-empty), {remaining} still undescribed",
+    log_usage(ctx, "fetch_descriptions",
+              {"limit": limit, "time_budget_s": time_budget_s},
+              f"fetched {total_fetched} in {batches} batch(es), "
+              f"{total_non_empty} non-empty, {remaining} still undescribed"
+              f"{' (budget exhausted)' if hit_budget else ''}",
               start_time=_start, note=note)
+
+    if remaining == 0:
+        tail = 'All articles in this topic now have descriptions (or were checked).'
+    elif hit_budget:
+        tail = (f'Time budget ({time_budget_s}s) exhausted with {remaining} still '
+                f'undescribed. Call fetch_descriptions again to continue.')
+    else:
+        tail = (f'{remaining} articles still undescribed — call again if you want '
+                f'to continue. (Budget was not exhausted; this can happen if a '
+                f'batch returned early.)')
+
     return json.dumps({
-        'fetched': len(titles),
-        'non_empty': non_empty,
+        'fetched': total_fetched,
+        'non_empty': total_non_empty,
+        'batches_run': batches,
         'remaining_undescribed': remaining,
-        'note': ('Descriptions now available in get_articles / get_articles_by_source / export_csv. '
-                 'Call fetch_descriptions again to continue.' if remaining
-                 else 'All articles in this topic now have descriptions (or were checked).'),
+        'time_budget_exhausted': hit_budget,
+        'note': tail,
     }, indent=2, ensure_ascii=False)
 
 

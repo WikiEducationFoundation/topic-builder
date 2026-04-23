@@ -117,7 +117,10 @@ The AI's Q5 answer named this "the single biggest gap." Also Q&A-round request: 
 
 ---
 
-### 1.6 ☐ `fetch_descriptions` defaults + auto-loop `[NEW]`
+### 1.6 ☑ `fetch_descriptions` defaults + auto-loop `[NEW]`
+
+**Shipped 2026-04-22.** Default `limit` bumped 500 → 2000. Added auto-loop that keeps fetching batches until the topic is fully described or `time_budget_s` (default 60) is exhausted. Return shape gained `batches_run` + `time_budget_exhausted` so the AI knows whether to call again. One call on a fresh topic typically drains the backlog; 18K-article orchids would fit under budget at ~50 Wikipedia API calls.
+
 
 **What.** Bump default `limit` from 50 → 2000. Add auto-loop: if `remaining_undescribed > 0` after the call, continue paging internally until zero or a timeout budget is exhausted.
 
