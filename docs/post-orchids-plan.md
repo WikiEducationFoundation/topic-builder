@@ -726,7 +726,11 @@ Consolidates backlog items #3 (Wikidata/SPARQL), #4 (PetScan), plus two new orch
 
 ### 5.1 ☑ `wikidata_query` / `wikidata_entities_by_property` `[backlog:#3]`
 
-**Shipped 2026-04-22.** Two tools (`wikidata_entities_by_property` helper, `wikidata_query` raw SPARQL) backed by a shared `wikidata_sparql()` wrapper in `wikipedia_api.py`. Reuses `api_get` so per-call counter + rate-limit backoff come for free. 1h in-memory TTL cache keyed by sha256(query). Response simplifies entity URIs to bare QIDs. **Checkpoint findings:** plumbing works cleanly (helper ~500ms/call, cache ~0ms); the hard part for the AI will be picking the right QID for a concept — my smoke tests picked wrong QIDs twice despite knowing what I was looking for. Flagged `wikidata_search_entity(name)` as a meaningful post-checkpoint quality-of-life add. Also flagged: bare-QID `label` fallback when Wikidata has no label in the requested language — minor polish, not shipping.
+**Shipped 2026-04-22.** Two tools (`wikidata_entities_by_property` helper, `wikidata_query` raw SPARQL) backed by a shared `wikidata_sparql()` wrapper in `wikipedia_api.py`. Reuses `api_get` so per-call counter + rate-limit backoff come for free. 1h in-memory TTL cache keyed by sha256(query). Response simplifies entity URIs to bare QIDs. **Checkpoint findings:** plumbing works cleanly (helper ~500ms/call, cache ~0ms); the hard part for the AI will be picking the right QID for a concept — my smoke tests picked wrong QIDs twice despite knowing what I was looking for. Follow-up `wikidata_search_entity` shipped as 5.1a to address this. Also flagged: bare-QID `label` fallback when Wikidata has no label in the requested language — minor polish, not shipping.
+
+### 5.1a ☑ `wikidata_search_entity` — QID/PID discovery helper `[NEW — surfaced by 5.1 checkpoint]`
+
+**Shipped 2026-04-22.** Label-search wrapper around Wikidata's `wbsearchentities` action. Returns candidate entities (or properties — `entity_type="property"`) with QID/PID + label + description + aliases + match type. Single API call (~100ms), no SPARQL required. Pattern: AI calls `wikidata_search_entity("<concept>")` first to discover the right QID, then passes it to `wikidata_entities_by_property`. Solves the "I picked Q27868 expecting Bulbophyllum and got Eacles moth genus" failure mode observed during 5.1 smoke.
 
 
 **What.** SPARQL query tool + higher-level helper.

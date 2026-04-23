@@ -26,6 +26,7 @@ from wikipedia_api import (
     reset_call_counters, get_call_counters,
     wikidata_sparql as _wikidata_sparql,
     wikidata_entities_by_property as _wikidata_entities_by_property,
+    wikidata_search_entity as _wikidata_search_entity,
 )
 import db
 
@@ -817,6 +818,66 @@ def find_list_pages(subject: str, wiki: str | None = None,
 
 
 # ── Wikidata ──────────────────────────────────────────────────────────────
+
+@mcp.tool()
+def wikidata_search_entity(term: str, entity_type: str = "item",
+                           language: str = "en", limit: int = 10,
+                           note: str = "",
+                           topic: str | None = None,
+                           ctx: Context = None) -> str:
+    """Search Wikidata for candidate entities (or properties) matching a
+    label or description. **Call this FIRST** when you need a QID for a
+    concept — guessing QIDs is error-prone (e.g. Q27868 looks like it
+    should be Bulbophyllum but is the Eacles moth genus). Returns up
+    to `limit` candidates with QID + label + description + aliases;
+    pick the best one for downstream `wikidata_entities_by_property`.
+
+    Also works for properties — pass `entity_type="property"` to find
+    P-IDs by name (e.g. `wikidata_search_entity("parent taxon",
+    entity_type="property")` returns P171).
+
+    Fast (~100ms, single API call to wbsearchentities). Independent of
+    any topic's wiki — `language` controls the search language, not a
+    sitelink destination.
+
+    Args:
+        term: Label or description text to search for.
+        entity_type: "item" (Q-IDs, default) or "property" (P-IDs).
+        language: Search language (default "en"). Uses whichever
+                  language's labels/aliases to match against.
+        limit: Max candidates (default 10, capped at 50).
+        note: Optional free-text observation for this call's log entry.
+        topic: Optional topic name (for log context only).
+    """
+    _start = _start_call()
+    try:
+        rows = _wikidata_search_entity(term, language=language,
+                                       entity_type=entity_type, limit=limit)
+    except ValueError as e:
+        return json.dumps({'error': str(e)}, indent=2)
+    except Exception as e:
+        return json.dumps({
+            'error': f'Wikidata search failed: {type(e).__name__}: {e}',
+        }, indent=2)
+
+    log_usage(ctx, "wikidata_search_entity",
+              {"term": term, "entity_type": entity_type,
+               "language": language, "limit": limit},
+              f"{len(rows)} candidates", start_time=_start, note=note)
+    return json.dumps({
+        'term': term,
+        'entity_type': entity_type,
+        'language': language,
+        'total': len(rows),
+        'candidates': rows,
+        'note': (
+            'Pick the QID whose description best matches your concept, '
+            'then pass it to wikidata_entities_by_property. When multiple '
+            'candidates look plausible (common for polysemous terms) the '
+            'description + aliases disambiguate.'
+        ),
+    }, indent=2, ensure_ascii=False)
+
 
 @mcp.tool()
 def wikidata_entities_by_property(property_id: str, value_qid: str,

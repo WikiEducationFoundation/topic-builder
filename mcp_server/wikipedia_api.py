@@ -282,6 +282,56 @@ def wikidata_sparql(query: str, timeout: int = 60,
     return rows
 
 
+WIKIDATA_API = "https://www.wikidata.org/w/api.php"
+
+
+def wikidata_search_entity(term: str, language: str = 'en',
+                           entity_type: str = 'item',
+                           limit: int = 10) -> list[dict]:
+    """Label-search Wikidata for candidate entities (or properties) matching
+    `term`. The first stop before `wikidata_entities_by_property` — the AI
+    often doesn't know the exact QID for a concept, and guessing is worse
+    than searching (Q27868 looks like it should be Bulbophyllum but is
+    actually the Eacles moth genus).
+
+    Returns a list of up to `limit` candidates, each with `qid`, `label`,
+    `description`, and any `aliases`. Uses Wikidata's wbsearchentities
+    action — far cheaper than a label-matching SPARQL query (one API call,
+    ~100ms).
+
+    `entity_type` is "item" (default; returns Q-IDs) or "property"
+    (returns P-IDs — useful for finding properties by name:
+    `wikidata_search_entity("parent taxon", entity_type="property")`).
+
+    `language` is the search language. Falls back to English match text
+    if the term has no match in the requested language."""
+    if entity_type not in ('item', 'property'):
+        raise ValueError("entity_type must be 'item' or 'property'")
+    params = {
+        'action': 'wbsearchentities',
+        'search': term,
+        'language': language,
+        'type': entity_type,
+        'format': 'json',
+        'formatversion': '2',
+        'limit': str(max(1, min(int(limit), 50))),
+    }
+    data = api_get(WIKIDATA_API, params)
+    if not isinstance(data, dict):
+        return []
+    out = []
+    for item in data.get('search', []) or []:
+        out.append({
+            'qid': item.get('id', ''),
+            'label': item.get('label', ''),
+            'description': item.get('description', ''),
+            'aliases': item.get('aliases', []) or [],
+            'match_type': (item.get('match') or {}).get('type', ''),
+            'match_text': (item.get('match') or {}).get('text', ''),
+        })
+    return out
+
+
 def wikidata_entities_by_property(property_id: str, value_qid: str,
                                   wiki: str = 'en',
                                   limit: int = 500) -> list[dict]:
