@@ -116,6 +116,7 @@ Roughly prioritized. Items live here until they ship or get explicitly dropped.
 
 ### Recently shipped
 
+- **2026-04-22** — `remove_articles` batched DELETEs + clarified docstring (`[plan 1.7]`). Pre-flight: observed ~200-title cap is client-side truncation, not server. Server now batches deletes as `DELETE … WHERE title IN (…)` of up to 500 titles/query. Docstring redirects large removals (>200) to `remove_by_source` / `remove_by_pattern`.
 - **2026-04-22** — `fetch_descriptions` auto-loop + higher defaults (`[plan 1.6]`). Default limit 500 → 2000; added `time_budget_s=60` parameter; tool auto-loops until the topic is fully described or budget exhausted. Response includes `batches_run` + `time_budget_exhausted` so callers know whether to re-invoke.
 - **2026-04-22** — `get_articles` regex filters + `sources_all` intersection (`[plan 1.5+1.20]`). Added `title_regex`, `description_regex` (case-insensitive Python re), and `sources_all` (require ALL listed sources — intersection, vs the existing `source` which is any / OR). Filter now runs fully in Python so `total_matching` is accurate across all combinations. Invalid regex returns a structured error.
 - **2026-04-22** — `preview_harvest_list_page` + `preview_category_pull` (`[plan 1.4]`). Dry-run siblings to harvest_list_page / get_category_articles. Return link/article count + new-vs-overlap + a sampled preview with descriptions without committing. Share logic via `_fetch_list_page_links` / `_walk_category_tree` helpers.

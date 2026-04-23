@@ -1855,8 +1855,24 @@ def remove_articles(titles: list[str], note: str = "",
                     topic: str | None = None, ctx: Context = None) -> str:
     """Remove articles from the working list.
 
+    Server side has no cap — the DB batches deletes in 500-title SQL
+    statements, so even 10K-title removals complete in one call. BUT:
+    some MCP clients (observed: ChatGPT, Claude Code UI) practically
+    truncate the `titles` list around ~200 entries before it reaches
+    this tool. If you need to drop more than ~200 titles, prefer:
+
+      * `remove_by_source(source, keep_if_other_sources=True)` —
+        when the articles all came from one gather (category, list
+        page, search). One call clears any number of articles.
+      * `remove_by_pattern(pattern, match_description=True)` —
+        when they share a title or description pattern. Also
+        single-call.
+
+    Use this tool for small, enumerated removals where you've
+    hand-picked specific titles.
+
     Args:
-        titles: Article titles to remove
+        titles: Article titles to remove.
         note: Optional free-text observation for this call's log entry.
               Use for mid-flow reflection; empty by default.
         topic: Optional topic name. Pass if your client doesn't maintain an MCP session.

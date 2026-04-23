@@ -154,12 +154,22 @@ def add_articles(topic_id, articles_data):
 
 
 def remove_articles(topic_id, titles):
-    """Remove articles by title. Returns count removed."""
+    """Remove articles by title. Returns count removed. Batches into
+    500-title DELETE ... IN (...) queries so a 10K-title removal runs as
+    ~20 statements instead of 10K."""
+    if not titles:
+        return 0
     conn = _connect()
     removed = 0
-    for title in titles:
-        cur = conn.execute("DELETE FROM articles WHERE topic_id = ? AND title = ?",
-                           (topic_id, title))
+    # SQLite's default SQLITE_MAX_VARIABLE_NUMBER is 999; 500 + 1 (topic_id)
+    # keeps us well under that with headroom.
+    for i in range(0, len(titles), 500):
+        batch = titles[i:i + 500]
+        placeholders = ','.join('?' * len(batch))
+        cur = conn.execute(
+            f"DELETE FROM articles WHERE topic_id = ? AND title IN ({placeholders})",
+            [topic_id] + list(batch),
+        )
         removed += cur.rowcount
     conn.commit()
     conn.close()

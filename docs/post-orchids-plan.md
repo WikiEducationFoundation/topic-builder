@@ -134,7 +134,10 @@ The AI's Q5 answer named this "the single biggest gap." Also Q&A-round request: 
 
 ---
 
-### 1.7 ☐ `remove_articles` auto-chunking + documented limit `[NEW]`
+### 1.7 ☑ `remove_articles` auto-chunking + documented limit `[NEW]`
+
+**Shipped 2026-04-22.** Pre-flight: the ~200-cap the orchids AI hit was NOT in server/db code (inspected — db.remove_articles had no cap and looped one title at a time). It was a client-side truncation by the MCP client. Server-side fixes: (a) batched the DB side into `DELETE … WHERE title IN (…)` statements of up to 500 titles each (was one DELETE per title); (b) rewrote the docstring to explicitly point AI at `remove_by_source` / `remove_by_pattern` for large removals, with the observation that some MCP clients cap `titles` around ~200. No code change needed on the tool signature.
+
 
 **What.** Tool currently has an undocumented ~200-title cap. Either auto-chunk internally or document the limit prominently.
 
