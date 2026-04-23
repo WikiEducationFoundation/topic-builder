@@ -195,7 +195,10 @@ Updated playbook confirms WikiProjects are essentially en-only — which narrows
 
 ---
 
-### 1.11 ☐ Pre-flight cost estimates for heavy tools `[NEW]`
+### 1.11 ☑ Pre-flight cost estimates for heavy tools `[NEW]`
+
+**Shipped 2026-04-22.** Pivoted from the plan's original "pre-flight estimation" shape because the `preview_*` tools (1.4) already cover that — the AI can call `preview_category_pull` / `preview_harvest_list_page` for pre-flight counts. What was missing was the AI seeing actual cost **after** a heavy pull so it can calibrate next time. `_cost_report(start_time)` now appends `{elapsed_ms, wikipedia_api_calls}` + a `cost_warning` string (when API calls > 2,500 OR elapsed > 60s) to the response of `get_category_articles`, `harvest_list_page`, `filter_articles`. Thresholds are placeholder — 1.12 adds cross-topic aggregation that'll let us tune them.
+
 
 **What.** Before the real work, heavy tools cheaply estimate cost and return a soft warning if the estimate exceeds a threshold.
 

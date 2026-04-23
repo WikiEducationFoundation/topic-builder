@@ -636,6 +636,32 @@ def get_wikiproject_articles(project_name: str, max_articles: int = 50000,
     return json.dumps(result, indent=2, ensure_ascii=False)
 
 
+def _cost_report(start_time: float) -> dict:
+    """Summarize wall-time + Wikipedia API cost for a call, optionally
+    emitting a soft cost_warning when thresholds are exceeded. Thresholds
+    are intentionally rough — they're starting points to be tuned once
+    usage.jsonl has enough post-1.1 entries to fit against."""
+    elapsed_ms = int((time.perf_counter() - start_time) * 1000)
+    api_calls = get_call_counters()['wikipedia_api_calls']
+    report = {
+        'elapsed_ms': elapsed_ms,
+        'wikipedia_api_calls': api_calls,
+    }
+    warnings = []
+    if api_calls > 2500:
+        warnings.append(f'{api_calls} Wikipedia API calls')
+    if elapsed_ms > 60000:
+        warnings.append(f'{elapsed_ms/1000:.0f}s wall time')
+    if warnings:
+        report['cost_warning'] = (
+            'This call was expensive (' + ', '.join(warnings) + '). '
+            'Consider narrowing scope on future pulls: lower depth, '
+            'specific subtree via preview_category_pull, narrower '
+            'query, or main_content_only=True.'
+        )
+    return report
+
+
 def _walk_category_tree(category: str, depth: int, exclude_set: set[str],
                         max_articles: int, wiki: str) -> tuple[set[str], set[str]]:
     """Breadth-first walk of a Wikipedia category tree. Returns (articles,
@@ -784,6 +810,7 @@ def get_category_articles(category: str, depth: int = 3, exclude: list[str] | No
     if warning:
         result['warning'] = warning
 
+    result['cost'] = _cost_report(_start)
     log_usage(ctx, "get_category_articles", {"category": category, "depth": depth, "wiki": wiki},
               f"{len(articles)} articles, {len(visited_cats)} categories",
               start_time=_start, note=note)
@@ -1069,6 +1096,7 @@ def harvest_list_page(title: str, main_content_only: bool = True,
         'new_articles_added': added,
         'source_label': source_label,
         'total_in_working_list': db.get_status(topic_id)['total_articles'],
+        'cost': _cost_report(_start),
         'note': (
             f'To undo this harvest, use: remove_by_source("{source_label}"). '
             f'Pass main_content_only=False if you want the raw link set '
@@ -2515,6 +2543,7 @@ def filter_articles(resolve_redirects: bool = True, remove_disambig: bool = True
     # Write back to DB
     db.replace_all_articles(topic_id, all_articles)
 
+    stats['cost'] = _cost_report(_start)
     log_usage(ctx, "filter_articles",
               {"resolve_redirects": resolve_redirects, "remove_disambig": remove_disambig,
                "remove_lists": remove_lists},
