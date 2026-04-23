@@ -116,6 +116,7 @@ Roughly prioritized. Items live here until they ship or get explicitly dropped.
 
 ### Recently shipped
 
+- **2026-04-22** — per-topic cost summary in `get_status` (`[plan 1.12]`). Aggregates from usage.jsonl: lifetime API calls, timeouts, rate-limit hits, recent heavy-call tail. Read-from-log approach (no DB materialization). Degrades gracefully on pre-1.1 log entries without cost fields.
 - **2026-04-22** — post-hoc cost surface on heavy tools (`[plan 1.11]`). `get_category_articles`, `harvest_list_page`, `filter_articles` responses include `cost: {elapsed_ms, wikipedia_api_calls}` and a `cost_warning` when >2500 API calls OR >60s. Pivoted from plan's pre-flight-estimate shape — preview_* tools (1.4) already handle pre-flight.
 - **2026-04-22** — `manual:<label>` nudge + instruction convention (`[plan 1.19+2.1]`). Per-session counter emits an in-band `label_hint` on the 2nd bare `manual` call. Server instructions gained a dedicated bullet with four concrete examples. add_articles now returns structured JSON instead of plain text.
 - **2026-04-22** — non-en description REST fallback (`[plan 1.17]`). `fetch_descriptions_with_fallback` in wikipedia_api.py: Wikidata first pass, REST `/page/summary` second pass for empty titles on non-en wikis. Applied across `fetch_descriptions`, all preview tools, and `export_csv`. Skipped on enwiki. Makes cross-wiki topic builds usable — zhwiki / jawiki / ptwiki no longer come back with all-empty descriptions.

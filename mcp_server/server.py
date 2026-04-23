@@ -281,9 +281,70 @@ def resume_topic(name: str, ctx: Context = None) -> str:
     return start_topic(name, ctx=ctx)
 
 
+def _topic_cost_summary(topic_name: str, max_lines: int = 20000) -> dict | None:
+    """Aggregate per-topic cost from usage.jsonl: lifetime Wikipedia API
+    calls, rate-limit hits, timeouts, and a recent-heavy-calls tail.
+
+    Scans at most `max_lines` from the end of the log to bound work even
+    on a very large file. Returns None if the log is unreadable — caller
+    should treat absence as "no historical cost data yet"."""
+    log_path = os.path.join(LOG_DIR, 'usage.jsonl')
+    if not os.path.exists(log_path):
+        return None
+    try:
+        with open(log_path, 'r') as f:
+            lines = f.readlines()
+    except Exception:
+        return None
+
+    lifetime_api = 0
+    lifetime_timeouts = 0
+    rate_limit_hits = 0
+    tool_calls = 0
+    heavy_calls: list[dict] = []
+    for line in lines[-max_lines:]:
+        try:
+            entry = json.loads(line)
+        except Exception:
+            continue
+        if entry.get('topic') != topic_name:
+            continue
+        tool_calls += 1
+        api = entry.get('wikipedia_api_calls', 0) or 0
+        elapsed = entry.get('elapsed_ms', 0) or 0
+        timed_out = bool(entry.get('timed_out'))
+        rate_hits = entry.get('rate_limit_hits_this_call', 0) or 0
+        lifetime_api += api
+        rate_limit_hits += rate_hits
+        if timed_out:
+            lifetime_timeouts += 1
+        if api > 500 or elapsed > 30000 or timed_out:
+            heavy_calls.append({
+                'ts': entry.get('ts'),
+                'tool': entry.get('tool'),
+                'elapsed_ms': elapsed,
+                'wikipedia_api_calls': api,
+                'timed_out': timed_out,
+            })
+
+    heavy_calls.sort(key=lambda e: e.get('ts') or '', reverse=True)
+    return {
+        'logged_tool_calls': tool_calls,
+        'lifetime_wikipedia_api_calls': lifetime_api,
+        'lifetime_timeouts': lifetime_timeouts,
+        'rate_limit_hits_total': rate_limit_hits,
+        'recent_heavy_calls': heavy_calls[:10],
+    }
+
+
 @mcp.tool()
 def get_status(topic: str | None = None, ctx: Context = None) -> str:
-    """Get current status of the topic build: article count, score distribution, source breakdown.
+    """Get current status of the topic build: article count, score
+    distribution, source breakdown, and a per-topic cost summary
+    aggregated from the usage log (lifetime Wikipedia API calls, timeouts,
+    rate-limit hits, recent heavy calls). Useful to check "is this topic
+    being a good Wikimedia citizen?" and to spot tools that routinely
+    overrun.
 
     Args:
         topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
@@ -296,6 +357,9 @@ def get_status(topic: str | None = None, ctx: Context = None) -> str:
     status = db.get_status(topic_id)
     status['topic'] = topic_name
     status['rate_limits'] = get_rate_limit_stats()
+    cost_summary = _topic_cost_summary(topic_name)
+    if cost_summary:
+        status['cost_summary'] = cost_summary
     return json.dumps(status, indent=2, default=str)
 
 

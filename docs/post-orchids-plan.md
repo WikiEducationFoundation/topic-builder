@@ -230,7 +230,10 @@ Don't *refuse* — the AI can still proceed. Make the cost visible *before* the 
 
 ---
 
-### 1.12 ☐ Per-topic cost surface in `get_status` `[NEW]`
+### 1.12 ☑ Per-topic cost surface in `get_status` `[NEW]`
+
+**Shipped 2026-04-22.** `_topic_cost_summary(topic_name)` scans the last 20K lines of `usage.jsonl` and aggregates: `logged_tool_calls`, `lifetime_wikipedia_api_calls`, `lifetime_timeouts`, `rate_limit_hits_total`, plus a `recent_heavy_calls` tail (last 10 calls that exceeded 500 API calls, 30s wall time, OR timed out). `get_status` includes the summary under `cost_summary`. No per-topic materialization; read-from-log is cheap at current corpus sizes. Log entries pre-1.1 missing the cost fields simply contribute 0 — the aggregation degrades gracefully.
+
 
 **What.** `get_status` aggregates per-topic: total Wikimedia API calls, total timeouts, recent heavy calls, total rate-limit hits.
 
