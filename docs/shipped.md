@@ -251,3 +251,17 @@ Locks the thin-variant brief as the measurement contract. Everything that might 
 - **Brief bodies stripped of operational details.** No more "~15–25 niche candidates" probe counts, no CENTRAL/PERIPHERAL/OUT rubric framework inlined — all of that was already in `server_instructions.md` and the briefs now reference it ("follow the SCOPE RUBRIC framework"). Keeps briefs fully general so subsequent instruction changes don't require brief edits.
 - **Scoring script `--task` alternative**: `python3 scripts/benchmark_score.py --task apollo-11-thin [--nth N]` resolves the task's template from the DB on the server, finds matching run topics by regex, picks the Nth-most-recent, and scores it. Direct positional `<slug> <run-topic-name>` form still works.
 - **Source-of-truth markdown** at `dogfood/tasks/*.md` uses new frontmatter key `run_topic_name_template` (legacy `run_topic_name` accepted for back-compat). `dogfood/tasks/README.md` fully rewritten to explain the durability contract + template rendering + thin-vs-informed variant split.
+
+## Nginx timeout bump + Tier 1 1.b rebuild baselines + reach audit (2026-04-24)
+
+Three tasks shipped as a bundle after the first 5 thin-variant runs completed.
+
+- **Nginx proxy timeouts raised to 300s** on `/mcp` (from default 60s). Absorbs the ceiling that was returning 504 bursts when a heavy single-worker tool call held the event loop > 60s. No Python restart; `deploy.sh` writes the new config and reloads nginx. Multi-worker + session-sticky routing remains as a Tier 1 backlog item (needs systemd template + nginx upstream with `hash $http_mcp_session_id consistent`) — the timeout bump is the safe half of that fix.
+- **Tier 1 1.b: baselines rebuilt from thin runs.** New helper `scripts/update_baseline_from_run.py` lifts each thin run's metrics (precision / recall / cost / source-count stats / AI self-rating / coverage_estimate confidence) into `benchmarks/<slug>/baseline.json`. Previous baselines archived as `baseline-archive-20260424.json`. New baselines:
+    - apollo-11: 92 articles, precision 0.5543, recall 0.3312, reach 0
+    - crispr-gene-editing: 58 articles, precision 1.0, recall 0.5196, reach 5
+    - african-american-stem: 863 articles, precision 0.9931, recall 0.8537, reach 114
+    - hispanic-latino-stem-us: 199 articles, precision 0.9536, recall 0.5892, reach 5
+    - orchids: 5,044 articles, precision 1.0, recall 0.5014, reach 0
+  These are the new measurement substrate. Future thin-variant runs compete against these numbers, not the fat-variant 2026-04-23 baselines (which are preserved as archives).
+- **Reach audit: 124 candidates classified** (CRISPR 5, HL-STEM 5, AA-STEM 114). Batched `fetch_article_leads` on all 124 + applied via `scripts/apply_classifications.py`. AA-STEM split: 60 in / 8 peripheral / 46 out. HL-STEM: 4 in / 1 out (Natasha Batalha OUT per Brazilian-heritage scope exclusion). CRISPR: 3 in / 2 peripheral. Gold now has 60+4+3 = 67 new in/peripheral additions across the three benchmarks; next-cycle recall measurements will reflect these.

@@ -24,34 +24,32 @@ Add new items here as signals come in; promote items to
 
 ## Tier 1 — small, high-leverage
 
-### ☐ Concurrency fix: nginx timeout bump + `uvicorn --workers 2` `[NEW — 2026-04-24 three observations]`
+### ☐ Multi-worker MCP server with session-sticky nginx routing `[NEW — 2026-04-24 three observations; nginx-timeout half shipped]`
 
-**What.** Two changes, ship together:
-1. **nginx `proxy_read_timeout` + `proxy_send_timeout` → 300s** (from the default 60s) on the `/mcp` location in `/etc/nginx/sites-available/topic-builder`. Reload nginx to apply — no Python restart, no MCP session drops.
-2. **Switch the systemd unit to run the MCP service with `uvicorn --workers 2`** (currently `python server.py`, which spawns one FastMCP process with one async event loop). Multiple workers = multiple event loops = incoming handshakes and unrelated sessions don't queue behind a single long-running tool call.
+**Context.** Partial fix shipped 2026-04-24: nginx `proxy_read_timeout` + `proxy_send_timeout` bumped to 300s (from default 60s) on `/mcp`. This absorbed the 60s → 504 ceiling that was returning bursts of 504s to clients during 2–3 concurrent sessions. Remaining: the backend is still single-threaded-async, so heavy tool calls can still delay new handshakes by tens of seconds (18s observed) and serialize all concurrent sessions behind one coroutine. Below is the proper durable fix.
 
-Do both in one deploy window when no runs are in flight — step 2 requires a Python restart and will drop any active MCP sessions.
+**What.** Run N Python processes (start N=2) on distinct ports behind nginx with session-header-based sticky routing:
+1. **Systemd template unit** `topic-builder@.service` accepts `%i` as the port (8000, 8001). Enable both `topic-builder@8000` + `topic-builder@8001`. Each runs the current `python server.py` with a PORT env var.
+2. **`server.py`** reads `PORT` from env (default 8000).
+3. **nginx `upstream topic_builder_backend`** block with both 127.0.0.1:8000 + 127.0.0.1:8001 and `hash $http_mcp_session_id consistent;` directive — routes same-session requests to same worker.
+4. **`/mcp` location** changes `proxy_pass http://127.0.0.1:8000` → `proxy_pass http://topic_builder_backend`.
 
-**Why.** Three concrete observations under 2–3 concurrent sessions:
-- Hard handshake timeout trying to add a 3rd Codex session while 2 were mid-gather.
-- 18s handshake latency on retry (should be sub-second).
-- Bursts of nginx `upstream timed out (110)` → 504s returned to MCP clients while heavy tool calls held the event loop past 60s. Clients auto-retry, but adds friction + slows AI.
+Sticky routing is load-bearing: MCP's `StreamableHTTPSessionManager._server_instances` is an in-memory dict per-process, keyed by `mcp_session_id` header. Without header-based stickiness, a session started on worker A could have subsequent requests land on worker B, which would treat them as unknown session IDs and error.
 
-Root cause: the MCP server is fundamentally single-threaded async; heavy gather tools (`get_category_articles` depth walks, `harvest_list_page` on large pages, `auto_score_by_description` on 10k-article corpora) don't yield cooperatively, so every other coroutine — including incoming requests — queues behind them.
+**Why.** Even with the 300s nginx bump, heavy tool calls still delay incoming handshakes on the same worker. Two workers = two event loops = one busy session doesn't stall the other. Concrete evidence already in the feedback log: three of five 2026-04-24 thin runs flagged `*_504_transient` or `*_transport_timeout` in `tool_friction`.
 
-**Why both together.** (1) is quick mitigation (absorb the 60s ceiling into 300s headroom); (2) is the real fix (parallel event loops). Alone, (1) masks the problem and lets it recur on truly heavy single calls; (2) alone is a harder change with session-drop risk. Shipping both is the right bundle.
-
-**Shape.**
-- `mcp_server/deploy.sh` writes the nginx config — update the `/mcp` location block to add `proxy_read_timeout 300s; proxy_send_timeout 300s;`. Deploy reloads nginx idempotently.
-- `mcp_server/deploy.sh` writes the systemd unit — change `ExecStart` from `python server.py` to `python -m uvicorn server:mcp.streamable_http_app --host 127.0.0.1 --port 8000 --workers 2` (exact invocation depends on how FastMCP exposes the app; verify locally first). Alternatively use `gunicorn -k uvicorn.workers.UvicornWorker -w 2` if uvicorn's built-in workers don't play nicely with streamable-HTTP.
-- Worker count: start at 2. SQLite writes are serialized by the DB's own locking; the session-state dict (`_session_topics`) is per-process but MCP sessions are sticky on a single TCP connection, so a session started on worker A continues on worker A. Minor risk: if a worker crashes mid-session, the session dict is lost.
+**Shape.** Changes concentrated in `mcp_server/deploy.sh`:
+- Rewrite the systemd block as a template (`[Service]` with `Environment=PORT=%i`, `WorkingDirectory=/opt/topic-builder/app`, `ExecStart=... server.py`).
+- Enable + start both port instances.
+- Rewrite the nginx server block to add an `upstream topic_builder_backend { server 127.0.0.1:8000; server 127.0.0.1:8001; hash $http_mcp_session_id consistent; }` — and change `proxy_pass` to that upstream.
+- `server.py` already calls `mcp.run(transport="streamable-http")`; need to pass `port=int(os.environ.get("PORT", 8000))` — check FastMCP's `.run()` signature.
 
 **Open questions.**
-- Does FastMCP's streamable-HTTP transport support multiple uvicorn workers cleanly? Need to verify before deploy. If not, fall back to running N independent instances behind an nginx upstream block with `least_conn`.
-- Per-call counters (`_call_api_calls`, `_call_rate_limit_hits`) use `ContextVar` — per-coroutine, survives workers fine.
-- Rate-limit stats (`_rate_limit_hits`, `_last_rate_limit_time`) are module-globals. Per-worker stats would diverge; for observability we probably don't care (each worker reports its own).
+- Does the first request of a new session (no `Mcp-Session-Id` header yet) land predictably? With `hash` and empty header value, all new sessions hash to the same worker — imbalanced but harmless. Could add a second-level discriminator like `$request_id` for new sessions specifically. Defer unless load imbalance becomes visible.
+- Module-global state in `wikipedia_api.py` (rate-limit counters, last-request timestamp) is per-worker now. Trivial: each worker rate-limits itself; the total rate-limit budget is effectively N× larger. Since we're nowhere near Wikipedia's ceiling and WMF servers see our aggregate anyway, this is fine.
+- Per-session `_session_topics` dict in `server.py` is already per-process; with sticky routing, a session's state lives on one worker consistently.
 
-**Sequencing.** Ship when all parallel runs are done — step 2 drops active MCP sessions. Monitor `nginx/error.log` + `usage.jsonl` after deploy to confirm 504s stop recurring under concurrent load.
+**Sequencing.** Ship when no runs are active (requires Python restart, drops sessions). Monitor `usage.jsonl` and `nginx/error.log` for 504 frequency + handshake latency before/after.
 
 ### ☐ Argumentless `fetch_task_brief` with auto-dispatch `[NEW — 2026-04-24]`
 
