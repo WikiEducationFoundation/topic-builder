@@ -22,6 +22,14 @@ Code does similar) inflate wall-time without reflecting tool efficiency.
 We still report wall_time for visibility but don't let it satisfy the
 cost improvement requirement.
 
+API-calls caveat: if a baseline records 0 total_api_calls, that axis
+is treated as UNRECORDED and skipped from the gate. Baselines computed
+before the Stage 1.1 logging backfill have api_calls=0 as missing
+data; if we included them in the gate, every run would artificially
+"regress" on a metric the baseline never measured. The scoreboard's
+Cost table labels that axis "no (baseline unrecorded)" so you can
+see why it dropped out.
+
 Usage:
   python3 scripts/benchmark_score.py <benchmark-slug> <run-topic-name>
 
@@ -241,10 +249,18 @@ def score(slug, run_topic_name):
     # Gate: wall_time_s is EXCLUDED — operator-approval flows (Codex
     # first-tool-use prompts, etc.) inflate wall-time without reflecting
     # tool efficiency. api_calls + tool_calls are the honest signals.
-    cost_ok = any(
-        d is not None and d < 0
-        for d in (api_d, tool_d)
-    )
+    #
+    # If a baseline records 0 total_api_calls, treat that axis as
+    # UNRECORDED (missing data from pre-logging-backfill runs) and skip
+    # it — otherwise every ratchet run appears to "regress" on a metric
+    # the baseline never actually measured.
+    baseline_api_calls = baseline.get("total_api_calls", 0) or 0
+    api_axis_usable = baseline_api_calls > 0
+    cost_candidates = []
+    if api_axis_usable:
+        cost_candidates.append(api_d)
+    cost_candidates.append(tool_d)
+    cost_ok = any(d is not None and d < 0 for d in cost_candidates)
     gate_pass = prec_ok and recall_ok and cost_ok
 
     return {
@@ -272,6 +288,7 @@ def score(slug, run_topic_name):
         "wall_time_delta": wall_d,
         "total_api_calls": api_r,
         "total_api_calls_delta": api_d,
+        "api_axis_in_gate": api_axis_usable,
         "tool_call_count": tool_r,
         "tool_call_count_delta": tool_d,
         "precision_ok": prec_ok,
@@ -340,9 +357,11 @@ def format_scoreboard(s):
     L.append(f"| Wall time (s) | {s['wall_time_s']} | "
              f"{s['wall_time_s'] - (s['wall_time_delta'] or 0)} | "
              f"{fmt_delta(s['wall_time_delta'])} | no (informational) |")
+    api_gate_label = ("yes" if s.get('api_axis_in_gate', True)
+                      else "no (baseline unrecorded)")
     L.append(f"| API calls | {s['total_api_calls']} | "
              f"{s['total_api_calls'] - (s['total_api_calls_delta'] or 0)} | "
-             f"{fmt_delta(s['total_api_calls_delta'])} | yes |")
+             f"{fmt_delta(s['total_api_calls_delta'])} | {api_gate_label} |")
     L.append(f"| Tool calls | {s['tool_call_count']} | "
              f"{s['tool_call_count'] - (s['tool_call_count_delta'] or 0)} | "
              f"{fmt_delta(s['tool_call_count_delta'])} | yes |")
