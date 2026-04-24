@@ -24,7 +24,35 @@ Add new items here as signals come in; promote items to
 
 ## Tier 1 — small, high-leverage
 
-### ☐ Type-hinted harvest annotation `[NEW — 2026-04-24 multi-session: AA-STEM + orchids; revised 2026-04-24 for additive-not-subtractive principle]`
+### ☐ Argumentless `fetch_task_brief` with auto-dispatch `[NEW — 2026-04-24]`
+
+**What.** `fetch_task_brief()` with no `task_id` auto-picks the task whose previous run is oldest and returns that one's brief. The operator's kickoff collapses from per-task `fetch_task_brief(task_id="apollo-11-thin")` to a single universal line:
+
+```
+Call fetch_task_brief(), then follow its instructions.
+```
+
+Simultaneous sessions (multiple agents calling within seconds) get DIFFERENT tasks — each call updates `last_dispatched_at` atomically on the selected task, so the next caller sees a different "oldest" and picks the next one in the round-robin.
+
+**Why.** Operator ergonomics + parallelism scale-up. Firing 5 Codex sessions in quick succession should cover all 5 benchmarks with zero configuration; today the operator has to hand each session a distinct task_id. Also: auto-dispatch biases the ratchet toward covering under-exercised benchmarks over time (natural round-robin), which is what you want when the benchmarks should all be kept roughly fresh.
+
+**Shape.**
+- Schema: add `last_dispatched_at` column on `dogfood_tasks` (nullable; NULL = never dispatched).
+- Optional follow-up: add `last_completed_at` column, populated when a `submit_feedback` matches a task's template. MVP can rely on `last_dispatched_at` alone (atomic-on-fetch is sufficient for race resistance and round-robin ordering; completed-vs-abandoned distinction is rare enough to defer).
+- Tool change:
+  - `fetch_task_brief(task_id: str | None = None, variant: str = "thin", ...)` — if `task_id` is None, pick the task with the smallest `last_dispatched_at` (NULL sorts first → never-dispatched tasks win). Filter by `variant` (default `thin` so the standard measurement mode is what auto-dispatch produces).
+  - Selection + update must be atomic (single `UPDATE ... WHERE id = (SELECT id FROM ... ORDER BY last_dispatched_at LIMIT 1) RETURNING *` or equivalent transactional SELECT-then-UPDATE under SQLite's default locking).
+  - Log the dispatch with task_id + staleness (`hours_since_last_dispatch`) so we can see in `usage.jsonl` whether round-robin is working.
+- Ties (multiple never-dispatched tasks): break by `task_id` alphabetical for determinism.
+- Edge cases:
+  - No tasks seeded → error with setup hint.
+  - All tasks filtered out by variant → error with list of available variants.
+  - Existing `task_id` arg still honored (back-compat; direct mode stays).
+
+**Open questions.**
+- `variant` default: `thin` (ratchet-standard) vs. fully auto (pick any). Lean `thin` — the operator usually wants the measurement variant; `informed` is a deliberate choice.
+- `last_completed_at` scoreboard wiring: nice-to-have. If included, completion recomputes run-topic match against the task's template regex, sets `last_completed_at = now` on match. Could live in a sibling `mark_completion` helper or get wired into `submit_feedback` when the topic name matches a known template. Defer; MVP uses dispatched-only.
+- Capacity to fire >5 parallel sessions with 5 tasks: 6th call would get the first task re-dispatched with a <1-minute gap. Fine — tasks can be re-run that quickly with the `{ts}` templates producing unique topic names. If we want stricter "no duplicate active runs" we'd need a concept of live sessions, which is overkill for now.
 
 **What.** Annotate harvested titles with a Wikidata-inferred type tag without filtering anything out by default. `harvest_list_page` (and `preview_harvest_list_page`) grow an optional `annotate_types=True` flag that, post-harvest, resolves P31 on each title via `fetch_wikidata_qids` + lookup, and returns `{title, inferred_type, confidence}` tuples. `inferred_type ∈ {person, plant, place, concept, ..., unknown}`; `unknown` is the explicit bucket for "no Wikidata P31 set" OR "Wikidata item doesn't exist" — never silently conflated with a positive type.
 
