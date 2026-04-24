@@ -24,29 +24,66 @@ Add new items here as signals come in; promote items to
 
 ## Tier 1 — small, high-leverage
 
-### ☐ Doc sweep for server-mediated dogfood task briefs `[NEW — 2026-04-23]`
+### ☐ Benchmark system polish (5 sub-items) `[NEW — 2026-04-23]`
 
-**What.** The `fetch_task_brief` / `list_tasks` entry-point system shipped 2026-04-23 (see `../shipped.md`), but the surrounding docs still describe the old copy-paste-kickoff-file path as canonical. Five docs need updates:
+Bundle of small changes around the benchmark / ratchet system now that `fetch_task_brief` + thin variants exist and today's fat-variant runs exposed baseline-quality issues. Sub-items are independently ship-able but share a sequencing constraint (see below). Each ships as its own commit.
 
-1. **`docs/ratchet-plan.md`** — "Kick-off-and-leave-for-a-while mode" section describes the legacy path. Point at `fetch_task_brief(task_id=...)` as the preferred kickoff; frame standalone `.md` kickoffs as the legacy fat-variant until that migration (option 3 below) happens.
-2. **`dogfood/README.md`** — currently documents pasting `task.md` as THE way to run a session. Add a "Running a benchmark task" section with the one-line kickoff prompt: _"Call `fetch_task_brief(task_id='<task_id>')`, then follow its instructions."_
-3. **`benchmarks/README.md`** — "Fresh AI-driven builds" design note says _"start a fresh dogfood session (autonomous via `dogfood/task.md`, or a guided session)"_. Add the server-mediated path as a third option (and the new preferred one for benchmarks).
-4. **`CLAUDE.md`** — "exposes ~45 tools" is stale (now ~47); and a brief mention of the dogfood task system under "Architecture at a glance" would help a fresh context.
-5. **`dogfood/tasks/README.md`** — expand the framing. Current content is format + seed workflow only; add a "why this exists" section (operator friction, reproducibility across AIs, path to guided-mode skill) + "when to use vs. `task.md` freehand mode" decision help.
+**Sequencing.** (1) and (5) can ship immediately. (2) should ship before re-scoring anything comparing against old baselines. (3) must ship AFTER (1) — otherwise the abstracted wisdom is baked into the new baselines and we can't measure its effect. (4) is fully independent.
 
-**Why.** The task-brief system will get used repeatedly before the 2026-04-23 ratchet cycle completes (thin variants about to launch). First-time operator confusion is cheap to prevent with these edits and expensive once it happens. Also: the rationale behind the system is currently only in commit messages + one chat thread — folding it into docs makes it durable.
+#### 1.a `[☐]` Rebuild baselines from thin runs
 
-**Deliberately NOT updating:**
-- `mcp_server/server_instructions.md` — tool docstrings say "don't call in normal sessions"; adding to instructions would invite misuse. Entry-point tools stay invisible to normal builds.
+**What.** Today's `baseline.json` files encode pre-logging-backfill runs with data-quality issues (api_calls=0 on AA-STEM / HL-STEM, mixed quick-autonomous / consultative modes, pre-Chunk-1-6 tool behavior). Replace them with metrics from the 5 thin-variant runs (already seeded via `fetch_task_brief`) as each completes. Mothball today's fat-variant scoreboards as historical-only.
 
-**Open question: what to do with the `dogfood/kickoffs/ratchet-2026-04-23-*.md` files?**
-- **Option 1 (leave):** keep as historical record of this cycle. Cheapest.
-- **Option 2 (frame):** leave files, add a README in `dogfood/kickoffs/` noting they're legacy-for-now; migration to DB planned. Documents the transition state.
-- **Option 3 (migrate):** write `*-fat` DB entries mirroring the file content via the seed script, delete the standalone files. Fully unifies the system.
+**Shape.** Small `scripts/update_baseline_from_run.py` helper that reads the archived scoreboard + topic state, writes `benchmarks/<slug>/baseline.json`. Archive old baselines in-place (rename to `baseline-archive-2026-04-23.json` so git history preserves them). After all 5 thin runs are in, this becomes the new measurement floor.
 
-Leaning option 2 for this doc sweep; option 3 as a follow-up if thin variants prove interesting and we want full DB consolidation.
+**Why.** Today's gate compares against baselines we've already flagged as unreliable (see today's scoreboards). A thin-prompt baseline = first real measurement under the "standard shape" that the ratchet is supposed to iterate from.
 
-**Shape.** Pure doc edits + (option 2) one new README under `dogfood/kickoffs/`. Zero code change. Ship as a small bundle commit.
+#### 1.b `[☐]` `benchmark_score.py`: treat `api_calls=0` on baseline as unrecorded
+
+**What.** When `baseline.total_api_calls == 0`, skip that axis in the cost-improvement gate (currently any ratchet run with non-zero api_calls is counted as "worse" even if genuinely efficient). Add a note to the scoreboard output. Parallel to the wall_time caveat shipped in `b6d1635`.
+
+**Why.** AA-STEM and HL-STEM baselines predate the Stage 1.1 logging backfill — their api_calls=0 is missing-data, not actual-zero. Today's scoreboards show up as FAIL partly for this reason.
+
+**Shape.** One `if baseline_api_calls == 0: skip` branch in `compute_scoreboard`, plus a "(baseline data unavailable)" label in the table.
+
+#### 1.c `[☐]` Abstract shape-strategy wisdom into `server_instructions.md`
+
+**What.** Move cross-topic-shape wisdom currently baked into the 2026-04-23 fat-variant kickoff prompts into the canonical instructions, so every thin-variant run benefits automatically without the operator pre-hinting. Concrete edits:
+
+- **Expand the existing `SHAPE → WIKIDATA PROPERTY` table** with `P138 (named after)` for named-event / award / institution shapes and `P171 (parent taxon)` for taxonomic shapes; add a "high-leverage first move" column.
+- **Add a SOURCE-TRUST principle bullet**: when a source is topic-definitional (category named after the topic, list-page authored by topic specialists), trust source-provenance over shortdesc for inclusion. Evidence: orchids baseline's source-trust rule recovered ~5000 taxa whose Wikidata shortdesc said only "Species of plant".
+- **Reinforce INTERSECTIONAL TOPICS** with a pointer to `fetch_article_leads` for ambiguous biography shortdescs — that's where the tool earns its keep (AA-STEM / HL-STEM wrap-up feedback this cycle).
+- **Add "for parent-program shapes, `harvest_navbox` on the parent's template is your highest-leverage first move"** (Apollo 11's Kennedy-Space-Center-miss exemplar — recovered in the fat-variant run but only after a scope-wide dig).
+
+**Topic-specific rulings that should NOT generalize** and stay in each topic's rubric (not in instructions): Brazilian-vs-peninsular-Spanish exclusions, medicine-blocklist cross-referencing, orchids-cultural-tail narrowness. Those are scope calls, not tool-strategy advice.
+
+**Why.** Running thin-prompts without operator hand-holding only works if shape-general wisdom is in the substrate. The fat-variant prompts proved these strategies work; abstracting them lets thin runs benefit without operator pre-briefing.
+
+**Sequencing.** MUST ship AFTER 1.a. Otherwise the abstraction gets baked into the new baselines and we can't measure whether it helped. The first ratchet cycle post-baseline IS this abstraction — that's what we're measuring.
+
+#### 1.d `[☐]` Informed-variant briefs for gold farming
+
+**What.** Add `<slug>-informed.md` briefs under `dogfood/tasks/` with frontmatter `variant: informed`. Body = thin brief's content + "the gold set contains at least N articles; the prior thin baseline hit P precision, R recall." Reseed DB.
+
+**Why.** Two-variant measurement split (per discussion 2026-04-23): **thin = product measurement** (what a realistic user gets); **informed = ceiling probe + gold-farming** (what the AI can do with target visibility). Gold farming is the specific value — an informed run is most likely to surface gold-growth candidates because the AI knows where the bar is.
+
+**Shape.** Pure content / seed work. No code. Five new markdown files + a reseed. Can ship any time; doesn't affect the thin-ratchet loop.
+
+#### 1.e `[☐]` Doc sweep for server-mediated dogfood task briefs
+
+**What.** The `fetch_task_brief` / `list_tasks` entry-point system shipped 2026-04-23, but the surrounding docs still describe the old copy-paste-kickoff-file path as canonical. Five docs need updates:
+
+1. **`docs/ratchet-plan.md`** — "Kick-off-and-leave-for-a-while mode" section. Point at `fetch_task_brief(task_id=...)` as the preferred kickoff.
+2. **`dogfood/README.md`** — add a "Running a benchmark task" section with the one-line kickoff prompt.
+3. **`benchmarks/README.md`** — "Fresh AI-driven builds" design note. Add the server-mediated path as a third option + mark as preferred for benchmarks.
+4. **`CLAUDE.md`** — "~45 tools" is stale (now ~47); brief mention of dogfood task system under "Architecture at a glance".
+5. **`dogfood/tasks/README.md`** — expand framing (why the system exists; when thin vs. informed vs. `task.md` freehand).
+
+**Deliberately NOT updating:** `mcp_server/server_instructions.md`. Tool docstrings say "don't call in normal sessions"; adding to instructions would invite misuse.
+
+**Open: what to do with the `dogfood/kickoffs/ratchet-2026-04-23-*.md` files?** Three options: (1) leave as historical, (2) add a README in `dogfood/kickoffs/` framing them as legacy-for-now, (3) migrate into DB as `<slug>-fat` tasks and delete the files. Leaning (2) for this sweep; (3) as follow-up if thin variants prove the right primary measurement and we want full DB consolidation.
+
+**Shape.** Pure doc edits. Zero code change.
 
 ---
 
