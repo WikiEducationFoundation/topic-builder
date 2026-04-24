@@ -24,20 +24,6 @@ Add new items here as signals come in; promote items to
 
 ## Tier 1 — small, high-leverage
 
-### ☐ `filter_articles` silently drops list-harvested titles `[NEW — 2026-04-24 orchids run]`
-
-**What.** On the 2026-04-24 orchids thin-variant run, the AI ran `filter_articles` (which resolves redirects and drops missing pages) on an 18.3k-article corpus heavy with taxonomy list-page harvests. The call **collapsed the corpus from ~18.3k to ~7.2k** — ~11k titles treated as missing, despite clearly corresponding to real Wikipedia pages. The AI had to `reset_topic` and rebuild from scratch without the filter pass.
-
-**Why.** Regression in a safety-shaped tool. `filter_articles` is documented as "drop missing pages" — if it's classifying real, resolvable titles as missing, that's either (a) a batch-size / rate-limit bug where a failed API page silently drops every title in the batch, (b) title-normalization mishandling of list-page link text vs. canonical Wikipedia title, or (c) some redirect-API semantic that treats taxonomic list-derived titles differently from how the tool expects. Needs root-cause investigation before we can trust `filter_articles` on taxonomy-at-scale topics.
-
-**Shape.**
-- Reproduce: rebuild an orchids-like corpus, invoke `filter_articles`, inspect what it classifies as "missing" and why. If the failure mode is batch-boundary-related (a), log per-batch and bail safely on partial-response. If title-normalization (b), fix the normalization. If API-semantic (c), document the restriction in the tool docstring + server_instructions KNOWN SHARP EDGES.
-- Minimum viable fix: add a safety guardrail — when `filter_articles` would drop >N% of the corpus (threshold: 10%?), return a confirmation request / preview instead of committing. Parallel to the `remove_by_pattern` `dry_run=True` pattern already in the server.
-
-**Why Tier 1.** Real session-level damage from a single tool invocation; the AI explicitly flagged it as "actively dangerous" on this shape. Fix before the next orchids ratchet cycle.
-
----
-
 ### ☐ Type-hinted harvest annotation `[NEW — 2026-04-24 multi-session: AA-STEM + orchids; revised 2026-04-24 for additive-not-subtractive principle]`
 
 **What.** Annotate harvested titles with a Wikidata-inferred type tag without filtering anything out by default. `harvest_list_page` (and `preview_harvest_list_page`) grow an optional `annotate_types=True` flag that, post-harvest, resolves P31 on each title via `fetch_wikidata_qids` + lookup, and returns `{title, inferred_type, confidence}` tuples. `inferred_type ∈ {person, plant, place, concept, ..., unknown}`; `unknown` is the explicit bucket for "no Wikidata P31 set" OR "Wikidata item doesn't exist" — never silently conflated with a positive type.

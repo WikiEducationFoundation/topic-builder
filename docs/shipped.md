@@ -184,3 +184,42 @@ Zero-risk gold-farming pipeline: each ratchet run's reach list (articles in the 
 - **First-pass promotion** (2026-04-24): 628 titles enqueued for audit across the 5 benchmarks — 456 on orchids, 129 on AA-STEM, 23 on CRISPR, 18 on Apollo 11, 2 on HL-STEM. Next ratchet cycle's reach lists will only contain NEWLY-surfaced candidates, not the re-surfacing carryover from this cycle.
 - **Audit workflow.** Edit `gold.csv` directly to change `on_topic` from `pending_audit` to `in` / `peripheral` / `out` at whatever cadence is convenient; scoring picks up changes on the next run. A dedicated audit UI / script (`audit_pending.py`) is deferred — the CSV-edit path is cheap enough that building tooling for it isn't justified until audit volume demands it.
 - **Caveat.** Per-benchmark `audit.py` classifiers rewrite `gold.csv` wholesale — re-running one would wipe promoted reach AND manual classification edits. Documented in `promote_reach.py`'s module docstring; fold into `benchmarks/README.md` when the doc-sweep Tier 1 item lands.
+
+## First-pass reach audit (2026-04-24)
+
+Manual classification of all 628 pending_audit rows from the first-pass reach promotion. Across the 5 benchmarks:
+
+| Benchmark | in | peripheral | out |
+|---|---:|---:|---:|
+| apollo-11 | 10 | 8 | 0 |
+| crispr-gene-editing | 16 | 7 | 0 |
+| african-american-stem | 76 | 8 | 45 |
+| hispanic-latino-stem-us | 1 | 0 | 1 |
+| orchids | 296 | 82 | 78 |
+| **total** | **399** | **105** | **124** |
+
+- **`scripts/apply_classifications.py`** — reads a `{title: in/peripheral/out}` JSON, applies to `gold.csv`. Skips already-classified rows (human wins over automation).
+- **Heavy `fetch_article_leads` use** on intersectional biography audits (AA-STEM) — the tool's design case. Distinguished physician-scientists (IN) from clinical-only physicians (OUT), separated STEM researchers from science communicators / admins (PERIPHERAL), and caught the historical inventors who were easy titles but non-obvious leads (Joseph Winters, William Chester Ruth, etc.).
+- **Orchid audit via pattern classifier** — 456 titles reduced to 2 "uncertain" after rule-based classification (scientific-name prefix detection, author-abbreviation matching, non-orchid noise lists). The 2 uncertain got leads.
+- **Orchids gold-quality finding**: 10,763 of the 18.3k rows are redlinks on Wikipedia — titles harvested from list pages that have no standalone articles. Flagged by the redirect reconciler (below) but not dropped; awaits a separate remediation pass.
+
+## Redirect resolution + gold reconciliation (2026-04-24)
+
+End-to-end fix for the redirect-blindness discovered during the first-pass audit. Both script-side (for offline gold maintenance) and server-side (for live build pipelines).
+
+**Scripts:**
+- **`scripts/redirect_utils.py`** — shared helper, `resolve_redirects(titles, wiki)` → dict[title → canonical | None]. Uses MediaWiki `action=query&redirects=1`, batched at 50 titles per call, rate-limited 100ms. Handles redirect chains (depth ≤ 5) + title normalizations.
+- **`scripts/reconcile_redirects.py`** — offline cleanup for each benchmark's `gold.csv`. Resolves every title; partitions into self-canonical / redirect-with-canonical-also-in-gold / redirect-only / missing. Merges duplicates using a decisive-classification winner (in/peripheral/out/true/false beats pending_audit); flags `in`-vs-`out` conflicts for manual review. `--dry-run` flag. Ran on all 5 benchmarks:
+    - CRISPR: 3 merged, 1 rewritten (TALEN → canonical long-form).
+    - Apollo 11: 3 merged (LLTV/LLRV, LLR singular/plural, Apollo launch umbilical tower → Mobile launcher platform).
+    - HL-STEM: 1 conflict flagged for review (Elsa Salazar Cade true vs. William H. Cade false — Wikipedia redirects Elsa's title to her husband's article).
+    - AA-STEM: 0 changes needed.
+    - Orchids: 365 merged, 11 rewritten, 19 conflicts (mostly my-auto-peripheral vs. original-audit-in for botanist abbreviation/fullname pairs like Lindl./John Lindley — both legitimate readings, need human pick).
+- **`scripts/promote_reach.py`** enhanced to resolve redirects before appending. Skips titles whose canonical is already in gold; dedupes reach titles that resolve to the same canonical; skips titles reported as missing. Prevents the re-introduction of redirect-source duplicates on future runs.
+- **`scripts/benchmark_score.py`** enhanced to normalize corpus titles to canonical before comparing to gold. Defensive even with gold reconciled — the live run corpus can still contain redirect-source titles from the AI's harvests. Re-running CRISPR scoring with this change bumped gold hits 68 → 88 (+20) after counting redirect-source hits that were previously missed.
+
+**Server-side:**
+- **`mcp_server/wikipedia_api.py`** — new `resolve_redirects(titles, wiki, deadline)` + `apply_redirect_map(titles, redirect_map)` helpers. Deadline-aware for cooperative time budgets.
+- **New `resolve_redirects` MCP tool** — topic-scoped, additive-only. Rewrites every article title in the current topic to its canonical Wikipedia form; merges duplicates; never drops. Safe to run repeatedly. `dry_run=True` for preview. Added to COMMON TASK → TOOL map + recommended in PIPELINE step 5 of `server_instructions.md`.
+- **`filter_articles` safety threshold** — new `max_drop_fraction` (default 0.1) and `force` (default False) parameters. When the redirect phase would drop more than the fraction as "missing on Wikipedia," the tool refuses and returns a preview + sample instead of committing. Closes the 2026-04-24 Tier 1 bug where it silently dropped 11k/18k orchids titles.
+- Landing page + server_instructions.md updated. Landing lists the new tool + updated filter_articles description; instructions PIPELINE step 5 recommends `resolve_redirects` first, then `filter_articles` (noting the safety refusal behavior).
