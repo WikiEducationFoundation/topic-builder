@@ -146,13 +146,28 @@ shared storage, do it through a private mechanism — not this repo.
 ## Design notes
 
 - **Fresh AI-driven builds, scored against frozen gold.** Each ratchet
-  cycle starts a fresh dogfood session (autonomous via `dogfood/task.md`,
-  or a guided session) for each of the 5 benchmark topics under a new
-  topic name — the baseline topic is left untouched. The scoreboard
-  measures the new run against the audited `gold.csv`. AI behaviour
-  variance shows up in the results alongside tool changes; we accept
-  that tradeoff for now because the AI-driven workflow is what we
-  actually ship. A purely scripted replay harness is out of scope.
+  cycle starts a fresh AI-driven session for each of the 5 benchmark
+  topics under a new topic name — the baseline topic is left
+  untouched. The scoreboard measures the new run against the audited
+  `gold.csv`. AI behaviour variance shows up in the results alongside
+  tool changes; we accept that tradeoff for now because the AI-driven
+  workflow is what we actually ship. A purely scripted replay harness
+  is out of scope.
+
+  Three kickoff paths exist; prefer (1) for ratchet runs:
+    1. **`fetch_task_brief(task_id="<slug>-thin")`** — preferred. Each
+       benchmark has a pre-seeded task brief in the server's
+       `dogfood_tasks` table. The tool renders a fresh `{ts}`-stamped
+       run-topic name at call time, so runs never collide. Score with
+       `benchmark_score.py --task <task_id>`. See `dogfood/README.md`
+       for the operator recipe; `dogfood/tasks/README.md` for the
+       authoring format.
+    2. **`dogfood/task.md`** — freeform exploratory sessions where the
+       AI picks a topic from a candidate list. Used for surfacing tool
+       friction on new topic shapes, not for the frozen benchmarks.
+    3. **Standalone fat-variant `.md` kickoffs** under
+       `dogfood/kickoffs/` — legacy from the 2026-04-23 cycle. Kept
+       for historical reference; don't use for new ratchet runs.
 - **`hispanic-latino-stem-us/calls.jsonl`** is a vestige of an earlier
   scripted-replay experiment. It's preserved for historical reference
   but the current ratchet does not consume it.

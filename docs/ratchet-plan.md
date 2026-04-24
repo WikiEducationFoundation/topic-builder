@@ -122,23 +122,38 @@ directly unlocks orchids / phenomenology / Latino-STEM reach.
 
 ## Kick-off-and-leave-for-a-while mode
 
-The current design needs one manual step per benchmark: you start a
-fresh dogfood session (or an agent-driven build) for each of the 5
-benchmark topics. The score script is then a ~5-second run per
-benchmark. Practically:
+Kickoff is one line per session. Task briefs live server-side in the
+`dogfood_tasks` DB table; each fetch renders a fresh timestamped
+run-topic name so sessions never collide. Practically:
 
-1. Pick a build mode (autonomous via `dogfood/task.md`, or a fresh
-   guided session).
-2. Start 5 parallel sessions, one per benchmark topic. Each builds
-   to a distinct new topic name so it doesn't clobber the baseline
-   topic.
-3. 20–60 min later, they submit_feedback and stop.
-4. `for slug in apollo-11 crispr-gene-editing african-american-stem
-   hispanic-latino-stem-us orchids; do
-      python3 scripts/benchmark_score.py "$slug" "<run-topic-for-$slug>"
-    done`
-5. Review the 5 scoreboards.
+1. Open a fresh terminal + MCP-capable client (Codex, Claude Code) in
+   any empty directory. Topic Builder MCP must be registered (one-time
+   setup — see `dogfood/README.md`).
+2. Paste as the first message (swap the task_id per benchmark):
+   ```
+   Call fetch_task_brief(task_id="apollo-11-thin"), then follow its instructions.
+   ```
+   Task IDs currently seeded (all `thin` variant):
+   `apollo-11-thin`, `crispr-gene-editing-thin`,
+   `african-american-stem-thin`, `hispanic-latino-stem-us-thin`,
+   `orchids-thin`.
+3. Start 5 parallel sessions this way, one per benchmark.
+4. 20–60 min later, each session ends with `submit_feedback`.
+5. Score with `--task` mode (auto-resolves the most recent matching
+   run):
+   ```bash
+   for t in apollo-11-thin crispr-gene-editing-thin \
+            african-american-stem-thin hispanic-latino-stem-us-thin \
+            orchids-thin; do
+     python3 scripts/benchmark_score.py --task "$t"
+   done
+   ```
 
-A single orchestration script that does steps 2–4 in one command
-would be the natural next build if this workflow starts getting run
-regularly. For now, manual is fine.
+Review the 5 scoreboards. Precision / recall / reach / cost are
+computed against the frozen `gold.csv` + `baseline.json` per
+benchmark.
+
+**Legacy kickoff path** (copy-paste-fat-prompt): the standalone
+`dogfood/kickoffs/ratchet-2026-04-23-*.md` files are historical
+artifacts from the first ratchet cycle. Keep for reference; prefer the
+`fetch_task_brief` path for all new runs.

@@ -100,7 +100,7 @@ Bundle of small changes around the benchmark / ratchet system now that `fetch_ta
 - **1.c (api_calls=0 gate fix)** ☑ shipped 2026-04-24. Small and independent.
 - **1.d (abstract shape wisdom)** MUST ship AFTER 1.b — otherwise the abstraction gets baked into the baselines and we can't measure whether it helped.
 - **1.e (informed variant)** is independent; ship any time after 1.a.
-- **1.f (doc sweep)** is independent; ship any time.
+- **1.f (doc sweep)** ☑ shipped 2026-04-24. Updated ratchet-plan, benchmarks/README, CLAUDE.md, dogfood/README, dogfood/tasks/README; added dogfood/kickoffs/README framing the fat-variant files as legacy.
 
 #### 1.a `[☑ shipped 2026-04-24]` Brief durability pass + template mechanism
 
@@ -171,7 +171,7 @@ Bundle of small changes around the benchmark / ratchet system now that `fetch_ta
 
 **Shape.** Pure content / seed work. No code. Five new markdown files + a reseed. Can ship any time after 1.a (to use the locked template format); doesn't affect the thin-ratchet loop.
 
-#### 1.f `[☐]` Doc sweep for server-mediated dogfood task briefs
+#### 1.f `[☑ shipped 2026-04-24]` Doc sweep for server-mediated dogfood task briefs
 
 **What.** The `fetch_task_brief` / `list_tasks` entry-point system shipped 2026-04-23, but the surrounding docs still describe the old copy-paste-kickoff-file path as canonical. Five docs need updates:
 
