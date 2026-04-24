@@ -24,6 +24,8 @@ from wikipedia_api import (
     get_rate_limit_stats, fetch_short_descriptions,
     fetch_descriptions_with_fallback, fetch_wikidata_qids,
     fetch_article_leads as _fetch_article_leads,
+    resolve_redirects as _resolve_redirects,
+    apply_redirect_map as _apply_redirect_map,
     reset_call_counters, get_call_counters,
     wikidata_sparql as _wikidata_sparql,
     wikidata_entities_by_property as _wikidata_entities_by_property,
@@ -3912,9 +3914,124 @@ def get_articles(min_score: int | None = None, max_score: int | None = None,
 # ── Cleanup and export ────────────────────────────────────────────────────
 
 @mcp.tool()
+def resolve_redirects(dry_run: bool = False, note: str = "",
+                      topic: str | None = None, ctx: Context = None) -> str:
+    """Normalize every article title in the current topic to its canonical
+    Wikipedia form. Follows redirects + title normalization (case, spacing).
+    SAFE — no articles are dropped; titles whose MediaWiki page is missing
+    stay in the corpus (flagged in the return), and articles whose canonical
+    already exists in the corpus are merged (sources unioned, max score kept).
+
+    Reach for this tool early in every build — a few minutes after gather,
+    before review or export. Corpus titles can accumulate redirect-source
+    variants from list-page harvests, search results, and manual adds;
+    normalizing them once prevents double-counting the same article under
+    multiple titles and makes comparisons (sources_all, reject lookups,
+    benchmark scoring) honest.
+
+    This is the ADDITIVE-SHAPED companion to `filter_articles`. Where
+    `filter_articles` is a heavier subtractive cleanup (drops disambig /
+    list / missing titles), this one only rewrites titles — never drops.
+    Safe to run repeatedly.
+
+    Args:
+        dry_run: If True, report what WOULD change without writing. Useful
+                 when you want a preview before committing.
+        note: Optional free-text observation for the call's log entry.
+        topic: Optional topic name; pass if your client doesn't maintain
+               an MCP session.
+
+    Returns JSON: {
+      'total_titles', 'redirects_applied', 'missing_on_wikipedia',
+      'merged_duplicates',
+      'samples': {'redirects': [(from, to), ...], 'missing': [...]},
+      'dry_run': bool,
+    }
+    """
+    _start = _start_call()
+    topic_id, wiki, err = _require_topic(ctx, topic)
+    if err:
+        return err
+
+    all_articles = db.get_all_articles_dict(topic_id)
+    titles = list(all_articles.keys())
+    redirect_map, missing, complete = _resolve_redirects(titles, wiki=wiki)
+    if not complete:
+        # Shouldn't happen without a deadline, but surface defensively.
+        return json.dumps({'error': 'resolution incomplete'}, indent=2)
+
+    canonical_map = _apply_redirect_map(titles, redirect_map)
+
+    # Rebuild the corpus, merging duplicates that resolve to the same
+    # canonical title.
+    new_articles: dict[str, dict] = {}
+    redirects_applied = 0
+    merged_duplicates = 0
+    redirect_samples: list[tuple[str, str]] = []
+    missing_samples: list[str] = []
+    for title in titles:
+        canonical = canonical_map[title]
+        canonical = normalize_title(canonical)
+        article = all_articles[title]
+        if canonical != title and len(redirect_samples) < 20:
+            redirect_samples.append((title, canonical))
+        if canonical != title:
+            redirects_applied += 1
+            article = {**article, 'description': None}
+        if canonical not in new_articles:
+            new_articles[canonical] = article
+        else:
+            merged_duplicates += 1
+            for s in article.get('sources', []) or []:
+                if s not in new_articles[canonical].get('sources', []):
+                    new_articles[canonical].setdefault('sources', []).append(s)
+            if article.get('score') and (
+                    not new_articles[canonical].get('score') or
+                    article['score'] > new_articles[canonical]['score']):
+                new_articles[canonical]['score'] = article['score']
+
+    for t in sorted(missing):
+        if len(missing_samples) >= 20:
+            break
+        missing_samples.append(t)
+
+    result = {
+        'total_titles': len(titles),
+        'redirects_applied': redirects_applied,
+        'missing_on_wikipedia': len(missing),
+        'merged_duplicates': merged_duplicates,
+        'final_corpus_size': len(new_articles),
+        'samples': {
+            'redirects': redirect_samples,
+            'missing': missing_samples,
+        },
+        'dry_run': dry_run,
+    }
+
+    if not dry_run and redirects_applied > 0:
+        db.replace_all_articles(topic_id, new_articles)
+        result['committed'] = True
+    elif not dry_run:
+        result['committed'] = False
+        result['note'] = 'No redirects found — nothing to commit.'
+    else:
+        result['committed'] = False
+
+    result['cost'] = _cost_report(_start)
+    log_usage(ctx, "resolve_redirects",
+              {"dry_run": dry_run},
+              f"{redirects_applied} redirects, {len(missing)} missing, "
+              f"{merged_duplicates} merged",
+              start_time=_start, note=note)
+    return json.dumps(result, indent=2, ensure_ascii=False)
+
+
+@mcp.tool()
 def filter_articles(resolve_redirects: bool = True, remove_disambig: bool = True,
                     remove_lists: bool = True,
                     time_budget_s: int = 240,
+                    max_drop_fraction: float = 0.1,
+                    force: bool = False,
                     note: str = "",
                     topic: str | None = None, ctx: Context = None) -> str:
     """Clean up the working list: resolve redirects, remove disambiguation pages,
@@ -3928,16 +4045,35 @@ def filter_articles(resolve_redirects: bool = True, remove_disambig: bool = True
     `timed_out: true` + `phases_completed`. The AI can resume by
     re-calling with the completed phase flags set to False.
 
+    SAFETY: this is a SUBTRACTIVE tool (drops articles from the working
+    list). When the redirect phase finds that more than `max_drop_fraction`
+    of the corpus resolves as MISSING on Wikipedia, the phase REFUSES to
+    drop and returns a preview instead — this is the guardrail against
+    the 2026-04-24 orchids-run failure mode where 11k/18k titles were
+    silently dropped. Pass `force=True` to override the guardrail when
+    you've reviewed the preview and want to proceed. The per-title missing
+    set is reported in the preview so you can investigate before forcing.
+
+    If you only need normalization (no drops), use `resolve_redirects`
+    instead — it rewrites titles to canonical form without ever
+    dropping anything.
+
     Args:
-        resolve_redirects: Resolve redirect titles to canonical titles
-        remove_disambig: Remove disambiguation pages
+        resolve_redirects: Resolve redirect titles to canonical titles.
+                           Drops titles MediaWiki reports as missing
+                           (subject to the safety threshold below).
+        remove_disambig: Remove disambiguation pages.
         remove_lists: Remove "List of...", "Index of...", etc.
-        time_budget_s: Wall-clock budget in seconds (default 240). API-
-                       heavy phases are ~2 API calls per 100 titles each;
-                       budget ~1s per 100 articles for a realistic estimate.
+        time_budget_s: Wall-clock budget in seconds (default 240).
+        max_drop_fraction: Refuse to drop >this fraction of the corpus
+                           as "missing on Wikipedia" without an explicit
+                           `force=True` override. Default 0.1 (10%).
+        force: Bypass the `max_drop_fraction` guardrail. Only pass this
+               after reviewing a preview run and confirming the drops
+               are genuine dead links.
         note: Optional free-text observation for this call's log entry.
-              Use for mid-flow reflection; empty by default.
-        topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
+        topic: Optional topic name. Pass if your client doesn't maintain
+               an MCP session.
     """
     _start = _start_call()
     topic_id, wiki, err = _require_topic(ctx, topic)
@@ -3982,6 +4118,45 @@ def filter_articles(resolve_redirects: bool = True, remove_disambig: bool = True
                         missing_titles.add(p.get('title', ''))
 
         if collection_complete:
+            # Safety: how many titles would be dropped as "missing"?
+            would_drop = [
+                t for t in all_articles
+                if t in missing_titles and t not in redirect_map
+            ]
+            drop_fraction = (len(would_drop) / len(all_articles)
+                             if all_articles else 0)
+            if drop_fraction > max_drop_fraction and not force:
+                log_usage(ctx, "filter_articles",
+                          {"resolve_redirects": resolve_redirects,
+                           "remove_disambig": remove_disambig,
+                           "remove_lists": remove_lists,
+                           "time_budget_s": time_budget_s},
+                          f"REFUSED — would drop {len(would_drop)}/"
+                          f"{len(all_articles)} as missing "
+                          f"({drop_fraction:.1%}) — exceeds "
+                          f"max_drop_fraction={max_drop_fraction}",
+                          start_time=_start, note=note)
+                return json.dumps({
+                    'refused': True,
+                    'reason': (
+                        f'The redirect phase would drop {len(would_drop)} '
+                        f'of {len(all_articles)} titles ({drop_fraction:.1%}) '
+                        f'as "missing on Wikipedia" — this exceeds '
+                        f'max_drop_fraction={max_drop_fraction}. No changes '
+                        f'were made. Review the sample below; if the drops '
+                        f'are genuine dead links you want to remove, re-call '
+                        f'with force=True. If you only want to normalize '
+                        f'redirects without dropping anything, use the '
+                        f'resolve_redirects tool instead.'
+                    ),
+                    'would_drop_count': len(would_drop),
+                    'corpus_size': len(all_articles),
+                    'drop_fraction': round(drop_fraction, 4),
+                    'max_drop_fraction': max_drop_fraction,
+                    'sample_would_drop': sorted(would_drop)[:30],
+                    'cost': _cost_report(_start),
+                }, indent=2, ensure_ascii=False)
+
             new_articles = {}
             redirected = 0
             removed_missing = 0

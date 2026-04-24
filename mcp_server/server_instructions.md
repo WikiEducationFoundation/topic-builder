@@ -19,7 +19,13 @@ patience) when the earlier steps have landed.
    to gauge shape + size.
 4. **Category pull** — `get_category_articles` (preview via
    `preview_category_pull` when the subtree is uncertain).
-5. **Cleanup pass** — `filter_articles` once the list has real mass.
+5. **Cleanup pass** — `resolve_redirects` first (safe, additive — collapses
+   redirect duplicates before anything else touches the corpus), then
+   `filter_articles` once the list has real mass. Note: `filter_articles`
+   refuses to drop >10% of the corpus as "missing on Wikipedia" without
+   `force=True` — if it refuses, review the sample before forcing (the
+   2026-04-24 orchids run had 11k of 18k titles as list-page redlinks
+   that looked dropworthy but could also be investigated).
 6. **Descriptions** — `fetch_descriptions` (auto-loops to drain the
    backlog). Unblocks everything downstream.
 7. **List pages** — `find_list_pages` on enwiki, or `search_articles`
@@ -81,6 +87,7 @@ closest current primitive.
 | "block this title from coming back" | `reject_articles(titles, reason, also_remove=True)` — sticky across future gathers |
 | "shape of my corpus" / "what's weird in my topic?" | `describe_topic` — title stats, top first-words, suspicious patterns |
 | "this shortdesc looks misleading / too thin to judge" | `fetch_article_leads(titles=[...], sentences=3)` — fetches the first N sentences of each article's body. Non-persistent; use for disambiguation before scoring or rejecting. |
+| "normalize corpus titles / collapse redirect duplicates" | `resolve_redirects` — rewrites every title to its canonical Wikipedia form; merges duplicates; safe (no drops). Run once mid-build, again before export. |
 | "topic build is saved? can I come back?" | `resume_topic(name)` |
 | "compound category query" / "intersection of categories" | *`petscan_*` not yet built — closest current: two `get_category_articles` calls plus `get_articles(sources_all=...)` for intersection* |
 | "cross-wiki comparison" / "what's on zhwiki but not enwiki" | *`cross_wiki_diff` not yet built — manual flow: parallel topic on the other wiki + per-article `preview_search` walk-back* |

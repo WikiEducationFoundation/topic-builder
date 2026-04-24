@@ -563,7 +563,8 @@
                 <div class="tool"><span class="tool-name">remove_articles</span><span class="tool-desc">Remove a specific list of articles by title.</span></div>
                 <div class="tool"><span class="tool-name">remove_by_source</span><span class="tool-desc">Undo a noisy pull by its source label, exact or prefix match.</span></div>
                 <div class="tool"><span class="tool-name">remove_by_pattern</span><span class="tool-desc">Bulk-remove articles by title or description pattern, with dry run.</span></div>
-                <div class="tool"><span class="tool-name">filter_articles</span><span class="tool-desc">Resolve redirects; drop disambiguation, list, and year-prefixed pages. Cooperative time budget.</span></div>
+                <div class="tool"><span class="tool-name">resolve_redirects</span><span class="tool-desc">Normalize corpus titles to canonical Wikipedia form. Safe / additive — no drops. Run early in every build to prevent redirect-source duplicates.</span></div>
+                <div class="tool"><span class="tool-name">filter_articles</span><span class="tool-desc">Resolve redirects; drop disambiguation, list, and year-prefixed pages. Refuses drops &gt; max_drop_fraction (default 10%) without force=True.</span></div>
                 <div class="tool"><span class="tool-name">reject_articles</span><span class="tool-desc">Add titles to a sticky rejection list so future gathers won't re-introduce them.</span></div>
                 <div class="tool"><span class="tool-name">list_rejections</span><span class="tool-desc">List the topic's sticky rejections (title + reason + timestamp).</span></div>
                 <div class="tool"><span class="tool-name">unreject_articles</span><span class="tool-desc">Remove titles from the sticky rejection list.</span></div>

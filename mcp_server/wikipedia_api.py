@@ -241,6 +241,61 @@ def fetch_descriptions_with_fallback(titles, wiki='en', deadline=None):
     return out
 
 
+def resolve_redirects(titles, wiki='en', deadline=None):
+    """Batched redirect + normalization resolver against MediaWiki.
+
+    Returns a tuple (redirect_map, missing_titles, complete) where:
+      - redirect_map: dict of `from → to` covering both redirects and
+        normalizations. Chains aren't pre-flattened; caller follows them
+        iteratively (cap depth to prevent cycles).
+      - missing_titles: set of titles MediaWiki reports as non-existent
+        after normalization/redirects. These are dead links — no article
+        exists under that title or any redirect chain from it.
+      - complete: False if the caller-provided deadline was hit before
+        all batches finished. On incomplete, the partial map / set are
+        still returned but the caller should decide whether to apply them
+        (usually not, since a partial map yields inconsistent state).
+
+    `deadline` is a `time.monotonic()` cutoff; pass None for no budget.
+    Batches at 50 titles per call; rate-limited by the shared `api_get`.
+    """
+    redirect_map = {}
+    missing = set()
+    complete = True
+    for i in range(0, len(titles), 50):
+        if deadline is not None and time.monotonic() >= deadline:
+            complete = False
+            break
+        batch = titles[i:i + 50]
+        params = {'titles': '|'.join(batch), 'redirects': '1'}
+        data = api_query(params, wiki=wiki)
+        query = data.get('query', {}) if isinstance(data, dict) else {}
+        for r in query.get('redirects', []):
+            redirect_map[r['from']] = r['to']
+        for n in query.get('normalized', []):
+            redirect_map[n['from']] = n['to']
+        for p in query.get('pages', []):
+            if p.get('missing', False):
+                missing.add(p.get('title', ''))
+    return redirect_map, missing, complete
+
+
+def apply_redirect_map(titles, redirect_map, max_depth=5):
+    """Follow the redirect chain for each title up to `max_depth`.
+    Returns dict title → canonical_title.
+    """
+    out = {}
+    for title in titles:
+        target = title
+        for _ in range(max_depth):
+            if target in redirect_map:
+                target = redirect_map[target]
+            else:
+                break
+        out[title] = target
+    return out
+
+
 def fetch_article_leads(titles, wiki='en', sentences=3):
     """Fetch the lead (first N sentences of the article body) for each title
     via MediaWiki's `prop=extracts&exintro=1&exsentences=N&explaintext=1`.
