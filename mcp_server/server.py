@@ -4316,6 +4316,89 @@ def export_csv(min_score: int = 0, scored_only: bool = False,
     return json.dumps(response, indent=2, ensure_ascii=False)
 
 
+# ── Dogfood / benchmark task entry points ────────────────────────────────
+
+@mcp.tool()
+def fetch_task_brief(task_id: str, ctx: Context = None) -> str:
+    """Fetch a dogfood or benchmark task brief by ID. This is the entry
+    point for a research / benchmark run: the operator's kickoff prompt
+    is typically just 'Call fetch_task_brief(task_id="X"), then follow
+    its instructions.' — the returned `brief` field contains everything
+    the AI needs to run the task.
+
+    Returns JSON: {task_id, variant, benchmark_slug, run_topic_name,
+                   brief, metadata, created_at, updated_at}.
+
+    `brief` is the full markdown instruction text to follow. `run_topic_name`
+    is the EXACT topic name to pass to start_topic — the benchmark scoring
+    scripts look up the run by this name, so don't improvise. `variant`
+    distinguishes prompt shapes (e.g. "thin" = minimal guidance, "fat" =
+    heavy guidance with scope + rubric inlined); different variants of the
+    same benchmark are scored independently.
+
+    Do NOT call this tool in normal topic-building sessions. It's a
+    research entry point — reach for it only when explicitly instructed
+    to run a benchmark / dogfood task.
+    """
+    _start = _start_call()
+    task = db.get_dogfood_task(task_id)
+    if task is None:
+        available = [t['task_id'] for t in db.list_dogfood_tasks()]
+        err = {
+            'error': f'No task found with task_id={task_id!r}.',
+            'available_task_ids': available,
+            'hint': 'Call list_tasks() to see available task briefs.',
+        }
+        return json.dumps(err, indent=2, ensure_ascii=False)
+
+    log_usage(ctx, "fetch_task_brief",
+              {"task_id": task_id, "variant": task['variant']},
+              f"served brief ({len(task['brief_markdown'])} chars)",
+              start_time=_start)
+
+    return json.dumps({
+        'task_id': task['task_id'],
+        'variant': task['variant'],
+        'benchmark_slug': task['benchmark_slug'],
+        'run_topic_name': task['run_topic_name'],
+        'brief': task['brief_markdown'],
+        'metadata': task['metadata'],
+        'created_at': task['created_at'],
+        'updated_at': task['updated_at'],
+    }, indent=2, ensure_ascii=False)
+
+
+@mcp.tool()
+def list_tasks(variant: str | None = None,
+               benchmark_slug: str | None = None,
+               ctx: Context = None) -> str:
+    """List available dogfood / benchmark task briefs (metadata only;
+    the full brief text is in fetch_task_brief). Optionally filter by
+    variant or benchmark_slug.
+
+    Returns JSON: {count, tasks: [{task_id, variant, benchmark_slug,
+                   run_topic_name, updated_at}, ...]}.
+
+    Do NOT call this tool in normal topic-building sessions — it's for
+    research / benchmark run setup only.
+    """
+    tasks = db.list_dogfood_tasks(variant=variant, benchmark_slug=benchmark_slug)
+    trimmed = [
+        {
+            'task_id': t['task_id'],
+            'variant': t['variant'],
+            'benchmark_slug': t['benchmark_slug'],
+            'run_topic_name': t['run_topic_name'],
+            'updated_at': t['updated_at'],
+        }
+        for t in tasks
+    ]
+    return json.dumps({
+        'count': len(trimmed),
+        'tasks': trimmed,
+    }, indent=2, ensure_ascii=False)
+
+
 # ── Feedback ──────────────────────────────────────────────────────────────
 
 @mcp.tool()

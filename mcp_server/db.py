@@ -51,6 +51,19 @@ def init_db():
             UNIQUE(topic_id, title)
         );
         CREATE INDEX IF NOT EXISTS idx_rejections_topic ON rejections(topic_id);
+        CREATE TABLE IF NOT EXISTS dogfood_tasks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id TEXT NOT NULL UNIQUE,
+            variant TEXT NOT NULL,
+            benchmark_slug TEXT,
+            run_topic_name TEXT NOT NULL,
+            brief_markdown TEXT NOT NULL,
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_dogfood_tasks_variant ON dogfood_tasks(variant);
+        CREATE INDEX IF NOT EXISTS idx_dogfood_tasks_benchmark ON dogfood_tasks(benchmark_slug);
     """)
     # Migrate existing DBs that predate the description column. NULL means
     # "not fetched yet"; empty string means "fetched, no short-desc on Wikipedia".
@@ -546,6 +559,87 @@ def count_undescribed(topic_id):
     ).fetchone()['c']
     conn.close()
     return count
+
+
+def upsert_dogfood_task(task_id, variant, run_topic_name, brief_markdown,
+                        benchmark_slug=None, metadata=None):
+    """Insert or replace a dogfood task. Keyed on task_id (UNIQUE).
+    Bumps updated_at on replace. Returns the stored row as a dict."""
+    conn = _connect()
+    meta_json = json.dumps(metadata or {}, ensure_ascii=False)
+    conn.execute("""
+        INSERT INTO dogfood_tasks (task_id, variant, benchmark_slug,
+                                    run_topic_name, brief_markdown,
+                                    metadata_json, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+        ON CONFLICT(task_id) DO UPDATE SET
+            variant = excluded.variant,
+            benchmark_slug = excluded.benchmark_slug,
+            run_topic_name = excluded.run_topic_name,
+            brief_markdown = excluded.brief_markdown,
+            metadata_json = excluded.metadata_json,
+            updated_at = datetime('now')
+    """, (task_id, variant, benchmark_slug, run_topic_name,
+          brief_markdown, meta_json))
+    conn.commit()
+    row = conn.execute(
+        "SELECT * FROM dogfood_tasks WHERE task_id = ?",
+        (task_id,)
+    ).fetchone()
+    conn.close()
+    return _row_to_task_dict(row) if row else None
+
+
+def get_dogfood_task(task_id):
+    """Return a task dict or None if not found."""
+    conn = _connect()
+    row = conn.execute(
+        "SELECT * FROM dogfood_tasks WHERE task_id = ?",
+        (task_id,)
+    ).fetchone()
+    conn.close()
+    return _row_to_task_dict(row) if row else None
+
+
+def list_dogfood_tasks(variant=None, benchmark_slug=None):
+    """Return all tasks as dicts, optionally filtered by variant or
+    benchmark_slug. Ordered by task_id."""
+    conn = _connect()
+    sql = "SELECT * FROM dogfood_tasks"
+    where = []
+    params = []
+    if variant:
+        where.append("variant = ?")
+        params.append(variant)
+    if benchmark_slug:
+        where.append("benchmark_slug = ?")
+        params.append(benchmark_slug)
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY task_id"
+    rows = conn.execute(sql, params).fetchall()
+    conn.close()
+    return [_row_to_task_dict(r) for r in rows]
+
+
+def _row_to_task_dict(row):
+    if row is None:
+        return None
+    meta = {}
+    try:
+        meta = json.loads(row['metadata_json'] or '{}')
+    except Exception:
+        meta = {}
+    return {
+        'task_id': row['task_id'],
+        'variant': row['variant'],
+        'benchmark_slug': row['benchmark_slug'],
+        'run_topic_name': row['run_topic_name'],
+        'brief_markdown': row['brief_markdown'],
+        'metadata': meta,
+        'created_at': row['created_at'],
+        'updated_at': row['updated_at'],
+    }
 
 
 # Initialize on import
