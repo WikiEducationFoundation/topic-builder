@@ -93,22 +93,25 @@ closest current primitive.
 | "cross-wiki comparison" / "what's on zhwiki but not enwiki" | *`cross_wiki_diff` not yet built — manual flow: parallel topic on the other wiki + per-article `preview_search` walk-back* |
 | "is this topic complete?" | *`completeness_check` not yet built — closest: spot check + `browse_edges` from edge seeds* |
 
-## SHAPE → WIKIDATA PROPERTY
+## SHAPE → WIKIDATA PROPERTY + HIGH-LEVERAGE FIRST MOVE
 
-When you reach the Wikidata step, the right property depends on the
-topic's shape. These pairings are observed to work reliably; for
-other shapes, use `wikidata_search_entity` on the topic and inspect
-the candidate entities' claim structure for the natural join.
+Topic shape dictates both the right Wikidata property to probe AND the
+first high-leverage tool reach that usually pays. Wikidata probes are
+ADDITIVE — they find candidates other strategies would miss, but they
+don't have completeness properties (an article without the relevant
+property set still exists; the probe won't see it). Always triangulate
+with at least one other strategy.
 
-| Shape | Recommended property | Notes |
-|---|---|---|
-| Awards-anchored biography | `P166` (award received) | `wikidata_entities_by_property(P166, <award-QID>)` returns the canonical winners list when Wikidata is well-maintained. Modern winners may be undertagged — spot-check recent-era entries. |
-| Geographic feature | `P31/P279*` (type + subclass) ∩ `P17` (country) | Use a SPARQL `wdt:P31/wdt:P279*` property path via `wikidata_query` to catch subtypes (reservoirs as subclass of lake, etc.). |
-| Abstract concept / discipline | `P101` (field of work) | Returns people whose work is in that discipline. Pair with list-page harvest for concepts/works; P101 covers people, not the concept article itself. |
-| Art / literary / cultural movement | `P135` (movement) | Catches figures, individual works, and variant sub-movements. |
-| Pop culture franchise / contemporary media | SPARQL is often a **sizing probe**, not a primary source | List pages / navboxes tend to be the canonical corpus; Wikidata modeling of TV series / albums is frequently inconsistent. Use `wikidata_query` to estimate scope, then triangulate against the list page. |
-| Single historical event | `P361` (part of), `P793` (significant event), `P138` (named after) | `P138` for things-named-after is especially useful (schools, streets, craters, awards). |
-| Taxonomy (species, genera) | `P31` (instance of = taxon), `P171` (parent taxon) | Tree-structured; walk `P171` upward or use SPARQL for descendants. |
+| Shape | Wikidata property | High-leverage first move | Notes |
+|---|---|---|---|
+| Awards-anchored biography | `P166` (award received) | `wikidata_entities_by_property(P166, <award-QID>)` | Returns the canonical winners list when Wikidata is well-maintained. Modern winners may be undertagged — spot-check recent-era entries. |
+| Geographic feature | `P31/P279*` (type + subclass) ∩ `P17` (country) | Category pull on `Category:<Features> in <Country>` | Category is usually the bulk source; Wikidata SPARQL (`wdt:P31/wdt:P279*` property path via `wikidata_query`) catches subtypes (reservoirs as subclass of lake, etc.). |
+| Abstract concept / discipline | `P101` (field of work) | `find_list_pages` + main-article-as-list-page fallback | Concepts often lack list pages — the topic's own article typically has an enumeration section. `P101` covers people in the discipline, not the concept articles themselves. |
+| Art / literary / cultural movement | `P135` (movement) | `harvest_list_page(title=<movement-main-article>)` | Main article for a movement usually enumerates figures / works / sub-movements. Wikidata P135 catches figures but often misses individual works. |
+| Pop culture franchise / contemporary media | SPARQL is a **sizing probe**, not a primary source | `harvest_navbox(template=<franchise-template>)` | Navboxes are editor-curated and consistent for franchises; Wikidata modeling of TV series / albums is often inconsistent. Use `wikidata_query` only to estimate scope. |
+| Single historical event (with cultural tail) | `P361` (part of), `P793` (significant event), `P138` (named after) | `harvest_navbox` on the parent-program / parent-era template | Parent-program navboxes capture mission-adjacent hardware, personnel, and commemorations that narrow category crawls miss. `P138` (named after) is the highest-leverage Wikidata probe for the "things officially named after" branch of scope. |
+| Taxonomy (species, genera) | `P31` (instance of = taxon), `P171` (parent taxon) | Category + list-page harvest (`List of <Genus> species`) | Enwiki has thousands of genus-level list pages — harvest them directly. Then `wikidata_entities_by_property(P171, <family-QID>)` catches descendants that slipped the category / list sweep. Tree-structured so walk `P171` upward or use SPARQL for descendants. |
+| Intersectional biography (demographic × discipline) | `P106` (occupation) ∩ `P172` (ethnic group) / `P27` (citizenship) | `get_category_articles` on the intersectional category if it exists; search-based otherwise | The category backbone is usually noisy (overinclusive of professions, eras, or subfields) — plan cleanup time. Wikidata joins on the intersection are brittle — ethnicity coverage is uneven — treat as additive. |
 
 If the topic doesn't fit one of these shapes cleanly, probe via
 `wikidata_search_entity` to get the topic's own QID, then inspect
@@ -116,6 +119,13 @@ what properties link *into* that QID via a small exploratory SPARQL
 query (`SELECT ?prop (COUNT(?s) AS ?c) WHERE { ?s ?prop wd:<QID> }
 GROUP BY ?prop ORDER BY DESC(?c) LIMIT 20`). The top inbound
 properties are usually the join axis for that topic shape.
+
+**Wikidata properties are ADDITIVE probes, never subtractive filters.**
+A taxon without `P171` set still exists on Wikipedia; a person without
+`P106` set is still a person. Never drop an article on the grounds of a
+missing Wikidata property. Use these probes to find candidates other
+strategies missed; let the AI (you) judge inclusion against the scope
++ rubric. See ADDITIVE vs. SUBTRACTIVE tools below.
 
 ## IMPORTANT GUIDELINES
 
@@ -378,8 +388,18 @@ properties are usually the join axis for that topic shape.
   fast to search: `search_articles` with boolean queries intersecting
   ethnicity/nationality keywords with discipline categories, and
   `search_similar` / morelike: seeded from a handful of canonical figures
-  in the intersection. Expect a noisier working list; fetch_descriptions
-  and remove_by_pattern become primary tools.
+  in the intersection. Expect a noisier working list; `fetch_descriptions`
+  and `remove_by_pattern` become primary tools.
+
+  **`fetch_article_leads` is the disambiguation workhorse on this shape.**
+  Wikidata short-descriptions frequently mislead on intersectional
+  biography candidates — a generic "academic" or "athlete" label can hide
+  the specific STEM sub-field that determines whether the subject is in
+  scope, and the inverse is true (a STEM-sounding shortdesc can cover a
+  clinical-only physician who's out of scope per a research-primary
+  rubric). Reach for `fetch_article_leads` on any borderline biography
+  before scoring or rejecting. Cheap (one REST call per 20 titles) and
+  decisively better signal than the shortdesc alone.
 
 - PATTERN-BASED CLEANUP is one of the most efficient mid-flow tools. After
   a broad gather, `remove_by_pattern` with `dry_run=True` can bulk-clear
@@ -454,6 +474,34 @@ properties are usually the join axis for that topic shape.
       titles after a Wikipedia rename. When in doubt, use
       `resolve_redirects` (safe, no drops) for normalization and
       investigate the rest before `filter_articles(force=True)`.
+
+- SOURCE-TRUST — when a source is topic-definitional, trust its provenance
+  over thin or absent shortdescs. If an article was pulled from a category
+  literally named after the topic (e.g. `Category:Orchids`), from a list
+  page authored by topic specialists (e.g. `List of Orchidaceae genera`),
+  or from a WikiProject explicitly dedicated to the topic — the source
+  vouches for relevance. Don't reject such articles on the grounds of
+  a generic or blank shortdesc; the shortdesc tells you nothing in that
+  case. This pattern matters most on taxonomy-at-scale shapes where
+  thousands of genus-level species articles have shortdescs like "Species
+  of plant" that say nothing about the genus: without source-trust the
+  AI wastes time re-judging each; with source-trust the AI classifies
+  by the source that brought them in.
+
+  Source-trust does NOT apply to:
+    - Broad parent categories (`Category:Plants`, `Category:People`) — too
+      generic to vouch for a specific topic.
+    - Search-based sources (`search:<query>`) — search is noisy by shape
+      and shouldn't be treated as topic-definitional.
+    - Similarity seeds (`morelike:<seed>`) — known noisy; candidates need
+      per-article review regardless of source.
+    - `manual:<label>` additions — the trust depends on what the label
+      documented; judge per label.
+
+  Conversely, on the exclusion side, the absence of a topic-definitional
+  source is NOT a reason to drop an article — many on-topic articles
+  come in via search / morelike / browse_edges and are legitimately in
+  scope once inspected.
 
 - ADDITIVE vs. SUBTRACTIVE tools. Every tool either **adds / normalizes**
   (additive — `resolve_redirects`, `fetch_descriptions`, `fetch_article_leads`,
