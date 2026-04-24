@@ -424,10 +424,13 @@ if task is None:
     print(json.dumps({{"error": "task not found"}}))
     sys.exit(0)
 template = task["run_topic_name_template"] or ""
-# Build a regex that matches the rendered name: replace {{ts}} with a
-# timestamp pattern, escape the rest.
-if "{{ts}}" in template:
-    stem_pattern = re.escape(template).replace(r"\\{{ts\\}}", r"(\d{{12}})")
+# Build a regex that matches the rendered name: split on the literal
+# {{ts}} placeholder, escape each side, reinsert a timestamp group.
+TS_PLACEHOLDER = "{{ts}}"
+parts = template.split(TS_PLACEHOLDER)
+if len(parts) == 2:
+    # {{ts}} renders as YYYYMMDDTHHMM (12 digits with a literal T in the middle).
+    stem_pattern = re.escape(parts[0]) + r"(\d{{8}}T\d{{4}})" + re.escape(parts[1])
 else:
     stem_pattern = re.escape(template)
 regex = re.compile("^" + stem_pattern + "$")
