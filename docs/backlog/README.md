@@ -191,9 +191,14 @@ Bundle of small changes around the benchmark / ratchet system now that `fetch_ta
 
 ## Tier 2 — medium effort, multi-session-validated
 
-### ☐ MCP server concurrency under heavy tool load `[NEW — 2026-04-24 single incident]`
+### ☐ MCP server concurrency under heavy tool load `[NEW — 2026-04-24 two observations]`
 
-**What.** When 2+ parallel sessions are running heavy gather tools (`get_category_articles`, `harvest_list_page`, `auto_score_by_description` on large corpora), a 3rd incoming MCP handshake can time out during the initial `list_tools` / session-init exchange. Observed once 2026-04-24 when trying to add a 3rd thin-variant Codex session while AA-STEM + orchids were mid-gather.
+**What.** When 2+ parallel sessions are running heavy gather tools (`get_category_articles`, `harvest_list_page`, `auto_score_by_description` on large corpora), incoming MCP handshakes on new sessions are delayed or fail outright. Observed twice on 2026-04-24:
+
+- **First attempt**: hard timeout trying to add a 3rd thin-variant Codex session while AA-STEM + orchids were mid-gather.
+- **Second attempt (same conditions, retried a few minutes later)**: handshake succeeded but took ~18 seconds (should be sub-second).
+
+18s latency for `list_tools` is concrete evidence of event-loop blocking — the server is fundamentally single-threaded async, and heavy tool calls that don't yield cooperatively hold up every other coroutine including incoming handshake requests.
 
 **Why.** Likely root cause: heavy tool calls momentarily block the asyncio event loop, queueing new incoming requests behind them. Codex's startup timeout is modest (~5s); under concurrent load the handshake can slip past.
 
@@ -205,7 +210,7 @@ Bundle of small changes around the benchmark / ratchet system now that `fetch_ta
 - Is the blocking happening in pure-Python CPU work (filtering 18k articles) or in `urllib`-blocking I/O? The former is harder to yield from; the latter is easier (switch to `httpx` async). Needs profiling under concurrent load.
 - Is this actually a problem worth fixing, or is "stagger session starts by 15s" a sufficient operational workaround? Depends how often we run 3+ parallel sessions. If it becomes routine (e.g., if 1.a.auto-dispatch lands + we want to fire 10 agents at once), fix; if it stays at 2–3, defer.
 
-**Sequencing note.** Speculative on single-session evidence. Don't work on unless a second session confirms the pattern, or the parallel-session workflow becomes routine enough that staggering starts feels friction-heavy.
+**Sequencing note.** Two observations confirm the pattern — no longer speculative. Still Tier 2 (functional, just slow); bumps to the top of Tier 2 if the auto-dispatch / parallel-runs workflow becomes routine. Multi-worker fix (`uvicorn --workers 2`) is the smallest durable change; cooperative-chunking is more surgical but needs tool-by-tool attention.
 
 ### ☐ `cross_wiki_diff(source_wiki, target_wiki)` `[formerly 5.2]`
 
