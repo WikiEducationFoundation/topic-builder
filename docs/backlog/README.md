@@ -99,7 +99,7 @@ Bundle of small changes around the benchmark / ratchet system now that `fetch_ta
 - **1.b (rebuild baselines)** ships after 1.a, as each thin run lands.
 - **1.c (api_calls=0 gate fix)** ☑ shipped 2026-04-24. Small and independent.
 - **1.d (abstract shape wisdom)** MUST ship AFTER 1.b — otherwise the abstraction gets baked into the baselines and we can't measure whether it helped.
-- **1.e (informed variant)** is independent; ship any time after 1.a.
+- **1.e (informed variant)** ☑ shipped 2026-04-24. Five `<slug>-informed` briefs seeded alongside the thin variants; same protocol, adds a "Baseline + gold snapshot" section with the current gold_in count + baseline precision/recall/corpus-size + a one-sentence read.
 - **1.f (doc sweep)** ☑ shipped 2026-04-24. Updated ratchet-plan, benchmarks/README, CLAUDE.md, dogfood/README, dogfood/tasks/README; added dogfood/kickoffs/README framing the fat-variant files as legacy.
 
 #### 1.a `[☑ shipped 2026-04-24]` Brief durability pass + template mechanism
@@ -163,7 +163,7 @@ Bundle of small changes around the benchmark / ratchet system now that `fetch_ta
 
 **Sequencing.** MUST ship AFTER 1.b. Otherwise the abstraction gets baked into the new baselines and we can't measure whether it helped. The first ratchet cycle post-baseline IS this abstraction — that's what we're measuring.
 
-#### 1.e `[☐]` Informed-variant briefs for gold farming
+#### 1.e `[☑ shipped 2026-04-24]` Informed-variant briefs for gold farming
 
 **What.** Add `<slug>-informed.md` briefs under `dogfood/tasks/` with frontmatter `variant: informed`. Body = thin brief's content + "the gold set contains at least N articles; the prior thin baseline hit P precision, R recall." Reseed DB.
 
