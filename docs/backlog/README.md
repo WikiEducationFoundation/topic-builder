@@ -24,6 +24,54 @@ Add new items here as signals come in; promote items to
 
 ## Tier 1 — small, high-leverage
 
+### ☐ `filter_articles` silently drops list-harvested titles `[NEW — 2026-04-24 orchids run]`
+
+**What.** On the 2026-04-24 orchids thin-variant run, the AI ran `filter_articles` (which resolves redirects and drops missing pages) on an 18.3k-article corpus heavy with taxonomy list-page harvests. The call **collapsed the corpus from ~18.3k to ~7.2k** — ~11k titles treated as missing, despite clearly corresponding to real Wikipedia pages. The AI had to `reset_topic` and rebuild from scratch without the filter pass.
+
+**Why.** Regression in a safety-shaped tool. `filter_articles` is documented as "drop missing pages" — if it's classifying real, resolvable titles as missing, that's either (a) a batch-size / rate-limit bug where a failed API page silently drops every title in the batch, (b) title-normalization mishandling of list-page link text vs. canonical Wikipedia title, or (c) some redirect-API semantic that treats taxonomic list-derived titles differently from how the tool expects. Needs root-cause investigation before we can trust `filter_articles` on taxonomy-at-scale topics.
+
+**Shape.**
+- Reproduce: rebuild an orchids-like corpus, invoke `filter_articles`, inspect what it classifies as "missing" and why. If the failure mode is batch-boundary-related (a), log per-batch and bail safely on partial-response. If title-normalization (b), fix the normalization. If API-semantic (c), document the restriction in the tool docstring + server_instructions KNOWN SHARP EDGES.
+- Minimum viable fix: add a safety guardrail — when `filter_articles` would drop >N% of the corpus (threshold: 10%?), return a confirmation request / preview instead of committing. Parallel to the `remove_by_pattern` `dry_run=True` pattern already in the server.
+
+**Why Tier 1.** Real session-level damage from a single tool invocation; the AI explicitly flagged it as "actively dangerous" on this shape. Fix before the next orchids ratchet cycle.
+
+---
+
+### ☐ Person-only harvest mode for biography list pages `[NEW — 2026-04-24 multi-session: AA-STEM + orchids]`
+
+**What.** `harvest_list_page(main_content_only=True)` strips navboxes / references / infoboxes, but still harvests every blue link in the main content. On biography list pages, that means the list brings in institutions, concepts, references, and eponym-named taxa alongside the biographies. Would like a `persons_only=True` mode (or a separate `harvest_biography_list`) that keeps only article titles corresponding to Wikidata-typed person entities (Q5 / human).
+
+**Why.** Two sessions in two days flagged the same friction:
+- AA-STEM ratchet run (2026-04-23): "List-page discovery looked promising but the obvious pages were noisy enough that I did not trust a bulk harvest without a person-only extraction mode."
+- Orchids ratchet run (2026-04-24): "Large species list pages, especially Dendrobium, leak unrelated biographies via eponym/name collisions, and without broad description coverage there is no fast bulk-review path for those leaks."
+
+Same shape complaint, orthogonal directions: biography lists leaking non-bios (AA-STEM), taxonomy lists leaking bios (orchids). A typed-filter pass solves both.
+
+**Shape.** Post-harvest step: take harvested titles, run `fetch_wikidata_qids` (already shipped), check `instance_of` (P31) + P31-superclass lookup. Keep `Q5` (person) when `persons_only=True`; drop `Q5` when `exclude_persons=True`. Two optional flags on `harvest_list_page` + `preview_harvest_list_page`; default behavior unchanged.
+
+**Open questions.**
+- Do we need `include_types=[qid, ...]` / `exclude_types=[qid, ...]` as general filters, or just `persons_only` / `exclude_persons` specifically? Start with the two named flags; generalize later if demand appears.
+- Cost: adding a QID-resolve step post-harvest doubles the API work on a big list page. Make it opt-in (flag off by default); preview variant only resolves enough to show the sample counts.
+
+---
+
+### ☐ Same-wiki topic diff / intersection primitive `[NEW — 2026-04-24 multi-session: AA-STEM + orchids]`
+
+**What.** A `topic_diff(topic_a, topic_b)` or `topic_intersect(topic_a, topic_b)` tool for same-wiki topic comparison, returning set partitions (`only_a` / `only_b` / `both`). Distinct from the Tier 2 `cross_wiki_diff` (different wikis).
+
+**Why.** Two multi-session wishes:
+- AA-STEM (2026-04-23): "I felt the absence of an easy cross-topic intersect/diff against the AA medicine blocklist and the frozen baseline; that would have made cleanup and audit faster and more defensible." — wanting to compare `african-american-stem` against `AA STEM medicine blocklist` to surface likely-clinical-physician false positives.
+- Orchids (2026-04-24): "A corpus-diff tool against another topic/source set (for example baseline topic vs current topic, or category/list harvest vs Wikidata sitelinks) would also make gap and noise review much faster." — wanting to compare ratchet-run corpus against the frozen baseline corpus to surface exactly the additions and removals.
+
+Second use case is especially useful as a ratchet diagnostic: the scoring script shows metrics, but a human-readable "here are the 456 titles this run added that baseline didn't have" is more auditable than a percentage.
+
+**Shape.** Read-only SQL over `articles` table scoped to two topic IDs. Partition into three buckets. Return counts + optional per-bucket sample. May want a `by_source=True` mode that surfaces which sources contribute to each bucket.
+
+**Sequencing note.** Simpler than `cross_wiki_diff` (no langlinks / Wikidata roundtrips needed). Could ship standalone. If it proves useful, the cross-wiki case could become a wrapper that normalizes topics-on-different-wikis to QIDs first and then calls this.
+
+---
+
 ### ☐ Benchmark system polish (6 sub-items) `[NEW — 2026-04-23]`
 
 Bundle of small changes around the benchmark / ratchet system now that `fetch_task_brief` + thin variants exist and today's fat-variant runs exposed baseline-quality issues. Sub-items are independently ship-able but share sequencing constraints (see below). Each ships as its own commit.
@@ -85,7 +133,7 @@ Bundle of small changes around the benchmark / ratchet system now that `fetch_ta
 
 **What.** Move cross-topic-shape wisdom currently baked into the 2026-04-23 fat-variant kickoff prompts into the canonical instructions, so every thin-variant run benefits automatically without operator pre-hinting. Concrete edits:
 
-- **Expand the existing `SHAPE → WIKIDATA PROPERTY` table** with `P138 (named after)` for named-event / award / institution shapes and `P171 (parent taxon)` for taxonomic shapes; add a "high-leverage first move" column.
+- **Expand the existing `SHAPE → WIKIDATA PROPERTY` table** with `P138 (named after)` for named-event / award / institution shapes and `P171 (parent taxon)` for taxonomic shapes; add a "high-leverage first move" column. P171 evidence from the 2026-04-24 orchids thin-variant run: `wikidata_entities_by_property(property="P171", value="Q25308")` returned 66 enwiki sitelinks of which **27 were not already in the corpus** after a full category + list-page sweep — concrete lift data.
 - **Add a SOURCE-TRUST principle bullet**: when a source is topic-definitional (category named after the topic, list-page authored by topic specialists), trust source-provenance over shortdesc for inclusion. Evidence: orchids baseline's source-trust rule recovered ~5000 taxa whose Wikidata shortdesc said only "Species of plant".
 - **Reinforce INTERSECTIONAL TOPICS** with a pointer to `fetch_article_leads` for ambiguous biography shortdescs — that's where the tool earns its keep (AA-STEM / HL-STEM wrap-up feedback this cycle).
 - **Add "for parent-program shapes, `harvest_navbox` on the parent's template is your highest-leverage first move"** (Apollo 11's Kennedy-Space-Center-miss exemplar — recovered in the fat-variant run but only after a scope-wide dig).
@@ -100,7 +148,7 @@ Bundle of small changes around the benchmark / ratchet system now that `fetch_ta
 
 **What.** Add `<slug>-informed.md` briefs under `dogfood/tasks/` with frontmatter `variant: informed`. Body = thin brief's content + "the gold set contains at least N articles; the prior thin baseline hit P precision, R recall." Reseed DB.
 
-**Why.** Two-variant measurement split (per discussion 2026-04-23): **thin = product measurement** (what a realistic user gets); **informed = ceiling probe + gold-farming** (what the AI can do with target visibility). Gold farming is the specific value — an informed run is most likely to surface gold-growth candidates because the AI knows where the bar is.
+**Why.** Two-variant measurement split (per discussion 2026-04-23): **thin = product measurement** (what a realistic user gets); **informed = ceiling probe + gold-farming** (what the AI can do with target visibility). Gold farming is the specific value — an informed run is most likely to surface gold-growth candidates because the AI knows where the bar is. Orchids is the biggest current opportunity (2026-04-24 thin-variant run surfaced **456 reach candidates** at 100% precision; auditing + promoting would materially grow the orchids gold set).
 
 **Shape.** Pure content / seed work. No code. Five new markdown files + a reseed. Can ship any time after 1.a (to use the locked template format); doesn't affect the thin-ratchet loop.
 
