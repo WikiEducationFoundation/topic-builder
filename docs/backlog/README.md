@@ -24,6 +24,35 @@ Add new items here as signals come in; promote items to
 
 ## Tier 1 — small, high-leverage
 
+### ☐ Concurrency fix: nginx timeout bump + `uvicorn --workers 2` `[NEW — 2026-04-24 three observations]`
+
+**What.** Two changes, ship together:
+1. **nginx `proxy_read_timeout` + `proxy_send_timeout` → 300s** (from the default 60s) on the `/mcp` location in `/etc/nginx/sites-available/topic-builder`. Reload nginx to apply — no Python restart, no MCP session drops.
+2. **Switch the systemd unit to run the MCP service with `uvicorn --workers 2`** (currently `python server.py`, which spawns one FastMCP process with one async event loop). Multiple workers = multiple event loops = incoming handshakes and unrelated sessions don't queue behind a single long-running tool call.
+
+Do both in one deploy window when no runs are in flight — step 2 requires a Python restart and will drop any active MCP sessions.
+
+**Why.** Three concrete observations under 2–3 concurrent sessions:
+- Hard handshake timeout trying to add a 3rd Codex session while 2 were mid-gather.
+- 18s handshake latency on retry (should be sub-second).
+- Bursts of nginx `upstream timed out (110)` → 504s returned to MCP clients while heavy tool calls held the event loop past 60s. Clients auto-retry, but adds friction + slows AI.
+
+Root cause: the MCP server is fundamentally single-threaded async; heavy gather tools (`get_category_articles` depth walks, `harvest_list_page` on large pages, `auto_score_by_description` on 10k-article corpora) don't yield cooperatively, so every other coroutine — including incoming requests — queues behind them.
+
+**Why both together.** (1) is quick mitigation (absorb the 60s ceiling into 300s headroom); (2) is the real fix (parallel event loops). Alone, (1) masks the problem and lets it recur on truly heavy single calls; (2) alone is a harder change with session-drop risk. Shipping both is the right bundle.
+
+**Shape.**
+- `mcp_server/deploy.sh` writes the nginx config — update the `/mcp` location block to add `proxy_read_timeout 300s; proxy_send_timeout 300s;`. Deploy reloads nginx idempotently.
+- `mcp_server/deploy.sh` writes the systemd unit — change `ExecStart` from `python server.py` to `python -m uvicorn server:mcp.streamable_http_app --host 127.0.0.1 --port 8000 --workers 2` (exact invocation depends on how FastMCP exposes the app; verify locally first). Alternatively use `gunicorn -k uvicorn.workers.UvicornWorker -w 2` if uvicorn's built-in workers don't play nicely with streamable-HTTP.
+- Worker count: start at 2. SQLite writes are serialized by the DB's own locking; the session-state dict (`_session_topics`) is per-process but MCP sessions are sticky on a single TCP connection, so a session started on worker A continues on worker A. Minor risk: if a worker crashes mid-session, the session dict is lost.
+
+**Open questions.**
+- Does FastMCP's streamable-HTTP transport support multiple uvicorn workers cleanly? Need to verify before deploy. If not, fall back to running N independent instances behind an nginx upstream block with `least_conn`.
+- Per-call counters (`_call_api_calls`, `_call_rate_limit_hits`) use `ContextVar` — per-coroutine, survives workers fine.
+- Rate-limit stats (`_rate_limit_hits`, `_last_rate_limit_time`) are module-globals. Per-worker stats would diverge; for observability we probably don't care (each worker reports its own).
+
+**Sequencing.** Ship when all parallel runs are done — step 2 drops active MCP sessions. Monitor `nginx/error.log` + `usage.jsonl` after deploy to confirm 504s stop recurring under concurrent load.
+
 ### ☐ Argumentless `fetch_task_brief` with auto-dispatch `[NEW — 2026-04-24]`
 
 **What.** `fetch_task_brief()` with no `task_id` auto-picks the task whose previous run is oldest and returns that one's brief. The operator's kickoff collapses from per-task `fetch_task_brief(task_id="apollo-11-thin")` to a single universal line:
@@ -191,27 +220,6 @@ Bundle of small changes around the benchmark / ratchet system now that `fetch_ta
 
 ## Tier 2 — medium effort, multi-session-validated
 
-### ☐ MCP server concurrency under heavy tool load `[NEW — 2026-04-24 two observations]`
-
-**What.** When 2+ parallel sessions are running heavy gather tools (`get_category_articles`, `harvest_list_page`, `auto_score_by_description` on large corpora), incoming MCP handshakes on new sessions are delayed or fail outright. Observed twice on 2026-04-24:
-
-- **First attempt**: hard timeout trying to add a 3rd thin-variant Codex session while AA-STEM + orchids were mid-gather.
-- **Second attempt (same conditions, retried a few minutes later)**: handshake succeeded but took ~18 seconds (should be sub-second).
-
-18s latency for `list_tools` is concrete evidence of event-loop blocking — the server is fundamentally single-threaded async, and heavy tool calls that don't yield cooperatively hold up every other coroutine including incoming handshake requests.
-
-**Why.** Likely root cause: heavy tool calls momentarily block the asyncio event loop, queueing new incoming requests behind them. Codex's startup timeout is modest (~5s); under concurrent load the handshake can slip past.
-
-**Shape.** Two plausible fixes:
-- Cooperative chunking: split the longest-running tools (`get_category_articles` depth walks, `harvest_list_page` on large lists, `auto_score_by_description` on 10k-article corpora) into async-yielding chunks with periodic `await asyncio.sleep(0)` so the loop can serve other coroutines. Cheapest; localized to specific tools.
-- Multi-worker: run the MCP service with `uvicorn --workers 2` (or gunicorn equivalent). Removes single-loop blocking entirely; adds minor state-sharing complexity (session dict isn't cross-process, but SQLite is shared state anyway).
-
-**Open questions.**
-- Is the blocking happening in pure-Python CPU work (filtering 18k articles) or in `urllib`-blocking I/O? The former is harder to yield from; the latter is easier (switch to `httpx` async). Needs profiling under concurrent load.
-- Is this actually a problem worth fixing, or is "stagger session starts by 15s" a sufficient operational workaround? Depends how often we run 3+ parallel sessions. If it becomes routine (e.g., if 1.a.auto-dispatch lands + we want to fire 10 agents at once), fix; if it stays at 2–3, defer.
-
-**Sequencing note.** Two observations confirm the pattern — no longer speculative. Still Tier 2 (functional, just slow); bumps to the top of Tier 2 if the auto-dispatch / parallel-runs workflow becomes routine. Multi-worker fix (`uvicorn --workers 2`) is the smallest durable change; cooperative-chunking is more surgical but needs tool-by-tool attention.
-
 ### ☐ `cross_wiki_diff(source_wiki, target_wiki)` `[formerly 5.2]`
 
 **What.** Take two topics on different wikis, return articles in A that have a sitelink to wiki B but aren't in topic B ("potential gap-fills"), and separately articles in A with no sitelink to B at all ("genuinely unique-to-A content"). Both directions useful.
@@ -325,6 +333,14 @@ The 2026-04-23 dogfood `task.md` has already been patched to authorize the loop 
 ## Tier 3 — deferred / speculative
 
 Items worth keeping on the roadmap but not committing to pre-build. Revisit after Tier 1–2 land or as specific signals confirm.
+
+### ☐ Cooperative async yielding in heavy tools `[NEW — 2026-04-24 deferred follow-up]`
+
+**What.** Audit the longest-running tools (`get_category_articles` depth walks, `harvest_list_page` on large pages, `auto_score_by_description` on 10k+ corpora, `filter_articles` on large corpora, `resolve_redirects` / reconcile passes) and add periodic `await asyncio.sleep(0)` yield points — or switch synchronous HTTP (`urllib.request`) to `httpx` async — so one heavy call doesn't hold the event loop.
+
+**Why.** The multi-worker fix (Tier 1, linked above) absorbs the visible symptom by running parallel event loops, but a single worker still freezes under any tool that doesn't yield. Real per-tool async-friendliness is the durable end state — especially if we ever scale workers back to 1 (e.g., on a resource-constrained deploy) or accept more than 2 concurrent heavy sessions.
+
+**Sequencing.** Deferred until the multi-worker fix ships and we observe whether the symptom is fully absorbed or if we still see per-worker blocking under load. Surgical per-tool work; one afternoon per tool at most.
 
 ### ☐ `browse_edges(min_links="auto")` `[formerly 1.8]`
 
