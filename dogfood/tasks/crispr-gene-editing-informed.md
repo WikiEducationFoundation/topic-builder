@@ -1,0 +1,35 @@
+---
+task_id: crispr-gene-editing-informed
+variant: informed
+benchmark_slug: crispr-gene-editing
+run_topic_name_template: crispr-gene-editing-informed {ts}
+---
+
+# Benchmark run: CRISPR gene editing (informed variant)
+
+You're executing a benchmark run against the Topic Builder MCP server. This is the **informed** variant — the baseline's quality numbers + current gold-set size are visible to you. The goal isn't to rediscover what the baseline already captured; it's to **grow gold**: find on-topic articles the audited gold set doesn't yet contain. Audited reach additions become part of the next baseline.
+
+**Mode:** deep consultative, completeness-seeking. No human operator will steer you mid-session.
+
+## Scope statement
+
+> Wikipedia articles about CRISPR as a gene-editing system — its biology, mechanisms, associated techniques and tools, pioneering scientists, CRISPR-focused companies, applications (therapies and projects), and the central bioethical episode (He Jiankui affair).
+
+That paragraph is the whole scope you're given. Flesh out the rubric from it yourself per the server's SCOPE RUBRIC guidance.
+
+## Baseline + gold snapshot
+
+- **Current audited gold set**: 102 on-topic articles (classified CENTRAL or PERIPHERAL).
+- **Prior baseline run**: 99-article corpus, precision 0.828, recall 1.0 against gold at bootstrap. Read: the baseline was tight and captured everything audited in at the time. Gold has grown since via reach audits, so there are known on-topic articles not present in the baseline's corpus.
+- **What "beat the baseline" means here**: precision was already high, so the win is reach — surface articles on-topic to the scope that weren't in the baseline's pull.
+
+These numbers are visible so you can pace your session. You don't need to race; you need to reach past what a search-centric baseline would have found.
+
+## Protocol
+
+1. `start_topic(name="crispr-gene-editing-informed {ts}", wiki="en", fresh=False)`. The name above is pre-rendered with a fresh timestamp at fetch time — use it verbatim. A separate frozen baseline topic exists with a related name; do NOT overwrite it.
+2. Draft a rubric from the scope statement and persist it via `set_topic_rubric(rubric=...)`. Follow the SCOPE RUBRIC framework in the server's instructions.
+3. Run the standard Topic Builder pipeline (reconnaissance → gather → descriptions → review → cleanup). Follow the server's PIPELINE, NOISE TAXONOMY, KNOWN SHARP EDGES, and WRAP-UP guidance. Since the goal is reach, bias toward strategies that surface articles the baseline's approach would have missed.
+4. Do SPOT CHECK and GAP CHECK before wrap-up per the server instructions. Fabricate probes targeting under-covered subdomains of the scope.
+5. Call `submit_feedback(...)` with honest values for the structured fields. See the tool's docstring for the schema; at minimum populate `coverage_estimate`, `strategies_used`, `spot_check`, `sharp_edges_hit`, and `tool_friction` alongside the prose fields. Note your estimated reach count in the feedback so we can correlate with the scoreboard when the run is audited. Don't call `export_csv` — the scoring script pulls the corpus directly from the server.
+6. Reply with a short summary: final article count, coverage_estimate.confidence, your estimate of the reach count (articles you believe are not already in gold), and notable friction.
