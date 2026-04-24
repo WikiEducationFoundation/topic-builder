@@ -223,3 +223,16 @@ End-to-end fix for the redirect-blindness discovered during the first-pass audit
 - **New `resolve_redirects` MCP tool** — topic-scoped, additive-only. Rewrites every article title in the current topic to its canonical Wikipedia form; merges duplicates; never drops. Safe to run repeatedly. `dry_run=True` for preview. Added to COMMON TASK → TOOL map + recommended in PIPELINE step 5 of `server_instructions.md`.
 - **`filter_articles` safety threshold** — new `max_drop_fraction` (default 0.1) and `force` (default False) parameters. When the redirect phase would drop more than the fraction as "missing on Wikipedia," the tool refuses and returns a preview + sample instead of committing. Closes the 2026-04-24 Tier 1 bug where it silently dropped 11k/18k orchids titles.
 - Landing page + server_instructions.md updated. Landing lists the new tool + updated filter_articles description; instructions PIPELINE step 5 recommends `resolve_redirects` first, then `filter_articles` (noting the safety refusal behavior).
+
+## Redirect + redlink status marking in gold (2026-04-24)
+
+Follow-on to the redirect reconciliation pass: instead of silently dropping merged duplicates or flagging missing titles for ad-hoc review, **every row in gold.csv now carries an explicit honest status**. The scoring script excludes redirect/redlink from all denominators so neither corrupts precision or recall.
+
+- **Two new `on_topic` statuses:**
+  - `redirect` — title is a Wikipedia redirect source pointing at a canonical row also in gold. Provenance marker; future runs recognize the title as "known, don't re-audit." Notes field records `→ canonical_title`.
+  - `redlink` — title has no Wikipedia article (page missing). Original classification preserved in notes as `[was: <original>]` for audit history.
+  - Both excluded from `gold_in`, `gold_out`, precision denominator, recall denominator. Tracked in the scoreboard's `Gold status` section with counts + excluded-from-scoring notes.
+- **`reconcile_redirects.py`** changed to mark rather than drop/flag. Re-run on all 5 benchmarks: CRISPR 0 marks, Apollo 0, AA-STEM 0, HL-STEM 1 redirect (Elsa Salazar Cade → William H. Cade with warning), Orchids **19 redirect + 10,763 redlink** markings.
+- **`promote_reach.py`** changed to add redirect/redlink rows instead of skipping. Re-run against each 2026-04-23 run topic to reconstruct past drops: CRISPR +4 redirects (Base editing / CRISPR-Cas / CRISPR/Cas9 / TALEN), Apollo 11 +2, Orchids +376, AA-STEM + HL-STEM 0.
+- **Scoreboard impact (orchids)**: gold size dropped from 18,113 to **7,354** after excluding redlinks — much more honest. Precision 99.0% (was showing 100%), recall 98.1% (was 100%). The prior numbers were inflated by treating 10,763 phantom redlinks as on-topic gold; the new numbers reflect Wikipedia articles that actually exist.
+- **Baseline caveat**: baseline.json metrics (100% / 100%) are frozen from pre-redlink-marking. Rebuilding baselines (Tier 1 1.b) will true them up to the new gold composition.
