@@ -31,7 +31,53 @@ To remove later:
 claude mcp remove topic-builder
 ```
 
-## Running a dogfood session
+## Running a benchmark task (preferred for ratchet runs)
+
+Each benchmark has a pre-seeded task brief in the server. The kickoff
+is a single line. Use this path for all benchmark / ratchet runs.
+
+1. **Open a fresh terminal** in any empty directory (a scratch dir like
+   `~/tmp/codex-run/` is fine).
+2. **Start your MCP client** (Codex, Claude Code, etc.) with the
+   Topic Builder MCP available.
+3. **Paste this as the first message** (swap the task_id for the
+   benchmark you want):
+   ```
+   Call fetch_task_brief(task_id="apollo-11-thin"), then follow its instructions.
+   ```
+4. **Walk away.** The session starts its own topic with a fresh
+   timestamped name, drafts a rubric, runs the pipeline, does spot/gap
+   check, and ends with `submit_feedback`. Expect 20–60 minutes.
+
+**Task IDs currently seeded (all `thin` variant):**
+
+- `apollo-11-thin`
+- `crispr-gene-editing-thin`
+- `african-american-stem-thin`
+- `hispanic-latino-stem-us-thin`
+- `orchids-thin`
+
+**Scoring when the run wraps:**
+
+```bash
+python3 scripts/benchmark_score.py --task apollo-11-thin
+```
+
+`--task` mode auto-resolves the most recent run of that task by matching
+the `{ts}` template against server topic names. Pass `--nth 1` to score
+the second-most-recent run, etc.
+
+To list available tasks from the server at any time:
+
+```
+Call list_tasks() from any MCP client.
+```
+
+## Running a freeform dogfood session (exploratory, bring-your-own-topic)
+
+Distinct from benchmark runs. Use this when you want to surface tool
+friction on a topic *shape* we haven't tested yet — the AI picks the
+topic from a prompt-provided candidate list.
 
 1. **Open a fresh terminal.** Any working directory — the session doesn't
    touch the local filesystem, so a scratch dir like `~/tmp/dogfood-run/`
