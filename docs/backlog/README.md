@@ -38,21 +38,25 @@ Add new items here as signals come in; promote items to
 
 ---
 
-### ☐ Person-only harvest mode for biography list pages `[NEW — 2026-04-24 multi-session: AA-STEM + orchids]`
+### ☐ Type-hinted harvest annotation `[NEW — 2026-04-24 multi-session: AA-STEM + orchids; revised 2026-04-24 for additive-not-subtractive principle]`
 
-**What.** `harvest_list_page(main_content_only=True)` strips navboxes / references / infoboxes, but still harvests every blue link in the main content. On biography list pages, that means the list brings in institutions, concepts, references, and eponym-named taxa alongside the biographies. Would like a `persons_only=True` mode (or a separate `harvest_biography_list`) that keeps only article titles corresponding to Wikidata-typed person entities (Q5 / human).
+**What.** Annotate harvested titles with a Wikidata-inferred type tag without filtering anything out by default. `harvest_list_page` (and `preview_harvest_list_page`) grow an optional `annotate_types=True` flag that, post-harvest, resolves P31 on each title via `fetch_wikidata_qids` + lookup, and returns `{title, inferred_type, confidence}` tuples. `inferred_type ∈ {person, plant, place, concept, ..., unknown}`; `unknown` is the explicit bucket for "no Wikidata P31 set" OR "Wikidata item doesn't exist" — never silently conflated with a positive type.
+
+Convenience wrappers (`persons_only=True`, `exclude_persons=True`) can be added later, but they MUST document the limitation clearly in their docstrings: _"Keeps titles tagged `person`; DROPS titles tagged as other types AND titles tagged `unknown`. Wikidata coverage is incomplete — real persons with no Wikidata P31 will be dropped silently. Prefer `annotate_types=True` for surfacing-without-filtering semantics."_
 
 **Why.** Two sessions in two days flagged the same friction:
 - AA-STEM ratchet run (2026-04-23): "List-page discovery looked promising but the obvious pages were noisy enough that I did not trust a bulk harvest without a person-only extraction mode."
-- Orchids ratchet run (2026-04-24): "Large species list pages, especially Dendrobium, leak unrelated biographies via eponym/name collisions, and without broad description coverage there is no fast bulk-review path for those leaks."
+- Orchids ratchet run (2026-04-24): "Large species list pages, especially Dendrobium, leak unrelated biographies via eponym/name collisions."
 
-Same shape complaint, orthogonal directions: biography lists leaking non-bios (AA-STEM), taxonomy lists leaking bios (orchids). A typed-filter pass solves both.
+Same shape complaint, orthogonal directions (biography lists leaking non-bios, taxonomy lists leaking bios). Type-hinted annotation solves both AS-A-SIGNAL without introducing the silent-drop risk of a hard filter.
 
-**Shape.** Post-harvest step: take harvested titles, run `fetch_wikidata_qids` (already shipped), check `instance_of` (P31) + P31-superclass lookup. Keep `Q5` (person) when `persons_only=True`; drop `Q5` when `exclude_persons=True`. Two optional flags on `harvest_list_page` + `preview_harvest_list_page`; default behavior unchanged.
+**Shape.** Post-harvest step: `fetch_wikidata_qids` on all titles (already shipped), then per-QID lookup of P31 via `wikidata_query` (or cached batch resolution). Returns annotated tuples. Caller decides what to do — keep all, filter in code, feed to `remove_by_pattern`, or just eyeball.
+
+**Why not `persons_only=True` as the primary shape.** Wikidata is incomplete (see `memory/feedback_wikidata_incomplete.md`). A real biography without Wikidata P31=Q5 would be silently dropped by a hard persons-only gate. The failure mode is indistinguishable from the tool working correctly, which is exactly the silent-drop shape we want to design away from. Annotation preserves optionality; filter-wrappers can be added on top with loud docstring warnings.
 
 **Open questions.**
-- Do we need `include_types=[qid, ...]` / `exclude_types=[qid, ...]` as general filters, or just `persons_only` / `exclude_persons` specifically? Start with the two named flags; generalize later if demand appears.
-- Cost: adding a QID-resolve step post-harvest doubles the API work on a big list page. Make it opt-in (flag off by default); preview variant only resolves enough to show the sample counts.
+- Cost: QID-resolve step post-harvest adds API work on big list pages. Make annotation opt-in; preview-variant resolves only a sample.
+- Type vocabulary: start narrow (`person` / `plant` / `place` / `organization` / `work` / `concept` / `unknown`) or expose raw QID chains? Start narrow; generalize when demand surfaces.
 
 ---
 
@@ -69,6 +73,25 @@ Second use case is especially useful as a ratchet diagnostic: the scoring script
 **Shape.** Read-only SQL over `articles` table scoped to two topic IDs. Partition into three buckets. Return counts + optional per-bucket sample. May want a `by_source=True` mode that surfaces which sources contribute to each bucket.
 
 **Sequencing note.** Simpler than `cross_wiki_diff` (no langlinks / Wikidata roundtrips needed). Could ship standalone. If it proves useful, the cross-wiki case could become a wrapper that normalizes topics-on-different-wikis to QIDs first and then calls this.
+
+---
+
+### ☐ Reach-to-gold promotion workflow `[NEW — 2026-04-24]`
+
+**What.** A small helper that takes a scoreboard's "reach" titles (in-corpus but not in gold) and appends them to that benchmark's `gold.csv` with `on_topic=pending_audit`. The scoring script already handles `pending_audit` correctly — those rows don't count toward recall / precision denominators, they just sit in a "not yet classified" bucket until a human audits them.
+
+**Why.** Zero-risk gold-farming. Each ratchet run surfaces a reach list (today: 456 on orchids, 129 on AA-STEM, 23 on CRISPR, 18 on Apollo, 2 on HL-STEM). Without a promotion step, those same candidates appear on every subsequent run's reach list; with promotion, each run adds audit-queue items and the next run's reach list is just the NEWLY-surfaced ones. Audits can happen at any cadence (one row at a time over coffee, or a batch pass), independent of ratchet runs. Sage's framing 2026-04-24: "we could just add them all as unaudited without much risk, right? and then do audits at any time later?" — yes, exactly.
+
+**Shape.**
+- `scripts/promote_reach.py <slug> <run-topic-name>` — reads the latest scoreboard's JSON for that run-topic, appends each reach title to `benchmarks/<slug>/gold.csv` with `on_topic=pending_audit` and a `source_run` column recording which run surfaced it (for provenance). Idempotent: skips titles already in gold under any status.
+- `scripts/audit_pending.py <slug>` — optional companion that iterates `pending_audit` rows and prompts for in/peripheral/out per title. Minimum viable: print a CSV-editable fragment the human edits and runs back through the audit classifier.
+- **Explicit guardrail**: the promotion script never mutates an existing `on_topic` value. If a row exists with any status (even `pending_audit`), it's skipped — human decisions win over automated ones.
+
+**Open questions.**
+- Should we capture the baseline recall / precision before and after the promotion, so we see how much each audit pass moves the gate? Maybe as a by-product of the script's output.
+- Does the audit classifier (`benchmarks/<slug>/audit.py`) need a `pending_audit` mode where it emits its best-guess classification but marks confidence low? Would make the audit a review-and-approve loop instead of classify-from-scratch. Decide after we've done one audit pass manually.
+
+**Sequencing.** Independent of the benchmark-polish bundle; can ship any time. Most useful AFTER a ratchet cycle produces a reach list (we have four already from the 2026-04-23 thin/fat runs).
 
 ---
 
@@ -133,7 +156,8 @@ Bundle of small changes around the benchmark / ratchet system now that `fetch_ta
 
 **What.** Move cross-topic-shape wisdom currently baked into the 2026-04-23 fat-variant kickoff prompts into the canonical instructions, so every thin-variant run benefits automatically without operator pre-hinting. Concrete edits:
 
-- **Expand the existing `SHAPE → WIKIDATA PROPERTY` table** with `P138 (named after)` for named-event / award / institution shapes and `P171 (parent taxon)` for taxonomic shapes; add a "high-leverage first move" column. P171 evidence from the 2026-04-24 orchids thin-variant run: `wikidata_entities_by_property(property="P171", value="Q25308")` returned 66 enwiki sitelinks of which **27 were not already in the corpus** after a full category + list-page sweep — concrete lift data.
+- **Expand the existing `SHAPE → WIKIDATA PROPERTY` table** with `P138 (named after)` for named-event / award / institution shapes and `P171 (parent taxon)` for taxonomic shapes; add a "high-leverage first move" column. P171 evidence from the 2026-04-24 orchids thin-variant run: `wikidata_entities_by_property(property="P171", value="Q25308")` returned 66 enwiki sitelinks of which **27 were not already in the corpus** after a full category + list-page sweep — concrete lift data. **Frame these as ADDITIVE probes only** — they find candidates you'd otherwise miss; they do NOT have completeness properties. A taxon without P171 set still exists on Wikipedia; the probe won't find it. See `memory/feedback_wikidata_incomplete.md`.
+- **Add an "additive vs subtractive tools" principle bullet** in the instructions (placement: near NOISE TAXONOMY or KNOWN SHARP EDGES): every tool is either **additive** (surfaces candidates; use freely) or **subtractive** (drops candidates; use carefully). Subtractive tools hide silent drops — `filter_articles` bug (2026-04-24), `auto_score_by_description(disqualifying=...)` proper-noun misses, any Wikidata-gated filter. When using a subtractive tool, prefer `preview_*` / `dry_run=True` variants; when reaching for a Wikidata property as an exclusion rule, reach for it as an annotation instead (see the revised type-hinted harvest item above).
 - **Add a SOURCE-TRUST principle bullet**: when a source is topic-definitional (category named after the topic, list-page authored by topic specialists), trust source-provenance over shortdesc for inclusion. Evidence: orchids baseline's source-trust rule recovered ~5000 taxa whose Wikidata shortdesc said only "Species of plant".
 - **Reinforce INTERSECTIONAL TOPICS** with a pointer to `fetch_article_leads` for ambiguous biography shortdescs — that's where the tool earns its keep (AA-STEM / HL-STEM wrap-up feedback this cycle).
 - **Add "for parent-program shapes, `harvest_navbox` on the parent's template is your highest-leverage first move"** (Apollo 11's Kennedy-Space-Center-miss exemplar — recovered in the fat-variant run but only after a scope-wide dig).
