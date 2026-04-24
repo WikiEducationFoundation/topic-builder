@@ -119,18 +119,24 @@ def main():
 
     count = 0
     for meta, body, src in tasks:
-        required = ("task_id", "variant", "run_topic_name")
+        required = ("task_id", "variant")
         for k in required:
             if not meta.get(k):
                 raise ValueError(f"{src}: missing frontmatter key {k!r}")
+        # Prefer `run_topic_name_template` but accept legacy
+        # `run_topic_name` for back-compat. Either is fine — they're
+        # stored as a template; the server renders {ts} at fetch time.
+        template = meta.get("run_topic_name_template") or meta.get("run_topic_name")
+        if not template:
+            raise ValueError(
+                f"{src}: missing frontmatter key 'run_topic_name_template'")
         task_id = meta["task_id"]
         variant = meta["variant"]
-        run_topic_name = meta["run_topic_name"]
         benchmark_slug = meta.get("benchmark_slug") or None
         stored = db.upsert_dogfood_task(
             task_id=task_id,
             variant=variant,
-            run_topic_name=run_topic_name,
+            run_topic_name_template=template,
             brief_markdown=body,
             benchmark_slug=benchmark_slug,
         )
@@ -142,7 +148,7 @@ def main():
     print(f"\nOK — {count} task(s) upserted.")
     print("\nCurrent dogfood_tasks in DB:")
     for t in db.list_dogfood_tasks():
-        print(f"  {t['task_id']!r:36s} -> {t['run_topic_name']!r}")
+        print(f"  {t['task_id']!r:36s} -> {t['run_topic_name_template']!r}")
 
 
 if __name__ == "__main__":

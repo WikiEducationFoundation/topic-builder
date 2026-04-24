@@ -2,26 +2,26 @@
 task_id: crispr-gene-editing-thin
 variant: thin
 benchmark_slug: crispr-gene-editing
-run_topic_name: crispr-gene-editing ratchet-2026-04-23-thin
+run_topic_name_template: crispr-gene-editing-thin {ts}
 ---
 
 # Benchmark run: CRISPR gene editing
 
-You're executing a competitive benchmark against the Topic Builder MCP server. Build the best topic you can for the scope below, then submit feedback about the experience. Your final corpus will be scored against a frozen audit.
+You're executing a competitive benchmark against the Topic Builder MCP server. Build the best topic you can for the scope below, then submit feedback. Your final corpus will be scored against a frozen audit.
 
-**Mode:** deep consultative, completeness-seeking — not speed. An honest 0.6 coverage estimate is more useful than an inflated 0.9. No human operator will steer you mid-session; fabricate spot-check probes yourself when the workflow calls for them.
+**Mode:** deep consultative, completeness-seeking — not speed. An honest 0.6 coverage estimate is more useful than an inflated 0.9. No human operator will steer you mid-session.
 
 ## Scope statement
 
 > Wikipedia articles about CRISPR as a gene-editing system — its biology, mechanisms, associated techniques and tools, pioneering scientists, CRISPR-focused companies, applications (therapies and projects), and the central bioethical episode (He Jiankui affair).
 
-That paragraph is the whole scope you're given. Flesh out the rubric from it yourself (the server's instructions require you to persist a three-tier centrality rubric via `set_topic_rubric` before gathering).
+That paragraph is the whole scope you're given. Flesh out the rubric from it yourself per the server's SCOPE RUBRIC guidance.
 
 ## Protocol
 
-1. Call `start_topic(name="crispr-gene-editing ratchet-2026-04-23-thin", wiki="en", fresh=False)`. Use the EXACT name — the scoring script looks up the topic by this string. There is a separate, frozen baseline topic with a related name that you must NOT overwrite.
-2. Draft a three-tier CENTRAL / PERIPHERAL / OUT rubric from the scope statement above and persist it via `set_topic_rubric(rubric=...)`.
-3. Run the standard Topic Builder pipeline (reconnaissance → gather → descriptions → review → cleanup). The server's own workflow guidance (loaded on session init) covers preview-before-commit, noise taxonomy, known sharp edges, and wrap-up discipline — follow it.
-4. Do SPOT CHECK + GAP CHECK before wrap-up per the server instructions. No user is here to propose spot-check titles — fabricate ~15–25 niche candidates yourself.
-5. Call `submit_feedback(...)` with an honest `coverage_estimate={"confidence": <0.0–1.0>, "rationale": "<one sentence>", "remaining_strategies": ["<existing tool shapes you didn't apply>", ...]}`. Do NOT call `export_csv` — the scoring script pulls the corpus directly from the server.
-6. Reply with a short summary: final article count, coverage_estimate.confidence, any notable friction.
+1. `start_topic(name="crispr-gene-editing-thin {ts}", wiki="en", fresh=False)`. The name above is pre-rendered with a fresh timestamp every time this brief is fetched — use it verbatim. A separate frozen baseline topic exists with a related name; do NOT overwrite it.
+2. Draft a rubric from the scope statement and persist it via `set_topic_rubric(rubric=...)`. Follow the SCOPE RUBRIC framework in the server's instructions.
+3. Run the standard Topic Builder pipeline (reconnaissance → gather → descriptions → review → cleanup). Follow the server's PIPELINE, NOISE TAXONOMY, KNOWN SHARP EDGES, and WRAP-UP guidance.
+4. Do SPOT CHECK and GAP CHECK before wrap-up per the server instructions. No user is here to propose probe titles — fabricate them yourself.
+5. Call `submit_feedback(...)` with honest values for the structured fields. See the tool's docstring for the schema; at minimum populate `coverage_estimate`, `strategies_used`, `spot_check`, `sharp_edges_hit`, and `tool_friction` alongside the prose fields. Don't call `export_csv` — the scoring script pulls the corpus directly from the server.
+6. Reply with a short summary: final article count, coverage_estimate.confidence, notable friction.

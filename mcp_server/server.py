@@ -4493,6 +4493,13 @@ def export_csv(min_score: int = 0, scored_only: bool = False,
 
 # ── Dogfood / benchmark task entry points ────────────────────────────────
 
+def _render_task_template(template: str, ts: str) -> str:
+    """Substitute supported placeholders in a task template string.
+    Currently supports {ts} (minute-UTC). More placeholders can be added
+    later; unknown placeholders pass through unchanged."""
+    return template.replace("{ts}", ts)
+
+
 @mcp.tool()
 def fetch_task_brief(task_id: str, ctx: Context = None) -> str:
     """Fetch a dogfood or benchmark task brief by ID. This is the entry
@@ -4504,12 +4511,18 @@ def fetch_task_brief(task_id: str, ctx: Context = None) -> str:
     Returns JSON: {task_id, variant, benchmark_slug, run_topic_name,
                    brief, metadata, created_at, updated_at}.
 
-    `brief` is the full markdown instruction text to follow. `run_topic_name`
-    is the EXACT topic name to pass to start_topic — the benchmark scoring
-    scripts look up the run by this name, so don't improvise. `variant`
-    distinguishes prompt shapes (e.g. "thin" = minimal guidance, "fat" =
-    heavy guidance with scope + rubric inlined); different variants of the
-    same benchmark are scored independently.
+    **Template rendering.** The server stores both `run_topic_name` and
+    `brief` as templates that may contain `{ts}`. At fetch time, `{ts}`
+    is substituted with the current minute-UTC (`YYYYMMDDTHHMM`), so the
+    returned `run_topic_name` and `brief` contain a fresh, unique run
+    name. The same substituted name appears in the brief's instructions
+    (e.g. the `start_topic(name=...)` call) — use exactly that name.
+    Two fetches in the same minute get the same name; fetches ≥1 minute
+    apart get distinct names. Don't improvise or modify.
+
+    `variant` distinguishes prompt shapes (e.g. "thin" = minimal
+    guidance, "informed" = includes baseline metrics). Different variants
+    of the same benchmark are scored independently.
 
     Do NOT call this tool in normal topic-building sessions. It's a
     research entry point — reach for it only when explicitly instructed
@@ -4526,17 +4539,23 @@ def fetch_task_brief(task_id: str, ctx: Context = None) -> str:
         }
         return json.dumps(err, indent=2, ensure_ascii=False)
 
+    ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M")
+    name = _render_task_template(task['run_topic_name_template'], ts)
+    brief = _render_task_template(task['brief_markdown'], ts)
+
     log_usage(ctx, "fetch_task_brief",
-              {"task_id": task_id, "variant": task['variant']},
-              f"served brief ({len(task['brief_markdown'])} chars)",
+              {"task_id": task_id, "variant": task['variant'],
+               "rendered_name": name},
+              f"served brief ({len(brief)} chars)",
               start_time=_start)
 
     return json.dumps({
         'task_id': task['task_id'],
         'variant': task['variant'],
         'benchmark_slug': task['benchmark_slug'],
-        'run_topic_name': task['run_topic_name'],
-        'brief': task['brief_markdown'],
+        'run_topic_name': name,
+        'run_topic_name_template': task['run_topic_name_template'],
+        'brief': brief,
         'metadata': task['metadata'],
         'created_at': task['created_at'],
         'updated_at': task['updated_at'],
@@ -4563,7 +4582,7 @@ def list_tasks(variant: str | None = None,
             'task_id': t['task_id'],
             'variant': t['variant'],
             'benchmark_slug': t['benchmark_slug'],
-            'run_topic_name': t['run_topic_name'],
+            'run_topic_name_template': t['run_topic_name_template'],
             'updated_at': t['updated_at'],
         }
         for t in tasks
@@ -4581,11 +4600,20 @@ def submit_feedback(summary: str, what_worked: str = "", what_didnt: str = "",
                     missed_strategies: str = "",
                     rating: int | None = None, note: str = "",
                     coverage_estimate: dict | None = None,
+                    strategies_used: list[str] | None = None,
+                    spot_check: dict | None = None,
+                    sharp_edges_hit: list[str] | None = None,
+                    tool_friction: list[str] | None = None,
                     topic: str | None = None, ctx: Context = None) -> str:
     """Submit a brief retrospective on this topic-building session so the
     Wiki Education team can improve the tool. Offer to call this at the end
     of a session (before or after export_csv), or whenever the user signals
     they're done. Don't call it without the user's okay.
+
+    The prose fields capture *how the session felt*. The structured fields
+    capture *what happened* in a form we can trend across runs. Populate
+    the structured fields even if the values are approximate — a rough
+    number is more useful than an empty field when we compare sessions.
 
     Args:
         summary: 2-5 sentence plain-language account of how the session went —
@@ -4594,14 +4622,15 @@ def submit_feedback(summary: str, what_worked: str = "", what_didnt: str = "",
                      fit this topic, places the AI/user collaboration felt smooth.
         what_didnt: Pain points — missing tools, confusing output, noisy sources,
                     places the AI got stuck or had to work around the API.
-                    Be specific; this is the most useful field for us.
-        missed_strategies: Other ways the user (or you) thought of for identifying
-                           articles that the current tools didn't support well.
-                           Wikidata / SPARQL queries, PetScan compound queries,
-                           reading lists, awards, author bibliographies, non-English
-                           wikis, academic databases — anything you wanted to reach
-                           for but couldn't. This is how we decide what tool to
-                           build next. Empty string if nothing came up.
+                    Be specific; this is the most useful prose field.
+        missed_strategies: Other ways you thought of for identifying articles
+                           that the current tools didn't support well. Wikidata /
+                           SPARQL shapes, PetScan compound queries, reading
+                           lists, awards, author bibliographies, non-English
+                           wikis, academic databases — tool shapes we wished
+                           existed. Contrast with `strategies_used` (what you
+                           DID reach for) and `coverage_estimate.remaining_strategies`
+                           (tools that exist but you didn't apply this session).
         rating: Optional 1-10 rating of the overall experience.
         note: Optional free-text observation for this call's log entry.
               Use for mid-flow reflection; empty by default.
@@ -4611,14 +4640,37 @@ def submit_feedback(summary: str, what_worked: str = "", what_didnt: str = "",
                               "rationale": "one-sentence why",
                               "remaining_strategies": ["strategy1", ...]}
                            `confidence` is how complete you think the corpus
-                           is relative to the scope (not how confident you are
-                           that individual articles are on-topic). `rationale`
-                           explains the number briefly. `remaining_strategies`
+                           is relative to the scope. `remaining_strategies`
                            lists tool shapes that DO exist but weren't applied
-                           this session and might find more articles (contrast
-                           with `missed_strategies`, which is for tool shapes
-                           you wished existed). Omit if you don't have a
-                           considered estimate — don't fabricate one.
+                           this session.
+        strategies_used: Optional list of tool-family tags capturing the
+                         gather / review strategies you actually applied, in
+                         rough order of usefulness. Suggested vocabulary:
+                         "category_crawl", "wikiproject", "list_harvest",
+                         "navbox", "wikidata_property", "search", "similarity",
+                         "edge_browse", "fetch_leads", "rubric_cleanup".
+                         Free-form tags welcome; stick to existing tags when
+                         they fit so we can trend across sessions.
+        spot_check: Optional dict summarizing your SPOT CHECK results.
+                    Shape:
+                      {"probes_count": int,
+                       "hits": int,
+                       "misses_redirect": int,
+                       "misses_hallucination": int,
+                       "misses_real_gap": int}
+                    Counts don't have to be exact — "about 20 probes, 15
+                    hits, 2 redirects, 3 real gaps" is fine.
+        sharp_edges_hit: Optional list of KNOWN SHARP EDGE tags you
+                         encountered. Suggested vocabulary:
+                         "intitle_or_silent_empty", "shortdesc_misleading",
+                         "container_category_empty", "auto_score_proper_noun",
+                         "sparql_truncation", "filter_articles_refusal".
+                         Free-form tags welcome.
+        tool_friction: Optional list of tagged one-line friction observations
+                       (e.g. "fetch_descriptions_timeout",
+                       "harvest_navbox_empty_on_template"). Aggregates mid-run
+                       surprises beyond what individual `note=` entries
+                       captured.
         topic: The topic name this feedback is about. Pass explicitly if your
                client doesn't maintain an MCP session.
     """
@@ -4644,6 +4696,14 @@ def submit_feedback(summary: str, what_worked: str = "", what_didnt: str = "",
     }
     if coverage_estimate is not None:
         entry["coverage_estimate"] = coverage_estimate
+    if strategies_used is not None:
+        entry["strategies_used"] = strategies_used
+    if spot_check is not None:
+        entry["spot_check"] = spot_check
+    if sharp_edges_hit is not None:
+        entry["sharp_edges_hit"] = sharp_edges_hit
+    if tool_friction is not None:
+        entry["tool_friction"] = tool_friction
     if tid or topic:
         try:
             lookup_id = tid

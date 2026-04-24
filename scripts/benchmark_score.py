@@ -408,13 +408,104 @@ def format_scoreboard(s):
     return "\n".join(L)
 
 
+def _resolve_task_mode(task_id, nth=0):
+    """For --task mode: look up the task in the DB, find matching run
+    topics on the server, pick the Nth-most-recent. Returns
+    (benchmark_slug, run_topic_name)."""
+    env = load_env()
+    # Import db directly on the host to pull the task record + the list
+    # of matching topics. Simple and cheap: one ssh roundtrip.
+    remote_py = rf'''
+import json, sys, re
+sys.path.insert(0, "/opt/topic-builder/app")
+import db
+task = db.get_dogfood_task("""{task_id}""")
+if task is None:
+    print(json.dumps({{"error": "task not found"}}))
+    sys.exit(0)
+template = task["run_topic_name_template"] or ""
+# Build a regex that matches the rendered name: replace {{ts}} with a
+# timestamp pattern, escape the rest.
+if "{{ts}}" in template:
+    stem_pattern = re.escape(template).replace(r"\\{{ts\\}}", r"(\d{{12}})")
+else:
+    stem_pattern = re.escape(template)
+regex = re.compile("^" + stem_pattern + "$")
+matching = []
+for t in db.list_topics():
+    m = regex.match(t["name"])
+    if m:
+        ts = m.group(1) if m.groups() else ""
+        matching.append({{"name": t["name"], "ts": ts,
+                           "article_count": t.get("article_count") or 0}})
+matching.sort(key=lambda r: r["ts"], reverse=True)
+print(json.dumps({{
+    "benchmark_slug": task["benchmark_slug"],
+    "template": template,
+    "matches": matching,
+}}))
+'''
+    rc, out, err = ssh_cmd(env, f"/opt/topic-builder/venv/bin/python -c '{remote_py}'")
+    if rc != 0:
+        raise RuntimeError(f"ssh failed resolving task: {err}")
+    info = json.loads(out.strip())
+    if "error" in info:
+        raise ValueError(
+            f"Task {task_id!r} not found on the server. "
+            "Re-seed dogfood_tasks or use the direct <slug> <run-topic-name> form.")
+    slug = info["benchmark_slug"]
+    if not slug:
+        raise ValueError(
+            f"Task {task_id!r} has no benchmark_slug; cannot use --task mode. "
+            "Use the direct <slug> <run-topic-name> form instead.")
+    matches = info["matches"]
+    if not matches:
+        raise ValueError(
+            f"Task {task_id!r}: no run topics on the server match template "
+            f"{info['template']!r}. Start a run first.")
+    if nth >= len(matches):
+        raise ValueError(
+            f"Task {task_id!r}: only {len(matches)} matching run(s), "
+            f"can't access index {nth}.")
+    chosen = matches[nth]
+    print(f"Task {task_id!r} → slug={slug!r}, run_topic={chosen['name']!r} "
+          f"(nth={nth} of {len(matches)} matching; {chosen['article_count']} articles)",
+          file=sys.stderr)
+    return slug, chosen["name"]
+
+
 if __name__ == "__main__":
-    if len(sys.argv) < 3:
+    import argparse
+    p = argparse.ArgumentParser(
+        description="Score a benchmark run against frozen gold + baseline.")
+    p.add_argument("slug_or_positional1", nargs="?",
+                   help="Benchmark slug (positional, direct mode)")
+    p.add_argument("run_topic", nargs="?",
+                   help="Run topic name (positional, direct mode)")
+    p.add_argument("--task", metavar="TASK_ID",
+                   help="Task-ID lookup mode: find the matching run topic on "
+                        "the server by template, pick --nth-most-recent.")
+    p.add_argument("--nth", type=int, default=0,
+                   help="With --task: index into the matching run topics "
+                        "(0=most recent, 1=second-most, ...). Default 0.")
+    args = p.parse_args()
+
+    if args.task:
+        try:
+            slug, run_topic = _resolve_task_mode(args.task, nth=args.nth)
+        except (RuntimeError, ValueError) as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            sys.exit(1)
+    elif args.slug_or_positional1 and args.run_topic:
+        slug = args.slug_or_positional1
+        run_topic = args.run_topic
+    else:
         print("usage: benchmark_score.py <benchmark-slug> <run-topic-name>",
               file=sys.stderr)
+        print("       benchmark_score.py --task <task-id> [--nth N]",
+              file=sys.stderr)
         sys.exit(2)
-    slug = sys.argv[1]
-    run_topic = sys.argv[2]
+
     s = score(slug, run_topic)
     md = format_scoreboard(s)
     print(md)

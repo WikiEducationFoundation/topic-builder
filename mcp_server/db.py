@@ -80,6 +80,21 @@ def init_db():
     topic_cols = [r[1] for r in conn.execute("PRAGMA table_info(topics)")]
     if 'wiki' not in topic_cols:
         conn.execute("ALTER TABLE topics ADD COLUMN wiki TEXT NOT NULL DEFAULT 'en'")
+    # Migrate existing DBs that predate the dogfood_tasks template column.
+    # The template is rendered per-fetch by fetch_task_brief (substitutes
+    # {ts} with the current minute-UTC); populate from the existing static
+    # run_topic_name on migration so pre-existing tasks still work.
+    task_cols = []
+    try:
+        task_cols = [r[1] for r in conn.execute("PRAGMA table_info(dogfood_tasks)")]
+    except sqlite3.OperationalError:
+        pass  # Table doesn't exist yet; nothing to migrate.
+    if task_cols and 'run_topic_name_template' not in task_cols:
+        conn.execute(
+            "ALTER TABLE dogfood_tasks ADD COLUMN run_topic_name_template TEXT")
+        conn.execute(
+            "UPDATE dogfood_tasks SET run_topic_name_template = run_topic_name "
+            "WHERE run_topic_name_template IS NULL")
     # Migrate existing DBs that predate the centrality rubric. Empty string
     # means "no rubric set yet" — AI should write one at scoping time.
     if 'centrality_rubric' not in topic_cols:
@@ -561,25 +576,37 @@ def count_undescribed(topic_id):
     return count
 
 
-def upsert_dogfood_task(task_id, variant, run_topic_name, brief_markdown,
+def upsert_dogfood_task(task_id, variant, run_topic_name_template,
+                        brief_markdown,
                         benchmark_slug=None, metadata=None):
     """Insert or replace a dogfood task. Keyed on task_id (UNIQUE).
-    Bumps updated_at on replace. Returns the stored row as a dict."""
+    Bumps updated_at on replace. Returns the stored row as a dict.
+
+    `run_topic_name_template` is a string that may contain {ts} (minute-UTC
+    rendered at fetch time) and similar placeholders. The server-side
+    `fetch_task_brief` handles the rendering; this function just stores
+    the raw template. Legacy callers that pass a literal name (no
+    placeholders) still work — the template renders as itself."""
     conn = _connect()
     meta_json = json.dumps(metadata or {}, ensure_ascii=False)
+    # Both columns are populated to keep the (NOT NULL) run_topic_name
+    # constraint satisfied; consumers should read from _template.
     conn.execute("""
         INSERT INTO dogfood_tasks (task_id, variant, benchmark_slug,
-                                    run_topic_name, brief_markdown,
+                                    run_topic_name, run_topic_name_template,
+                                    brief_markdown,
                                     metadata_json, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+        VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
         ON CONFLICT(task_id) DO UPDATE SET
             variant = excluded.variant,
             benchmark_slug = excluded.benchmark_slug,
             run_topic_name = excluded.run_topic_name,
+            run_topic_name_template = excluded.run_topic_name_template,
             brief_markdown = excluded.brief_markdown,
             metadata_json = excluded.metadata_json,
             updated_at = datetime('now')
-    """, (task_id, variant, benchmark_slug, run_topic_name,
+    """, (task_id, variant, benchmark_slug,
+          run_topic_name_template, run_topic_name_template,
           brief_markdown, meta_json))
     conn.commit()
     row = conn.execute(
@@ -630,11 +657,21 @@ def _row_to_task_dict(row):
         meta = json.loads(row['metadata_json'] or '{}')
     except Exception:
         meta = {}
+    # Prefer the template column; fall back to legacy run_topic_name for
+    # rows that predate the template migration (shouldn't happen after
+    # init_db runs, but be defensive).
+    template = None
+    try:
+        template = row['run_topic_name_template']
+    except (IndexError, KeyError):
+        template = None
+    if not template:
+        template = row['run_topic_name']
     return {
         'task_id': row['task_id'],
         'variant': row['variant'],
         'benchmark_slug': row['benchmark_slug'],
-        'run_topic_name': row['run_topic_name'],
+        'run_topic_name_template': template,
         'brief_markdown': row['brief_markdown'],
         'metadata': meta,
         'created_at': row['created_at'],
