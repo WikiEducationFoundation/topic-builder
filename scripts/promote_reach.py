@@ -52,6 +52,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from benchmark_score import BENCHMARKS_DIR, fetch_run_state, load_env  # noqa: E402
+from redirect_utils import resolve_redirects  # noqa: E402
 
 
 GOLD_COLUMNS = [
@@ -110,14 +111,52 @@ def main():
         sys.exit(1)
 
     corpus = run_state["corpus"]
-    reach = sorted(corpus - existing_titles)
+    raw_reach = sorted(corpus - existing_titles)
+
+    # Resolve raw reach titles to their canonical forms. This prevents
+    # promoting redirect sources when the canonical is already in gold
+    # (avoids the duplicate-rows pattern reconcile_redirects.py cleans up).
+    if raw_reach:
+        print(f"Resolving {len(raw_reach)} raw reach titles to canonical "
+              f"forms via Wikipedia...")
+        wiki = run_state.get("wiki", "en") or "en"
+        resolved = resolve_redirects(raw_reach, wiki=wiki)
+    else:
+        resolved = {}
+
+    reach = []                    # canonical titles to promote
+    skipped_already_in_gold = []  # [(raw, canonical)]
+    skipped_missing = []          # raw titles that resolve to None
+    promoted_sources = {}         # canonical → the raw title that surfaced it
+    for raw in raw_reach:
+        canonical = resolved.get(raw, raw)
+        if canonical is None:
+            skipped_missing.append(raw)
+            continue
+        if canonical in existing_titles:
+            skipped_already_in_gold.append((raw, canonical))
+            continue
+        if canonical in promoted_sources:
+            # Two reach titles resolved to the same canonical; promote once.
+            continue
+        promoted_sources[canonical] = raw
+        reach.append(canonical)
 
     print(f"Corpus size: {len(corpus)}")
-    print(f"Already in gold: {len(corpus & existing_titles)}")
-    print(f"Reach candidates to promote: {len(reach)}")
+    print(f"Already in gold (direct match): {len(corpus & existing_titles)}")
+    print(f"Raw reach candidates: {len(raw_reach)}")
+    print(f"  → resolve to canonical already in gold: "
+          f"{len(skipped_already_in_gold)} (skipped)")
+    print(f"  → resolve to missing / nonexistent page: "
+          f"{len(skipped_missing)} (skipped)")
+    print(f"  → unique canonicals to promote: {len(reach)}")
 
     if not reach:
-        print("Nothing to promote. Gold is already a superset of the corpus.")
+        print("\nNothing to promote after redirect resolution.")
+        if skipped_already_in_gold:
+            print(f"(Resolved {len(skipped_already_in_gold)} reach titles to "
+                  f"canonicals already in gold — the raw-title 'reach' was "
+                  f"mostly redirect duplicates.)")
         return
 
     if dry_run:

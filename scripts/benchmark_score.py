@@ -42,6 +42,8 @@ import sys
 
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+from redirect_utils import resolve_redirects  # noqa: E402
 REPO_ROOT = os.path.abspath(os.path.join(HERE, ".."))
 BENCHMARKS_DIR = os.path.join(REPO_ROOT, "benchmarks")
 DEPLOY_KEY = os.path.join(REPO_ROOT, "deploy_key")
@@ -166,7 +168,35 @@ def score(slug, run_topic_name):
     gold_uncertain = {t for t, c in gold.items() if c == "uncertain"}
     unaudited = {t for t, c in gold.items() if c == "pending_audit"}
 
-    corpus = run["corpus"]
+    # Normalize live corpus titles to their canonical Wikipedia form
+    # before comparing to gold. The AI-assembled corpus can contain
+    # redirect-source titles (e.g., "CRISPR-Cas" that redirects to
+    # "CRISPR"); without normalization, scoring treats them as distinct
+    # from their gold counterparts even when gold has been reconciled.
+    # Cost: one batched API call per 50 corpus titles, rate-limited.
+    raw_corpus = run["corpus"]
+    wiki = run.get("wiki", "en") or "en"
+    print(f"Normalizing {len(raw_corpus)} corpus titles via redirect "
+          f"resolution...", file=sys.stderr)
+    title_map = resolve_redirects(sorted(raw_corpus), wiki=wiki)
+    corpus = set()
+    corpus_normalized_count = 0
+    corpus_missing_count = 0
+    for t in raw_corpus:
+        canonical = title_map.get(t, t)
+        if canonical is None:
+            # Title doesn't exist on Wikipedia anymore. Count it as the
+            # original title for visibility (it's in the corpus but a
+            # dead link); it won't hit gold.
+            corpus.add(t)
+            corpus_missing_count += 1
+            continue
+        corpus.add(canonical)
+        if canonical != t:
+            corpus_normalized_count += 1
+    print(f"  {corpus_normalized_count} corpus titles normalized to canonical, "
+          f"{corpus_missing_count} missing on Wikipedia.", file=sys.stderr)
+
     hit_gold = corpus & gold_in
     hit_out = corpus & gold_out
     reach = corpus - set(gold.keys())
