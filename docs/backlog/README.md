@@ -191,6 +191,22 @@ Bundle of small changes around the benchmark / ratchet system now that `fetch_ta
 
 ## Tier 2 — medium effort, multi-session-validated
 
+### ☐ MCP server concurrency under heavy tool load `[NEW — 2026-04-24 single incident]`
+
+**What.** When 2+ parallel sessions are running heavy gather tools (`get_category_articles`, `harvest_list_page`, `auto_score_by_description` on large corpora), a 3rd incoming MCP handshake can time out during the initial `list_tools` / session-init exchange. Observed once 2026-04-24 when trying to add a 3rd thin-variant Codex session while AA-STEM + orchids were mid-gather.
+
+**Why.** Likely root cause: heavy tool calls momentarily block the asyncio event loop, queueing new incoming requests behind them. Codex's startup timeout is modest (~5s); under concurrent load the handshake can slip past.
+
+**Shape.** Two plausible fixes:
+- Cooperative chunking: split the longest-running tools (`get_category_articles` depth walks, `harvest_list_page` on large lists, `auto_score_by_description` on 10k-article corpora) into async-yielding chunks with periodic `await asyncio.sleep(0)` so the loop can serve other coroutines. Cheapest; localized to specific tools.
+- Multi-worker: run the MCP service with `uvicorn --workers 2` (or gunicorn equivalent). Removes single-loop blocking entirely; adds minor state-sharing complexity (session dict isn't cross-process, but SQLite is shared state anyway).
+
+**Open questions.**
+- Is the blocking happening in pure-Python CPU work (filtering 18k articles) or in `urllib`-blocking I/O? The former is harder to yield from; the latter is easier (switch to `httpx` async). Needs profiling under concurrent load.
+- Is this actually a problem worth fixing, or is "stagger session starts by 15s" a sufficient operational workaround? Depends how often we run 3+ parallel sessions. If it becomes routine (e.g., if 1.a.auto-dispatch lands + we want to fire 10 agents at once), fix; if it stays at 2–3, defer.
+
+**Sequencing note.** Speculative on single-session evidence. Don't work on unless a second session confirms the pattern, or the parallel-session workflow becomes routine enough that staggering starts feels friction-heavy.
+
 ### ☐ `cross_wiki_diff(source_wiki, target_wiki)` `[formerly 5.2]`
 
 **What.** Take two topics on different wikis, return articles in A that have a sitelink to wiki B but aren't in topic B ("potential gap-fills"), and separately articles in A with no sitelink to B at all ("genuinely unique-to-A content"). Both directions useful.
