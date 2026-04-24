@@ -76,25 +76,6 @@ Second use case is especially useful as a ratchet diagnostic: the scoring script
 
 ---
 
-### ☐ Reach-to-gold promotion workflow `[NEW — 2026-04-24]`
-
-**What.** A small helper that takes a scoreboard's "reach" titles (in-corpus but not in gold) and appends them to that benchmark's `gold.csv` with `on_topic=pending_audit`. The scoring script already handles `pending_audit` correctly — those rows don't count toward recall / precision denominators, they just sit in a "not yet classified" bucket until a human audits them.
-
-**Why.** Zero-risk gold-farming. Each ratchet run surfaces a reach list (today: 456 on orchids, 129 on AA-STEM, 23 on CRISPR, 18 on Apollo, 2 on HL-STEM). Without a promotion step, those same candidates appear on every subsequent run's reach list; with promotion, each run adds audit-queue items and the next run's reach list is just the NEWLY-surfaced ones. Audits can happen at any cadence (one row at a time over coffee, or a batch pass), independent of ratchet runs. Sage's framing 2026-04-24: "we could just add them all as unaudited without much risk, right? and then do audits at any time later?" — yes, exactly.
-
-**Shape.**
-- `scripts/promote_reach.py <slug> <run-topic-name>` — reads the latest scoreboard's JSON for that run-topic, appends each reach title to `benchmarks/<slug>/gold.csv` with `on_topic=pending_audit` and a `source_run` column recording which run surfaced it (for provenance). Idempotent: skips titles already in gold under any status.
-- `scripts/audit_pending.py <slug>` — optional companion that iterates `pending_audit` rows and prompts for in/peripheral/out per title. Minimum viable: print a CSV-editable fragment the human edits and runs back through the audit classifier.
-- **Explicit guardrail**: the promotion script never mutates an existing `on_topic` value. If a row exists with any status (even `pending_audit`), it's skipped — human decisions win over automated ones.
-
-**Open questions.**
-- Should we capture the baseline recall / precision before and after the promotion, so we see how much each audit pass moves the gate? Maybe as a by-product of the script's output.
-- Does the audit classifier (`benchmarks/<slug>/audit.py`) need a `pending_audit` mode where it emits its best-guess classification but marks confidence low? Would make the audit a review-and-approve loop instead of classify-from-scratch. Decide after we've done one audit pass manually.
-
-**Sequencing.** Independent of the benchmark-polish bundle; can ship any time. Most useful AFTER a ratchet cycle produces a reach list (we have four already from the 2026-04-23 thin/fat runs).
-
----
-
 ### ☐ Benchmark system polish (6 sub-items) `[NEW — 2026-04-23]`
 
 Bundle of small changes around the benchmark / ratchet system now that `fetch_task_brief` + thin variants exist and today's fat-variant runs exposed baseline-quality issues. Sub-items are independently ship-able but share sequencing constraints (see below). Each ships as its own commit.
