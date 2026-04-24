@@ -22,10 +22,10 @@ patience) when the earlier steps have landed.
 5. **Cleanup pass** — `resolve_redirects` first (safe, additive — collapses
    redirect duplicates before anything else touches the corpus), then
    `filter_articles` once the list has real mass. Note: `filter_articles`
-   refuses to drop >10% of the corpus as "missing on Wikipedia" without
-   `force=True` — if it refuses, review the sample before forcing (the
-   2026-04-24 orchids run had 11k of 18k titles as list-page redlinks
-   that looked dropworthy but could also be investigated).
+   refuses to drop more than 10% of the corpus as "missing on Wikipedia"
+   without `force=True` — if it refuses, review the dropped-title sample
+   before forcing. The "missing" titles are usually redlinks from
+   list-page harvests; sometimes they're encoding / normalization issues.
 6. **Descriptions** — `fetch_descriptions` (auto-loops to drain the
    backlog). Unblocks everything downstream.
 7. **List pages** — `find_list_pages` on enwiki, or `search_articles`
@@ -279,20 +279,16 @@ properties are usually the join axis for that topic shape.
   build because the corpus is smaller and you're curating to surface
   cultural seeds, not to enumerate.
 
-  **Per-wiki structural fingerprints** (from the orchids build — specific
-  to that topic but illustrative of the kind of variation you'll see):
-    - **zhwiki**: typical hierarchical by subfamily; depth 4 works;
-      ~2K orchid articles.
-    - **jawiki**: small but well-curated (~350). Focus on native
-      cultivar traditions (富貴蘭 / 春蘭 / 寒蘭) and Edo-period
-      古典園芸.
-    - **ptwiki**: **flat** category structure — 313 genus categories
-      are direct children of Orchidaceae, no subfamily nesting. Root
-      crawl times out on breadth at depth=2. **Pull per-genus, not
-      root.**
-    - **nlwiki**: small (~100) but yields unique colonial-Indonesia
-      content impossible to find via English search (Rumphius, VOC
-      botanists).
+  **Cross-wiki structural variation is real.** Don't assume the category
+  tree shape you saw on enwiki carries over. Some wikis nest deeply by
+  subfamily; others are flat, with all genus categories as direct
+  children of a family-level root. Small wikis may have tight curation
+  around local traditions (native cultivars, regional horticulture)
+  that English coverage completely misses. Probe each wiki's shape
+  with `survey_categories` at low depth before committing to a crawl
+  strategy — a depth=4 crawl that works on a deeply-hierarchical wiki
+  can time out on breadth on a flat one, so pull per-genus instead of
+  at the root when the structure demands it.
 
   Reconciliation is manual today — per-article `preview_search`
   against the primary wiki. When `cross_wiki_diff` ships this will
@@ -438,23 +434,23 @@ properties are usually the join axis for that topic shape.
       are frequently empty, truncated to a lopsided fragment, or
       misleading about a subject's notability. `fetch_descriptions` has
       an enwiki REST fallback for *empty* Wikidata descriptions, but
-      misleading-but-nonempty ones (e.g. "American academic" for someone
-      whose notability is as an applied-STEM researcher on pilot-vision
-      eyewear) still reach you. When a shortdesc looks too thin to
-      justify the centrality you're about to assign, cross-check with
-      `preview_search` or `fetch_article_leads` before scoring.
+      misleading-but-nonempty ones still reach you — a generic label
+      like "American academic" can mask that the subject's notability
+      is actually in a specific applied-STEM sub-field. When a shortdesc
+      looks too thin to justify the centrality you're about to assign,
+      cross-check with `preview_search` or `fetch_article_leads` before
+      scoring.
     - **Large SPARQL / `wikidata_entities_by_property` results are
       auto-truncated** at the transport layer. A truncated response
       carries a marker — if you see it, your query was too broad. Add
       `LIMIT`, narrow the class, or split by sitelink-count bands rather
       than assuming you have the full set.
     - **`filter_articles` refuses to drop >10% of the corpus as "missing
-      on Wikipedia" without `force=True`.** Guardrail against the
-      2026-04-24 orchids failure mode where the tool silently dropped
-      11k of 18k titles. If you hit a refusal, read the
-      `sample_would_drop` in the response before forcing. Common causes:
-      legitimate redlinks (list-page harvests of taxa with no article
-      yet), encoding / normalization issues on imported titles, or stale
+      on Wikipedia" without `force=True`.** Guardrail against silent
+      mass-drops. If you hit a refusal, read the `sample_would_drop` in
+      the response before forcing. Common causes: legitimate redlinks
+      (list-page harvests of taxa / candidates with no article yet),
+      encoding or normalization issues on imported titles, or stale
       titles after a Wikipedia rename. When in doubt, use
       `resolve_redirects` (safe, no drops) for normalization and
       investigate the rest before `filter_articles(force=True)`.
@@ -498,13 +494,13 @@ properties are usually the join axis for that topic shape.
     - **`search_similar` noise is a function of seed topology, not the
       tool itself:**
         - *Pure topic node* (event, concept, specific work): near-zero
-          noise. Example: `morelike:兰亭集会` (the Orchid Pavilion
-          Gathering) returns 20/20 on-topic.
+          noise. An article whose subject IS the topic-shape returns
+          mostly on-topic neighbors.
         - *Biographical hub node* (a person with many non-topic edges):
-          ~50% noise. Example: `morelike:牧野富太郎` pulls Linnaeus,
-          Siebold, Zelkova trees, date articles — not because the
-          similarity model is broken but because Makino's biographical
-          edges span more than his orchid-taxonomy specialty.
+          ~50% noise. A polymath's article pulls in their non-topic
+          collaborators, institutions, and tangential subjects — not
+          because the similarity model is broken but because their
+          biographical edges span many fields.
         - Rule: prefer seeds *about* the topic (events, concepts, works)
           over *people associated with* the topic. Avoid polymaths and
           politically-prominent figures as seeds. Always
@@ -544,8 +540,9 @@ properties are usually the join axis for that topic shape.
     - A tool returns `timed_out: true` or a `cost_warning` — capture
       what you tried and why it surprised you.
     - A `search_similar` / morelike pull goes sideways and you revert
-      it — capture the seed's failure mode (the Orchid Thief →
-      Meryl Streep filmography pattern is the exemplar).
+      it — capture the seed's failure mode (e.g. a named-work seed
+      that pulls in its film adaptation's cast and unrelated
+      filmography rather than topic-peers).
     - A harvest or search produced unexpected noise (template
       contamination, cross-referenced junk) — capture the pattern.
     - A tool's behavior doesn't match what you expected from its
