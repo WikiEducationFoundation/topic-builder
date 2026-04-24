@@ -236,3 +236,18 @@ Follow-on to the redirect reconciliation pass: instead of silently dropping merg
 - **`promote_reach.py`** changed to add redirect/redlink rows instead of skipping. Re-run against each 2026-04-23 run topic to reconstruct past drops: CRISPR +4 redirects (Base editing / CRISPR-Cas / CRISPR/Cas9 / TALEN), Apollo 11 +2, Orchids +376, AA-STEM + HL-STEM 0.
 - **Scoreboard impact (orchids)**: gold size dropped from 18,113 to **7,354** after excluding redlinks — much more honest. Precision 99.0% (was showing 100%), recall 98.1% (was 100%). The prior numbers were inflated by treating 10,763 phantom redlinks as on-topic gold; the new numbers reflect Wikipedia articles that actually exist.
 - **Baseline caveat**: baseline.json metrics (100% / 100%) are frozen from pre-redlink-marking. Rebuilding baselines (Tier 1 1.b) will true them up to the new gold composition.
+
+## Tier 1 1.c: benchmark_score.py api_calls=0 gate fix (2026-04-24)
+
+Small one-branch fix. When a baseline records `total_api_calls = 0`, that axis is treated as UNRECORDED (missing data from pre-logging-backfill runs) and skipped from the cost-improvement gate. The scoreboard Cost table labels the axis `"no (baseline unrecorded)"` so the omission is visible. HL-STEM gate verdict moved from "did not improve" to "improved" after the fix — tool_calls dropped 108→62 on the run but was masked by the phantom api_calls "regression" against the 0 baseline.
+
+## Tier 1 1.a: Brief durability pass + template mechanism (2026-04-24)
+
+Locks the thin-variant brief as the measurement contract. Everything that might evolve over ratchet cycles moves to the substrate (server instructions, feedback schema); the brief stays frozen. Enables unlimited re-runs of the same task without name collisions or prompt edits.
+
+- **Template rendering.** Both `run_topic_name_template` and `brief_markdown` are stored as templates containing `{ts}`. `fetch_task_brief` renders `{ts}` to the current minute-UTC (`YYYYMMDDTHHMM`) at call time, returning concrete `run_topic_name` + `brief` strings. Two fetches in the same minute get the same name; fetches ≥1 minute apart get fresh names.
+- **DB schema.** New `run_topic_name_template` column on `dogfood_tasks`. Migration-safe via `ALTER TABLE ADD COLUMN` + `UPDATE ... WHERE IS NULL`. Legacy `run_topic_name` kept populated for the NOT NULL constraint; consumers read from the template column.
+- **Structured feedback fields** on `submit_feedback`: `strategies_used` (list of tool-family tags), `spot_check` (dict with probe counts + miss classifications), `sharp_edges_hit` (list of KNOWN SHARP EDGE tags), `tool_friction` (list of tagged friction one-liners). All optional, schema-documented with suggested vocabularies. The brief names them so AIs populate; schema can evolve without brief edits.
+- **Brief bodies stripped of operational details.** No more "~15–25 niche candidates" probe counts, no CENTRAL/PERIPHERAL/OUT rubric framework inlined — all of that was already in `server_instructions.md` and the briefs now reference it ("follow the SCOPE RUBRIC framework"). Keeps briefs fully general so subsequent instruction changes don't require brief edits.
+- **Scoring script `--task` alternative**: `python3 scripts/benchmark_score.py --task apollo-11-thin [--nth N]` resolves the task's template from the DB on the server, finds matching run topics by regex, picks the Nth-most-recent, and scores it. Direct positional `<slug> <run-topic-name>` form still works.
+- **Source-of-truth markdown** at `dogfood/tasks/*.md` uses new frontmatter key `run_topic_name_template` (legacy `run_topic_name` accepted for back-compat). `dogfood/tasks/README.md` fully rewritten to explain the durability contract + template rendering + thin-vs-informed variant split.

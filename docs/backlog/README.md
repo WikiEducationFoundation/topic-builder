@@ -67,14 +67,14 @@ Second use case is especially useful as a ratchet diagnostic: the scoring script
 Bundle of small changes around the benchmark / ratchet system now that `fetch_task_brief` + thin variants exist and today's fat-variant runs exposed baseline-quality issues. Sub-items are independently ship-able but share sequencing constraints (see below). Each ships as its own commit.
 
 **Sequencing.**
-- **1.a MUST ship first.** It locks the thin-prompt shape (substrate for everything after). Without it, baselines encode a prompt we already want to change.
+- **1.a MUST ship first.** ☑ shipped 2026-04-24. Locks the thin-prompt shape via template rendering; adds structured submit_feedback fields.
 - **1.b (rebuild baselines)** ships after 1.a, as each thin run lands.
-- **1.c (api_calls=0 gate fix)** ships before 1.b is used to re-score against old baselines. Small and independent; ship any time.
+- **1.c (api_calls=0 gate fix)** ☑ shipped 2026-04-24. Small and independent.
 - **1.d (abstract shape wisdom)** MUST ship AFTER 1.b — otherwise the abstraction gets baked into the baselines and we can't measure whether it helped.
 - **1.e (informed variant)** is independent; ship any time after 1.a.
 - **1.f (doc sweep)** is independent; ship any time.
 
-#### 1.a `[☐]` Brief durability pass + template mechanism
+#### 1.a `[☑ shipped 2026-04-24]` Brief durability pass + template mechanism
 
 **What.** Lock the shape of the thin-variant prompt so it can stay frozen across many ratchet cycles. Changes:
 
@@ -111,7 +111,7 @@ Bundle of small changes around the benchmark / ratchet system now that `fetch_ta
 
 **Sequencing.** AFTER 1.a — baselines should be under the durable prompt, not the current one.
 
-#### 1.c `[☐]` `benchmark_score.py`: treat `api_calls=0` on baseline as unrecorded
+#### 1.c `[☑ shipped 2026-04-24]` `benchmark_score.py`: treat `api_calls=0` on baseline as unrecorded
 
 **What.** When `baseline.total_api_calls == 0`, skip that axis in the cost-improvement gate (currently any ratchet run with non-zero api_calls is counted as "worse" even if genuinely efficient). Add a note to the scoreboard output. Parallel to the wall_time caveat shipped in `b6d1635`.
 
