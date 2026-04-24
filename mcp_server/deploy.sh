@@ -83,6 +83,14 @@ server {
         proxy_buffering off;
         proxy_cache off;
         chunked_transfer_encoding off;
+
+        # Absorb heavy tool calls that hold the single-worker event
+        # loop past the 60s default; prevents 504 bursts under 3+
+        # concurrent sessions. The Python backend itself has 300s
+        # internal budgets on its longest-running tools.
+        proxy_connect_timeout 30s;
+        proxy_send_timeout 300s;
+        proxy_read_timeout 300s;
     }
 
     listen 443 ssl;
