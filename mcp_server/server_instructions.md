@@ -448,6 +448,36 @@ properties are usually the join axis for that topic shape.
       carries a marker — if you see it, your query was too broad. Add
       `LIMIT`, narrow the class, or split by sitelink-count bands rather
       than assuming you have the full set.
+    - **`filter_articles` refuses to drop >10% of the corpus as "missing
+      on Wikipedia" without `force=True`.** Guardrail against the
+      2026-04-24 orchids failure mode where the tool silently dropped
+      11k of 18k titles. If you hit a refusal, read the
+      `sample_would_drop` in the response before forcing. Common causes:
+      legitimate redlinks (list-page harvests of taxa with no article
+      yet), encoding / normalization issues on imported titles, or stale
+      titles after a Wikipedia rename. When in doubt, use
+      `resolve_redirects` (safe, no drops) for normalization and
+      investigate the rest before `filter_articles(force=True)`.
+
+- ADDITIVE vs. SUBTRACTIVE tools. Every tool either **adds / normalizes**
+  (additive — `resolve_redirects`, `fetch_descriptions`, `fetch_article_leads`,
+  all gather tools) or **drops / rejects** (subtractive — `filter_articles`,
+  `remove_by_pattern`, `remove_by_source`, `auto_score_by_description`'s
+  disqualify path, `reject_articles`). Additive tools are safe to run
+  freely and mid-build; subtractive tools need care because silent drops
+  are invisible once they happen. Rules of thumb:
+    - Prefer the additive variant when both exist. `resolve_redirects`
+      before `filter_articles` — normalize first, drop second.
+    - Always preview subtractive operations. `remove_by_pattern` has
+      `dry_run=True`; `filter_articles` has the 10% refusal guardrail;
+      `auto_score_by_description` has `dry_run=True`. Use them.
+    - Read the drop sample before committing. On a large corpus, a
+      plausible-looking percentage can still be wrong — look at the
+      titles.
+    - When a subtractive filter is Wikidata- or category-conditioned
+      (e.g., "drop everything not tagged Q5 human"), remember coverage
+      is uneven. Real on-topic articles often lack the property. Prefer
+      annotating over filtering when the alternative is silent loss.
 
 - NOISE TAXONOMY — know what to expect from each gather strategy so you
   review efficiently instead of treating everything as uniformly suspect:
