@@ -24,8 +24,29 @@ Add new items here as signals come in; promote items to
 
 ## Tier 1 — small, high-leverage
 
-*(Drained 2026-04-23 — all three items shipped as the Tier 1 ratchet bundle.
-Run the 5-benchmark ratchet next; new Tier 1 items land here as signals come in.)*
+### ☐ Doc sweep for server-mediated dogfood task briefs `[NEW — 2026-04-23]`
+
+**What.** The `fetch_task_brief` / `list_tasks` entry-point system shipped 2026-04-23 (see `../shipped.md`), but the surrounding docs still describe the old copy-paste-kickoff-file path as canonical. Five docs need updates:
+
+1. **`docs/ratchet-plan.md`** — "Kick-off-and-leave-for-a-while mode" section describes the legacy path. Point at `fetch_task_brief(task_id=...)` as the preferred kickoff; frame standalone `.md` kickoffs as the legacy fat-variant until that migration (option 3 below) happens.
+2. **`dogfood/README.md`** — currently documents pasting `task.md` as THE way to run a session. Add a "Running a benchmark task" section with the one-line kickoff prompt: _"Call `fetch_task_brief(task_id='<task_id>')`, then follow its instructions."_
+3. **`benchmarks/README.md`** — "Fresh AI-driven builds" design note says _"start a fresh dogfood session (autonomous via `dogfood/task.md`, or a guided session)"_. Add the server-mediated path as a third option (and the new preferred one for benchmarks).
+4. **`CLAUDE.md`** — "exposes ~45 tools" is stale (now ~47); and a brief mention of the dogfood task system under "Architecture at a glance" would help a fresh context.
+5. **`dogfood/tasks/README.md`** — expand the framing. Current content is format + seed workflow only; add a "why this exists" section (operator friction, reproducibility across AIs, path to guided-mode skill) + "when to use vs. `task.md` freehand mode" decision help.
+
+**Why.** The task-brief system will get used repeatedly before the 2026-04-23 ratchet cycle completes (thin variants about to launch). First-time operator confusion is cheap to prevent with these edits and expensive once it happens. Also: the rationale behind the system is currently only in commit messages + one chat thread — folding it into docs makes it durable.
+
+**Deliberately NOT updating:**
+- `mcp_server/server_instructions.md` — tool docstrings say "don't call in normal sessions"; adding to instructions would invite misuse. Entry-point tools stay invisible to normal builds.
+
+**Open question: what to do with the `dogfood/kickoffs/ratchet-2026-04-23-*.md` files?**
+- **Option 1 (leave):** keep as historical record of this cycle. Cheapest.
+- **Option 2 (frame):** leave files, add a README in `dogfood/kickoffs/` noting they're legacy-for-now; migration to DB planned. Documents the transition state.
+- **Option 3 (migrate):** write `*-fat` DB entries mirroring the file content via the seed script, delete the standalone files. Fully unifies the system.
+
+Leaning option 2 for this doc sweep; option 3 as a follow-up if thin variants prove interesting and we want full DB consolidation.
+
+**Shape.** Pure doc edits + (option 2) one new README under `dogfood/kickoffs/`. Zero code change. Ship as a small bundle commit.
 
 ---
 
