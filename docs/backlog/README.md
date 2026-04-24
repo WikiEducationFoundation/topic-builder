@@ -125,7 +125,7 @@ Bundle of small changes around the benchmark / ratchet system now that `fetch_ta
 - **1.a MUST ship first.** ☑ shipped 2026-04-24. Locks the thin-prompt shape via template rendering; adds structured submit_feedback fields.
 - **1.b (rebuild baselines)** ships after 1.a, as each thin run lands.
 - **1.c (api_calls=0 gate fix)** ☑ shipped 2026-04-24. Small and independent.
-- **1.d (abstract shape wisdom)** MUST ship AFTER 1.b — otherwise the abstraction gets baked into the baselines and we can't measure whether it helped.
+- **1.d (abstract shape wisdom)** ☑ shipped 2026-04-24 (after 1.b). First measurable ratchet cycle starts here: next thin runs are the "after" against the thin-variant baselines we just landed.
 - **1.e (informed variant)** ☑ shipped 2026-04-24. Five `<slug>-informed` briefs seeded alongside the thin variants; same protocol, adds a "Baseline + gold snapshot" section with the current gold_in count + baseline precision/recall/corpus-size + a one-sentence read.
 - **1.f (doc sweep)** ☑ shipped 2026-04-24. Updated ratchet-plan, benchmarks/README, CLAUDE.md, dogfood/README, dogfood/tasks/README; added dogfood/kickoffs/README framing the fat-variant files as legacy.
 
@@ -174,7 +174,7 @@ Bundle of small changes around the benchmark / ratchet system now that `fetch_ta
 
 **Shape.** One `if baseline_api_calls == 0: skip` branch in `compute_scoreboard`, plus a "(baseline data unavailable)" label in the table.
 
-#### 1.d `[☐]` Abstract shape-strategy wisdom into `server_instructions.md`
+#### 1.d `[☑ shipped 2026-04-24]` Abstract shape-strategy wisdom into `server_instructions.md`
 
 **What.** Move cross-topic-shape wisdom currently baked into the 2026-04-23 fat-variant kickoff prompts into the canonical instructions, so every thin-variant run benefits automatically without operator pre-hinting. Concrete edits:
 
