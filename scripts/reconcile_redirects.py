@@ -1,27 +1,29 @@
 """Reconcile redirects in a benchmark's gold.csv.
 
-For each title in gold.csv, resolve to canonical form via Wikipedia's
-redirect+normalize API, then:
+For each title, resolve to canonical form via Wikipedia's redirect +
+normalize API, then ensure every row carries an honest status:
 
-  1. Self-canonical (title == resolved): no action.
-  2. Redirect source whose canonical is ALSO in gold: merge.
-     The "winner" row is picked by:
-       (a) most-decisive classification (in/peripheral/out > pending_audit)
-       (b) within ties, the canonical title's own row wins
-     Other rows are dropped. If two rows have decisive classifications
-     that DISAGREE (e.g., one 'in' and one 'out' for the same canonical),
-     the group is retained and flagged for manual review.
-  3. Redirect source whose canonical is NOT in gold: rewrite the row's
-     title to the canonical form; keep everything else.
-  4. Missing on Wikipedia (page deleted / never existed): flagged but
-     not dropped — human should review.
+  1. Self-canonical row (title == resolved): no action.
+  2. Redirect source whose canonical is also in gold:
+       - Canonical row keeps its classification (promoted from pending_audit
+         if any non-canonical row in the group has a decisive classification).
+       - Non-canonical rows are MARKED on_topic=redirect (preserved for
+         provenance; scoreboard excludes them). Notes get '→ canonical'.
+       - If decisive classifications DISAGREE between canonical and a
+         redirect source, a warning is printed — canonical wins regardless.
+  3. Redirect source whose canonical is NOT in gold:
+       - Rewrite the row's title to the canonical form. Keep classification.
+  4. Title missing on Wikipedia (no article under any redirect chain):
+       - MARK on_topic=redlink. Preserve original classification in notes
+         as "[was: <original>]".
+
+Why mark instead of drop: redirect/redlink rows document "we've seen this
+title, here's what it is" so future runs don't resurface them as reach
+candidates. Scoring excludes both statuses from gold_in/gold_out so they
+don't warp recall or precision.
 
 Usage:
     python3 scripts/reconcile_redirects.py <slug> [--dry-run]
-
-Example:
-    python3 scripts/reconcile_redirects.py orchids --dry-run
-    python3 scripts/reconcile_redirects.py orchids
 """
 import argparse
 import csv
@@ -113,73 +115,81 @@ def main():
             redirects_found += 1
         groups[canonical].append(row)
 
-    rows_to_drop = []                         # row refs
-    drop_targets = {}                         # id(row) → canonical target
-    rows_to_rewrite = []                      # (row_ref, new_title, new_cls)
-    conflicts = []                            # list of (canonical, [rows])
+    # Planned actions. Each row gets AT MOST one action.
+    #   rewrite: (row, new_title, new_cls, new_notes_prefix)
+    #   mark_redirect: (row, canonical_target)   — on_topic → 'redirect'
+    #   mark_redlink: (row, original_on_topic)   — on_topic → 'redlink'
+    rewrites = []
+    mark_redirect = []
+    mark_redlink = []
+    conflict_warnings = []
+
+    # Already-missing titles: mark as redlink.
+    for row in rows:
+        orig = row["title"]
+        if resolved.get(orig) is None:
+            mark_redlink.append((row, row["on_topic"]))
 
     for canonical, group_rows in groups.items():
+        # Skip "missing" groups — handled above.
+        if resolved.get(canonical) is None:
+            continue
+
         if len(group_rows) == 1:
             row = group_rows[0]
-            if row["title"] != canonical and resolved.get(row["title"]) is not None:
-                rows_to_rewrite.append((row, canonical, row["on_topic"]))
+            if row["title"] != canonical:
+                rewrites.append((row, canonical, row["on_topic"], None))
             continue
 
-        # Multiple rows → reconciliation required.
-        decisive_rows = [r for r in group_rows if r["on_topic"] in DECISIVE]
-        # Conflict detection uses semantic equivalence (true ≡ in, false ≡ out).
-        decisive_equiv = {_CONFLICT_EQUIV[r["on_topic"]] for r in decisive_rows}
-        if len(decisive_equiv) > 1:
-            conflicts.append((canonical, group_rows))
-            continue
-
-        # No disagreement — merge into a winner.
-        # Winner: lowest class_rank, tie-broken by canonical-title match.
+        # Multiple rows → pick winner, mark others as redirect.
+        # Winner preference: canonical-title-match first, then decisive class.
         def _sort_key(r):
-            return (_class_rank(r["on_topic"]),
-                    0 if r["title"] == canonical else 1)
+            return (0 if r["title"] == canonical else 1,
+                    _class_rank(r["on_topic"]))
         sorted_rows = sorted(group_rows, key=_sort_key)
         winner = sorted_rows[0]
+
+        # If winner's own classification is pending_audit but another row
+        # in the group has a decisive one, promote it.
         winner_cls = winner["on_topic"]
-        # If the winner is pending_audit but there's a decisive row in
-        # the group, promote that classification onto the winner.
+        decisive_rows = [r for r in group_rows if r["on_topic"] in DECISIVE]
         if winner_cls == "pending_audit" and decisive_rows:
             winner_cls = decisive_rows[0]["on_topic"]
+
+        # Detect disagreement among decisive classifications for the warning.
+        decisive_equiv = {_CONFLICT_EQUIV[r["on_topic"]] for r in decisive_rows}
+        if len(decisive_equiv) > 1:
+            conflict_warnings.append((canonical, group_rows, winner, winner_cls))
+
+        # Winner: may need title rewrite if it isn't the canonical row.
+        if winner["title"] != canonical:
+            rewrites.append((winner, canonical, winner_cls, None))
+        elif winner_cls != winner["on_topic"]:
+            rewrites.append((winner, winner["title"], winner_cls, None))
+
+        # All non-winner rows become redirect markers.
         for r in group_rows:
             if r is winner:
-                if r["title"] != canonical:
-                    rows_to_rewrite.append((r, canonical, winner_cls))
-                elif winner_cls != r["on_topic"]:
-                    rows_to_rewrite.append((r, r["title"], winner_cls))
-            else:
-                rows_to_drop.append(r)
-                drop_targets[id(r)] = canonical
+                continue
+            mark_redirect.append((r, canonical))
 
-    n_drop = len(rows_to_drop)
-    n_rewrite = len(rows_to_rewrite)
-    n_conflict = len(conflicts)
-    n_missing = len(missing)
+    n_rewrite = len(rewrites)
+    n_mark_redirect = len(mark_redirect)
+    n_mark_redlink = len(mark_redlink)
+    n_conflict = len(conflict_warnings)
 
     print()
     print(f"=== {args.slug} reconciliation plan ===")
-    print(f"  Self-canonical (no change):       {unchanged}")
-    print(f"  Redirect/normalization detected:  {redirects_found}")
-    print(f"  Rows to drop (merged duplicates): {n_drop}")
-    print(f"  Rows to rewrite (→ canonical):    {n_rewrite}")
-    print(f"  Classification conflicts:         {n_conflict}")
-    print(f"  Missing on Wikipedia:             {n_missing}")
-
-    if n_drop > 0:
-        print("\nWill drop (first 20):")
-        for row in rows_to_drop[:20]:
-            tgt = drop_targets.get(id(row), "?")
-            print(f"  - {row['title']!r} ({row['on_topic']}) → merged into {tgt!r}")
-        if n_drop > 20:
-            print(f"  ... and {n_drop - 20} more")
+    print(f"  Self-canonical (no change):         {unchanged}")
+    print(f"  Redirect/normalization detected:    {redirects_found}")
+    print(f"  Rows to rewrite (→ canonical):      {n_rewrite}")
+    print(f"  Rows to mark on_topic=redirect:     {n_mark_redirect}")
+    print(f"  Rows to mark on_topic=redlink:      {n_mark_redlink}")
+    print(f"  Canonical-vs-redirect disagreements: {n_conflict}")
 
     if n_rewrite > 0:
         print("\nWill rewrite (first 20):")
-        for row, new_title, new_cls in rows_to_rewrite[:20]:
+        for row, new_title, new_cls, _ in rewrites[:20]:
             old = row["title"]
             cls_note = ""
             if new_cls != row["on_topic"]:
@@ -188,48 +198,79 @@ def main():
         if n_rewrite > 20:
             print(f"  ... and {n_rewrite - 20} more")
 
-    if n_conflict > 0:
-        print("\n⚠ Classification conflicts (kept for manual review):")
-        for canonical, group_rows in conflicts[:10]:
-            print(f"  Canonical {canonical!r}:")
-            for r in group_rows:
-                print(f"    - {r['title']!r}: {r['on_topic']!r}")
-        if n_conflict > 10:
-            print(f"  ... and {n_conflict - 10} more conflicts")
+    if n_mark_redirect > 0:
+        print("\nWill mark on_topic=redirect (first 20):")
+        for row, canonical in mark_redirect[:20]:
+            print(f"  - {row['title']!r} (was {row['on_topic']!r}) "
+                  f"→ redirect → {canonical!r}")
+        if n_mark_redirect > 20:
+            print(f"  ... and {n_mark_redirect - 20} more")
 
-    if n_missing > 0:
-        print("\n⚠ Titles not on Wikipedia (flagged, not dropped):")
-        for t in missing[:20]:
-            print(f"  - {t!r}")
-        if n_missing > 20:
-            print(f"  ... and {n_missing - 20} more")
+    if n_mark_redlink > 0:
+        print("\nWill mark on_topic=redlink (first 20):")
+        for row, orig_cls in mark_redlink[:20]:
+            print(f"  - {row['title']!r} (was {orig_cls!r}) → redlink")
+        if n_mark_redlink > 20:
+            print(f"  ... and {n_mark_redlink - 20} more")
+
+    if n_conflict > 0:
+        print("\n⚠ Canonical-vs-redirect-source classification disagreements")
+        print("  (canonical wins; redirect sources will be marked `redirect`):")
+        for canonical, group_rows, winner, winner_cls in conflict_warnings[:10]:
+            print(f"  Canonical {canonical!r} (keeping {winner_cls!r}):")
+            for r in group_rows:
+                marker = " ←WINNER" if r is winner else ""
+                print(f"    - {r['title']!r}: {r['on_topic']!r}{marker}")
+        if n_conflict > 10:
+            print(f"  ... and {n_conflict - 10} more disagreements")
 
     if args.dry_run:
         print("\n(dry-run: no changes written)")
         return
 
-    dropped_ids = {id(r) for r in rows_to_drop}
-    rewrite_map = {id(r): (new_title, new_cls)
-                   for r, new_title, new_cls in rows_to_rewrite}
+    # Build lookup maps. Note: a row can only be in one action (rewrites
+    # and mark_redirect are mutually exclusive by construction).
+    rewrite_map = {id(r): (t, c, n)
+                   for r, t, c, n in rewrites}
+    redirect_map_local = {id(r): canon for r, canon in mark_redirect}
+    redlink_map_local = {id(r): orig for r, orig in mark_redlink}
 
-    new_rows = []
     for row in rows:
-        if id(row) in dropped_ids:
-            continue
-        if id(row) in rewrite_map:
-            new_title, new_cls = rewrite_map[id(row)]
+        rid = id(row)
+        if rid in redlink_map_local:
+            orig = redlink_map_local[rid]
+            row["on_topic"] = "redlink"
+            note = f"[was: {orig}]"
+            row["notes"] = (row.get("notes") + " " + note).strip() \
+                if row.get("notes") else note
+        elif rid in redirect_map_local:
+            canon = redirect_map_local[rid]
+            orig = row["on_topic"]
+            row["on_topic"] = "redirect"
+            note = f"→ {canon}"
+            # If the original classification differed from the canonical's,
+            # preserve it in notes for audit history.
+            prev_note = row.get("notes") or ""
+            pieces = [note]
+            if orig not in ("pending_audit", "redirect", "redlink"):
+                pieces.append(f"[was: {orig}]")
+            if prev_note:
+                pieces.insert(0, prev_note)
+            row["notes"] = " ".join(pieces)
+        elif rid in rewrite_map:
+            new_title, new_cls, _ = rewrite_map[rid]
             row["title"] = new_title
             row["on_topic"] = new_cls
-        new_rows.append(row)
 
     with open(gold_path, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=GOLD_COLUMNS, extrasaction="ignore")
         w.writeheader()
-        for row in new_rows:
+        for row in rows:
             w.writerow({k: row.get(k, "") for k in GOLD_COLUMNS})
 
-    print(f"\nOK — wrote {gold_path} ({len(new_rows)} rows, "
-          f"{len(rows) - len(new_rows)} merged out).")
+    print(f"\nOK — wrote {gold_path} ({len(rows)} rows, "
+          f"{n_rewrite} rewritten, {n_mark_redirect} → redirect, "
+          f"{n_mark_redlink} → redlink).")
 
 
 if __name__ == "__main__":

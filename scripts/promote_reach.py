@@ -124,82 +124,133 @@ def main():
     else:
         resolved = {}
 
-    reach = []                    # canonical titles to promote
-    skipped_already_in_gold = []  # [(raw, canonical)]
-    skipped_missing = []          # raw titles that resolve to None
-    promoted_sources = {}         # canonical → the raw title that surfaced it
+    # Each raw reach title gets one of these actions:
+    #   promote_canonical: add a new row title=canonical, on_topic=pending_audit
+    #   mark_redirect:     add a new row title=raw, on_topic=redirect,
+    #                      notes="→ canonical" — preserves provenance
+    #                      for a title whose canonical is already in gold.
+    #   mark_redlink:      add a new row title=raw, on_topic=redlink —
+    #                      preserves the fact that we saw this title, but
+    #                      flags it as a dead link.
+    #   skip_dedup:        another raw title already promotes this canonical;
+    #                      don't add a second canonical row.
+    promote_canonical = []  # list of canonical titles
+    redirect_rows = []      # list of (raw_title, canonical_target)
+    redlink_rows = []       # list of raw_titles
+    promoted_canonicals = set()
     for raw in raw_reach:
         canonical = resolved.get(raw, raw)
         if canonical is None:
-            skipped_missing.append(raw)
+            # Skip if already in gold under any status.
+            if raw in existing_titles:
+                continue
+            redlink_rows.append(raw)
             continue
         if canonical in existing_titles:
-            skipped_already_in_gold.append((raw, canonical))
+            # Canonical already in gold — preserve the redirect-source
+            # provenance (unless the raw title itself is already in gold).
+            if raw != canonical and raw not in existing_titles:
+                redirect_rows.append((raw, canonical))
             continue
-        if canonical in promoted_sources:
-            # Two reach titles resolved to the same canonical; promote once.
+        if canonical in promoted_canonicals:
+            # Two raw reach titles resolved to the same canonical.
+            # Still preserve the extra raw as a redirect marker.
+            if raw != canonical and raw not in existing_titles:
+                redirect_rows.append((raw, canonical))
             continue
-        promoted_sources[canonical] = raw
-        reach.append(canonical)
+        promoted_canonicals.add(canonical)
+        promote_canonical.append(canonical)
+        # If the raw title differs from the canonical, also add a redirect
+        # marker row for the raw title so future runs recognize it.
+        if raw != canonical and raw not in existing_titles:
+            redirect_rows.append((raw, canonical))
 
     print(f"Corpus size: {len(corpus)}")
     print(f"Already in gold (direct match): {len(corpus & existing_titles)}")
     print(f"Raw reach candidates: {len(raw_reach)}")
-    print(f"  → resolve to canonical already in gold: "
-          f"{len(skipped_already_in_gold)} (skipped)")
-    print(f"  → resolve to missing / nonexistent page: "
-          f"{len(skipped_missing)} (skipped)")
-    print(f"  → unique canonicals to promote: {len(reach)}")
+    print(f"  → new canonicals to promote (pending_audit): "
+          f"{len(promote_canonical)}")
+    print(f"  → redirect-source rows to add (on_topic=redirect): "
+          f"{len(redirect_rows)}")
+    print(f"  → redlink rows to add (on_topic=redlink): "
+          f"{len(redlink_rows)}")
 
-    if not reach:
-        print("\nNothing to promote after redirect resolution.")
-        if skipped_already_in_gold:
-            print(f"(Resolved {len(skipped_already_in_gold)} reach titles to "
-                  f"canonicals already in gold — the raw-title 'reach' was "
-                  f"mostly redirect duplicates.)")
+    total_new = len(promote_canonical) + len(redirect_rows) + len(redlink_rows)
+    if total_new == 0:
+        print("\nNothing to add. Gold already contains every reach title's "
+              "canonical form, and every raw reach title is either already "
+              "marked or matches its canonical directly.")
         return
 
     if dry_run:
         print("\n(dry-run: not writing to gold.csv)\n")
-        print(f"Would add {len(reach)} rows with:")
-        print("  on_topic=pending_audit")
-        print(f"  source_run={run_topic!r}")
-        print("\nFirst 20 titles that would be promoted:")
-        for t in reach[:20]:
-            print(f"  - {t}")
-        if len(reach) > 20:
-            print(f"  ... and {len(reach) - 20} more")
+        print(f"Would add {total_new} rows total.")
+        if promote_canonical:
+            print(f"\nFirst 20 canonical pending_audit rows:")
+            for t in promote_canonical[:20]:
+                print(f"  - {t}")
+            if len(promote_canonical) > 20:
+                print(f"  ... and {len(promote_canonical) - 20} more")
+        if redirect_rows:
+            print(f"\nFirst 20 redirect rows:")
+            for raw, canon in redirect_rows[:20]:
+                print(f"  - {raw!r} → {canon!r}")
+            if len(redirect_rows) > 20:
+                print(f"  ... and {len(redirect_rows) - 20} more")
+        if redlink_rows:
+            print(f"\nFirst 20 redlink rows:")
+            for raw in redlink_rows[:20]:
+                print(f"  - {raw!r}")
+            if len(redlink_rows) > 20:
+                print(f"  ... and {len(redlink_rows) - 20} more")
         return
 
-    new_rows = [
-        {
-            "title": t,
+    new_rows = []
+    for title in promote_canonical:
+        new_rows.append({
+            "title": title,
             "on_topic": "pending_audit",
             "sources": "",
             "score": "",
             "description": "",
             "notes": "",
             "source_run": run_topic,
-        }
-        for t in reach
-    ]
+        })
+    for raw, canonical in redirect_rows:
+        new_rows.append({
+            "title": raw,
+            "on_topic": "redirect",
+            "sources": "",
+            "score": "",
+            "description": "",
+            "notes": f"→ {canonical}",
+            "source_run": run_topic,
+        })
+    for raw in redlink_rows:
+        new_rows.append({
+            "title": raw,
+            "on_topic": "redlink",
+            "sources": "",
+            "score": "",
+            "description": "",
+            "notes": "",
+            "source_run": run_topic,
+        })
 
     write_gold(gold_path, existing_rows + new_rows)
     total = len(existing_rows) + len(new_rows)
 
-    print(f"\nOK — promoted {len(reach)} titles.")
+    print(f"\nOK — wrote {gold_path}.")
     print(f"  gold.csv now has {total} rows total "
           f"({total - len(new_rows)} prior + {len(new_rows)} new).")
-    print(f"  Promoted rows: on_topic=pending_audit, source_run={run_topic!r}")
-    print(f"\nFirst 20 promoted titles:")
-    for t in reach[:20]:
-        print(f"  - {t}")
-    if len(reach) > 20:
-        print(f"  ... and {len(reach) - 20} more")
-    print("\nNext step: audit the pending_audit rows at your leisure. Edit "
-          "on_topic from 'pending_audit' to 'in' / 'peripheral' / 'out' "
-          "directly in gold.csv; the scoring script will pick up the change "
-          "on the next run.")
+    print(f"  Added: {len(promote_canonical)} pending_audit, "
+          f"{len(redirect_rows)} redirect, {len(redlink_rows)} redlink.")
+    print(f"  source_run={run_topic!r}")
+    if promote_canonical:
+        print("\nNext step: audit the pending_audit rows at your leisure. "
+              "Edit on_topic from 'pending_audit' to 'in' / 'peripheral' / "
+              "'out' directly in gold.csv; the scoring script will pick up "
+              "the change on the next run.")
 
 
 if __name__ == "__main__":

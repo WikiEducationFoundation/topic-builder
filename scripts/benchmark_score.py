@@ -167,6 +167,12 @@ def score(slug, run_topic_name):
     gold_out = {t for t, c in gold.items() if c in ("out", "false")}
     gold_uncertain = {t for t, c in gold.items() if c == "uncertain"}
     unaudited = {t for t, c in gold.items() if c == "pending_audit"}
+    # 'redirect' rows are provenance markers (title is a Wikipedia redirect
+    # source pointing at a canonical row in the same gold). 'redlink' rows
+    # flag titles that have no Wikipedia article. Both are excluded from
+    # scoring denominators — they represent "known, not countable."
+    gold_redirect = {t for t, c in gold.items() if c == "redirect"}
+    gold_redlink = {t for t, c in gold.items() if c == "redlink"}
 
     # Normalize live corpus titles to their canonical Wikipedia form
     # before comparing to gold. The AI-assembled corpus can contain
@@ -252,6 +258,8 @@ def score(slug, run_topic_name):
         "gold_out_count": len(gold_out),
         "gold_uncertain_count": len(gold_uncertain),
         "gold_unaudited_count": len(unaudited),
+        "gold_redirect_count": len(gold_redirect),
+        "gold_redlink_count": len(gold_redlink),
         "precision": round(precision, 4),
         "recall": round(recall, 4),
         "baseline_precision": baseline_prec,
@@ -340,7 +348,9 @@ def format_scoreboard(s):
              f"{fmt_delta(s['tool_call_count_delta'])} | yes |")
     L.append("")
 
-    if s['gold_unaudited_count'] or s['gold_uncertain_count']:
+    excluded = (s['gold_unaudited_count'] + s['gold_uncertain_count']
+                + s['gold_redirect_count'] + s['gold_redlink_count'])
+    if excluded:
         L.append("## Gold status")
         L.append("")
         if s['gold_unaudited_count']:
@@ -349,6 +359,13 @@ def format_scoreboard(s):
         if s['gold_uncertain_count']:
             L.append(f"- {s['gold_uncertain_count']} rows `uncertain` — "
                      f"excluded from both numerator and denominator.")
+        if s['gold_redirect_count']:
+            L.append(f"- {s['gold_redirect_count']} rows `redirect` — "
+                     f"provenance markers (Wikipedia redirect sources pointing "
+                     f"at canonical rows). Excluded from scoring.")
+        if s['gold_redlink_count']:
+            L.append(f"- {s['gold_redlink_count']} rows `redlink` — "
+                     f"titles with no Wikipedia article. Excluded from scoring.")
         L.append("")
 
     for label, field, direction in [
