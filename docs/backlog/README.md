@@ -24,31 +24,66 @@ Add new items here as signals come in; promote items to
 
 ## Tier 1 — small, high-leverage
 
-### ☐ Benchmark system polish (5 sub-items) `[NEW — 2026-04-23]`
+### ☐ Benchmark system polish (6 sub-items) `[NEW — 2026-04-23]`
 
-Bundle of small changes around the benchmark / ratchet system now that `fetch_task_brief` + thin variants exist and today's fat-variant runs exposed baseline-quality issues. Sub-items are independently ship-able but share a sequencing constraint (see below). Each ships as its own commit.
+Bundle of small changes around the benchmark / ratchet system now that `fetch_task_brief` + thin variants exist and today's fat-variant runs exposed baseline-quality issues. Sub-items are independently ship-able but share sequencing constraints (see below). Each ships as its own commit.
 
-**Sequencing.** (1) and (5) can ship immediately. (2) should ship before re-scoring anything comparing against old baselines. (3) must ship AFTER (1) — otherwise the abstracted wisdom is baked into the new baselines and we can't measure its effect. (4) is fully independent.
+**Sequencing.**
+- **1.a MUST ship first.** It locks the thin-prompt shape (substrate for everything after). Without it, baselines encode a prompt we already want to change.
+- **1.b (rebuild baselines)** ships after 1.a, as each thin run lands.
+- **1.c (api_calls=0 gate fix)** ships before 1.b is used to re-score against old baselines. Small and independent; ship any time.
+- **1.d (abstract shape wisdom)** MUST ship AFTER 1.b — otherwise the abstraction gets baked into the baselines and we can't measure whether it helped.
+- **1.e (informed variant)** is independent; ship any time after 1.a.
+- **1.f (doc sweep)** is independent; ship any time.
 
-#### 1.a `[☐]` Rebuild baselines from thin runs
+#### 1.a `[☐]` Brief durability pass + template mechanism
 
-**What.** Today's `baseline.json` files encode pre-logging-backfill runs with data-quality issues (api_calls=0 on AA-STEM / HL-STEM, mixed quick-autonomous / consultative modes, pre-Chunk-1-6 tool behavior). Replace them with metrics from the 5 thin-variant runs (already seeded via `fetch_task_brief`) as each completes. Mothball today's fat-variant scoreboards as historical-only.
+**What.** Lock the shape of the thin-variant prompt so it can stay frozen across many ratchet cycles. Changes:
 
-**Shape.** Small `scripts/update_baseline_from_run.py` helper that reads the archived scoreboard + topic state, writes `benchmarks/<slug>/baseline.json`. Archive old baselines in-place (rename to `baseline-archive-2026-04-23.json` so git history preserves them). After all 5 thin runs are in, this becomes the new measurement floor.
+1. **Brief-as-template with server-side rendering.** Both the `run_topic_name` AND the `brief_markdown` body are templates. `fetch_task_brief` runs one substitution pass at call time:
+   - `{ts}` → current minute-UTC (`YYYYMMDDTHHMM`).
+   - (Future variables like `{task_id}` / `{benchmark_slug}` can share the same pass if we need them; ship `{ts}` only for now.)
 
-**Why.** Today's gate compares against baselines we've already flagged as unreliable (see today's scoreboards). A thin-prompt baseline = first real measurement under the "standard shape" that the ratchet is supposed to iterate from.
+   DB stores the templates; tool returns the rendered strings. The brief body naturally uses the rendered name in step 1 (`start_topic(name="apollo-11-thin 20260424T0013", ...)`) because that literal line is produced by the same substitution pass. Brief source stays frozen; output is unique per fetch. Operators no longer know the exact run-topic name from the prompt source alone — they see it in the returned brief or via 1.a.2 scoring tooling.
+2. **Scoring script `--task <task_id>` alternative.** `scripts/benchmark_score.py` grows a mode where you pass a task_id and it picks the most recent run-topic matching the template's stem (plus optional `--nth N` for older runs). Preserves the explicit `<run-topic-name>` positional arg for back-compat.
+3. **Strip operational details out of briefs, into `server_instructions.md`.** Anything that might evolve (spot-check probe counts, rubric tier framework, etc.) moves out of the brief into the canonical instructions. Brief just says "do the SPOT CHECK and GAP CHECK per server instructions" and "draft a rubric following the SCOPE RUBRIC framework" — no numbers or tier names. Audit fragile references; replace specific tool names with "the server's pipeline" where appropriate. Keep stable-API references (`start_topic`, `set_topic_rubric`, `submit_feedback`, `export_csv`).
+4. **Enrich `submit_feedback` schema with structured optional fields** that we want to trend over time. Brief names them so AI populates; schema evolves server-side without brief edits:
+   - `strategies_used: list[str]` — tool-family tags (`category_crawl`, `list_harvest`, `navbox`, `wikidata_property`, `search`, `similarity`, `edge_browse`, `fetch_leads`). Lets us track strategy diversity per topic shape over time.
+   - `spot_check: dict` — `{"probes_count": N, "hits": M, "misses_redirect": X, "misses_hallucination": Y, "misses_real_gap": Z}`. Structured spot-check results.
+   - `sharp_edges_hit: list[str]` — enum of KNOWN SHARP EDGES tags the AI actually hit this session. Tells us which warnings are live-saving vs. theoretical.
+   - `tool_friction: list[str]` — tagged one-liners (`"fetch_descriptions_timeout"`, `"harvest_navbox_empty"`). Aggregates mid-run surprises; complements `note=` on individual calls.
+5. **Mode statement stays** ("deep consultative, completeness-seeking") — it's the mode we've chosen to measure under. Document the why in a tasks/README section so future-us doesn't wonder.
 
-#### 1.b `[☐]` `benchmark_score.py`: treat `api_calls=0` on baseline as unrecorded
+**Why.** Sage's framing (2026-04-23): "we don't want to have to change these. if the only changes are server instructions and tools, while the prompts are static, that'll be the cleanest way to ratchet up." A frozen prompt makes longitudinal measurement possible; every movement in the metrics attributes to a specific code/instruction change, not to operator drift.
+
+**Open questions** (resolve before shipping):
+- `spot_check.misses_*` enum — fixed vocabulary (`redirect` / `hallucination` / `real_gap`) or freeform? Fixed trends better; freeform captures edge cases. Lean: fixed, with `other` fallback.
+- Brief body template variables beyond `{ts}` — probably not, keep minimal.
+- Is `strategies_used` AI-self-reported or computed from `usage.jsonl`? Self-report for intent ("I tried X first because..."); parallel usage-log telemetry can validate later.
+
+**Shape.** DB migration (one column), tool-render logic in `fetch_task_brief`, scoring script alternative, 5 brief rewrites, `submit_feedback` schema addition, `server_instructions.md` additions for stuff that left the briefs (spot-check probe count guidance). Ship as one cohesive commit or small bundle; partial ship leaves the system inconsistent.
+
+#### 1.b `[☐]` Rebuild baselines from thin runs
+
+**What.** Today's `baseline.json` files encode pre-logging-backfill runs with data-quality issues (api_calls=0 on AA-STEM / HL-STEM, mixed quick-autonomous / consultative modes, pre-Chunk-1-6 tool behavior). Replace them with metrics from fresh thin-variant runs under the 1.a-locked prompt. Mothball today's fat-variant scoreboards as historical-only.
+
+**Shape.** Small `scripts/update_baseline_from_run.py` helper that reads the archived scoreboard + topic state, writes `benchmarks/<slug>/baseline.json`. Archive old baselines in-place (rename to `baseline-archive-2026-04-23.json` so git history preserves them). After all 5 thin runs under locked-prompt are in, this becomes the new measurement floor.
+
+**Why.** Today's gate compares against baselines we've already flagged as unreliable (see today's scoreboards). A thin-prompt baseline under the locked format = first real measurement under the "standard shape" that the ratchet is supposed to iterate from.
+
+**Sequencing.** AFTER 1.a — baselines should be under the durable prompt, not the current one.
+
+#### 1.c `[☐]` `benchmark_score.py`: treat `api_calls=0` on baseline as unrecorded
 
 **What.** When `baseline.total_api_calls == 0`, skip that axis in the cost-improvement gate (currently any ratchet run with non-zero api_calls is counted as "worse" even if genuinely efficient). Add a note to the scoreboard output. Parallel to the wall_time caveat shipped in `b6d1635`.
 
-**Why.** AA-STEM and HL-STEM baselines predate the Stage 1.1 logging backfill — their api_calls=0 is missing-data, not actual-zero. Today's scoreboards show up as FAIL partly for this reason.
+**Why.** AA-STEM and HL-STEM baselines predate the Stage 1.1 logging backfill — their api_calls=0 is missing-data, not actual-zero. Today's scoreboards show up as FAIL partly for this reason. Fix unblocks meaningful comparison during the 1.a→1.b transition. Will eventually be moot once 1.b lands (new baselines will have real api_calls), but ship it so interim comparisons aren't gated on phantom regressions.
 
 **Shape.** One `if baseline_api_calls == 0: skip` branch in `compute_scoreboard`, plus a "(baseline data unavailable)" label in the table.
 
-#### 1.c `[☐]` Abstract shape-strategy wisdom into `server_instructions.md`
+#### 1.d `[☐]` Abstract shape-strategy wisdom into `server_instructions.md`
 
-**What.** Move cross-topic-shape wisdom currently baked into the 2026-04-23 fat-variant kickoff prompts into the canonical instructions, so every thin-variant run benefits automatically without the operator pre-hinting. Concrete edits:
+**What.** Move cross-topic-shape wisdom currently baked into the 2026-04-23 fat-variant kickoff prompts into the canonical instructions, so every thin-variant run benefits automatically without operator pre-hinting. Concrete edits:
 
 - **Expand the existing `SHAPE → WIKIDATA PROPERTY` table** with `P138 (named after)` for named-event / award / institution shapes and `P171 (parent taxon)` for taxonomic shapes; add a "high-leverage first move" column.
 - **Add a SOURCE-TRUST principle bullet**: when a source is topic-definitional (category named after the topic, list-page authored by topic specialists), trust source-provenance over shortdesc for inclusion. Evidence: orchids baseline's source-trust rule recovered ~5000 taxa whose Wikidata shortdesc said only "Species of plant".
@@ -59,17 +94,17 @@ Bundle of small changes around the benchmark / ratchet system now that `fetch_ta
 
 **Why.** Running thin-prompts without operator hand-holding only works if shape-general wisdom is in the substrate. The fat-variant prompts proved these strategies work; abstracting them lets thin runs benefit without operator pre-briefing.
 
-**Sequencing.** MUST ship AFTER 1.a. Otherwise the abstraction gets baked into the new baselines and we can't measure whether it helped. The first ratchet cycle post-baseline IS this abstraction — that's what we're measuring.
+**Sequencing.** MUST ship AFTER 1.b. Otherwise the abstraction gets baked into the new baselines and we can't measure whether it helped. The first ratchet cycle post-baseline IS this abstraction — that's what we're measuring.
 
-#### 1.d `[☐]` Informed-variant briefs for gold farming
+#### 1.e `[☐]` Informed-variant briefs for gold farming
 
 **What.** Add `<slug>-informed.md` briefs under `dogfood/tasks/` with frontmatter `variant: informed`. Body = thin brief's content + "the gold set contains at least N articles; the prior thin baseline hit P precision, R recall." Reseed DB.
 
 **Why.** Two-variant measurement split (per discussion 2026-04-23): **thin = product measurement** (what a realistic user gets); **informed = ceiling probe + gold-farming** (what the AI can do with target visibility). Gold farming is the specific value — an informed run is most likely to surface gold-growth candidates because the AI knows where the bar is.
 
-**Shape.** Pure content / seed work. No code. Five new markdown files + a reseed. Can ship any time; doesn't affect the thin-ratchet loop.
+**Shape.** Pure content / seed work. No code. Five new markdown files + a reseed. Can ship any time after 1.a (to use the locked template format); doesn't affect the thin-ratchet loop.
 
-#### 1.e `[☐]` Doc sweep for server-mediated dogfood task briefs
+#### 1.f `[☐]` Doc sweep for server-mediated dogfood task briefs
 
 **What.** The `fetch_task_brief` / `list_tasks` entry-point system shipped 2026-04-23, but the surrounding docs still describe the old copy-paste-kickoff-file path as canonical. Five docs need updates:
 
