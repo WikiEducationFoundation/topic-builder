@@ -58,6 +58,17 @@ is a single line. Use this path for all benchmark / ratchet runs.
    phases — thin build, then reach extension), and ends with two
    `submit_feedback` calls. Expect 20–60 minutes.
 
+> **Parallel runs from the same machine share one worker.** The MCP
+> server runs two Python processes behind nginx with `ip_hash`
+> sticky routing — different operators (different client IPs) get
+> distributed across workers, but multiple sessions from one
+> machine all hash to the same worker and queue on its event loop.
+> If you fire 3+ runs from your laptop expecting full parallelism,
+> only the first will get a fresh event loop; the others will
+> serialize behind it. Workarounds: fire one run from a cloud VM /
+> different network, or run them sequentially. The durable fix
+> (cooperative async yielding in heavy tools) is on the backlog.
+
 **Task IDs currently seeded (all `thin` variant — argumentless
 auto-dispatch picks among these by staleness):**
 

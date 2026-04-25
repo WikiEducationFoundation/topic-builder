@@ -274,3 +274,55 @@ Moves cross-topic-shape wisdom from the 2026-04-23 fat-variant kickoff prompts i
 - **New `SOURCE-TRUST` bullet** in the IMPORTANT GUIDELINES section: when an article was pulled from a topic-definitional source (category named after the topic, list-page authored by topic specialists, dedicated WikiProject), trust provenance over thin / blank shortdescs. Explicit carve-outs: broad parent categories, search-based sources, similarity seeds, and manual labels don't qualify. Counterbalance: the absence of such a source is NOT a reason to drop an article.
 - **Reinforced `INTERSECTIONAL TOPICS`** section with an explicit `fetch_article_leads` pointer as the disambiguation workhorse on that shape: Wikidata shortdescs frequently mislead on intersectional biographies (generic "academic" hiding a STEM sub-field; STEM-sounding label covering a clinical-only physician out of scope), so reach for leads before scoring or rejecting. Cheap + decisively better signal than shortdesc alone.
 - Deployed to the live server; `server_instructions.md` at 49,705 chars.
+
+## Multi-worker MCP server with sticky nginx routing (2026-04-25)
+
+Two Python processes on distinct ports behind nginx, sticky session routing by client IP. Absorbs cross-operator concurrency: heavy tool calls on one operator's session no longer stall handshakes on another operator's session.
+
+- **Systemd template unit** `topic-builder@.service` accepts `%i` as the port. Both `topic-builder@8000` and `topic-builder@8001` enabled and started. `server.py` reads `PORT` from env and sets `mcp.settings.port` accordingly.
+- **nginx upstream** `topic_builder_backend` block with `ip_hash` directive routes both ports. `proxy_pass http://topic_builder_backend` on `/mcp`. Initial implementation tried `hash $http_mcp_session_id consistent` but that was structurally broken: the worker that handles the initial init request (no session ID, hashes empty string to a fixed worker) generates a session ID that may hash back to the OTHER worker for follow-up requests → 404 'Session not found'. `ip_hash` sidesteps this entirely — all requests from one client IP land on one worker, init and follow-ups always agree.
+- **MCP 1.27 DNS-rebinding-protection blocker.** The deploy's `pip install -q -r` upgraded MCP to 1.27, which enables DNS rebinding protection by default with an empty `allowed_hosts` list (rejects every Host header). Fixed by configuring `TransportSecuritySettings(allowed_hosts=[...])` with the public hostname plus loopback aliases used by smoke tests.
+- **Known limit (documented in dogfood/README.md):** `ip_hash` means multiple sessions from the SAME client IP all land on one worker. Cross-operator parallelism works; same-operator parallelism (firing 2+ sessions from one laptop) bottlenecks on one worker. Operationally fine for our 5–10-operator workload; the durable fix is **cooperative async yielding in heavy tools** (now Tier 3 backlog, not high priority).
+- Verified end-to-end: HTTPS POST `/mcp` initialize returns 200 with session ID; 7 sequential follow-up requests with the session ID all 200. Both workers responding on their ports.
+
+## Tier 1: argumentless `fetch_task_brief` with auto-dispatch (2026-04-25)
+
+`fetch_task_brief()` (no `task_id`, default `variant="thin"`) atomically picks the staleest matching task — smallest `last_dispatched_at`, NULLs winning, ties broken by `task_id` — bumps `last_dispatched_at` to now under `BEGIN IMMEDIATE`, and serves the brief. Simultaneous parallel callers within seconds get DIFFERENT tasks (round-robin coverage). The operator's kickoff collapses to one universal line: `Call fetch_task_brief(), then follow its instructions.` Direct mode (explicit `task_id`) preserved for back-compat.
+
+- New `last_dispatched_at` column on `dogfood_tasks` (migration-safe, NULL = never dispatched).
+- `db.pick_and_dispatch_dogfood_task(variant)` does atomic SELECT-then-UPDATE under SQLite's default locking via `BEGIN IMMEDIATE`.
+- Edge cases: no tasks seeded → error with setup hint. All tasks filtered out by variant → error with `available_variants` list.
+- `dogfood/README.md` now recommends the universal kickoff.
+
+## Two-phase dogfood + structured reflection on `submit_feedback` (2026-04-25)
+
+Five thin briefs rewritten as two-phase (thin build with prep checklist → submit_feedback phase=1 → reach extension via REACH EXTENSION meta-tactics → submit_feedback phase=2 with structured reflection). Informed-variant briefs retired (5 .md files removed; `scripts/retire_informed_tasks.py` cleared the matching DB rows).
+
+- **`submit_feedback` schema additions** (all optional, backwards-compatible): `phase` (1/2), `prep_calls_made` (phase-1 retrospective accountability for the prep checklist), `prep_calls_skipped` (phase-2 reflection on phase-1 prep gaps), `phase_1_misses` (list of `{pattern, guidance_that_would_help}` dicts — class-level patterns, not literal article titles per the privacy invariant), `phase_1_confidence_recalibration` (delta between phase-1 self-rated confidence and retrospectively-true confidence after seeing phase-2 finds).
+- **Server-instructions update:** new FREE VS METERED TOOLS principle (free preparatory tools cost no API quota — spend liberally) + new REACH EXTENSION section (cross-language sweeps, eponym chains, niche-example probes, ask-the-user reach probes, diminishing-returns budget framing).
+- **Validation:** three two-phase runs landed 2026-04-25. Calibration deltas reproduced consistently at −0.03 to −0.07. The orchids dogfood demonstrated the flywheel concretely — the AI applied the source-trust principle from the orchids exemplar to recover articles it had over-pruned in phase 1.
+
+## Ship 2: exemplar tools + 5 worked-example exemplars (2026-04-25)
+
+Two new MCP tools — `list_exemplars(topic)` and `get_exemplar(slug, topic, allow_own=False)` — plus 5 authored exemplars under `dogfood/exemplars/<slug>.md`, plus a preparatory-phase posture in `server_instructions.md` that makes consulting them a checklist the AI checks off rather than a hint it routes around.
+
+- **Schema:** `dogfood_exemplars` table (slug UNIQUE, title, shape, body_markdown, last_validated_against, metadata_json). `scripts/seed_dogfood_exemplars.py` mirrors the task-brief seed pattern. `scripts/scp_exemplars.sh` + `scripts/scp_tasks.sh` keep deploys hand-roll-free.
+- **`list_exemplars(topic)`** returns the menu-card section of every exemplar EXCEPT the one matching the caller's topic slug (measurement-integrity gate). Includes a static off-shape framing line so the AI doesn't over-anchor when no shape match is close.
+- **`get_exemplar(slug, topic, allow_own=False)`** returns the full case study. Refuses self-fetch unless `allow_own=True` — phase-2 unlocks this; phase-1 must not.
+- **Menu-card schema** (validated by a fresh-agent pressure-test before locking): structured shape axes (`structural`, `scale` order-of-magnitude buckets, `layered_shape` sub-typed `single` / `concentric` / `core+periphery` / `taxonomy+cultural`, `non-Anglosphere depth`, `biography density`, `canonical category coverage`, `recall_ceiling_driver`) + required "Doesn't apply when" counter-examples + 2–3 high-leverage move teasers + headline numbers + 2–3 sentence summary. Pressure-test: 4 unseen test topics matched expected exemplar at high confidence.
+- **Server-instructions PREPARATORY PHASE checklist:** `list_exemplars` → `get_exemplar` on 1–2 most-relevant → compare to rubric → sketch strategy. AI follows phase-level structure well; sub-step short-circuits don't, so the checklist is numbered and explicit.
+- **Brief restructure:** all 5 thin briefs reference the prep checklist + the phase-2 unlock path (`get_exemplar(slug=<own>, allow_own=True)`).
+- **Runtime metadata field** `runtime: {agent, model, effort}` on `submit_feedback` so we can trend results across claude-code-opus-4.7 vs codex-gpt-5 vs different effort levels. Was filename-only before. Briefs ask the AI to populate from self-knowledge.
+- **Deferred:** full case studies for the 4 sibling exemplars (orchids has full; the rest are menu-card stubs). The crispr Codex run flagged this as `tool_friction: "own_exemplar_full_case_study_empty"` — real signal that authoring the rest is value, not polish.
+
+## Ratchet gate logic — quality-first, cost as tiebreaker (2026-04-25)
+
+Earlier formulation ("must improve at least one cost metric without regressing quality") punished runs that legitimately improved recall at higher cost. CRISPR (52 → 92.5% recall) and orchids (50 → 96.9% recall) failed the gate despite being clear product wins. Wrong incentive. New formulation:
+
+A run **passes** if EITHER:
+1. **Quality up** — at least one of `precision` / `recall` strictly improves AND neither regresses (within ±0.5pp tolerance), OR
+2. **Efficiency up** — neither quality axis regresses AND at least one of `api_calls` / `tool_calls` strictly improves.
+
+Cost is the bonus axis when quality holds, NOT a co-equal hurdle. Verdict text in `format_scoreboard` updated to surface which clause triggered (or which conditions failed). Tolerance moved from 0.001 (0.1pp) to 0.005 (0.5pp) for noise.
+
+CRISPR + orchids baselines reset to the 2026-04-25 two-phase runs (354/91%/92.5% and 7138/100%/97% respectively); apollo-11 baseline left as-is (regressed precision; gate-fail is honest there).

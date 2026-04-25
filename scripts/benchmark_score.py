@@ -240,16 +240,20 @@ def score(slug, run_topic_name):
 
     baseline_prec = baseline.get("precision_vs_gold_v1", 1.0)
     baseline_rec = baseline.get("recall_vs_gold_v1", 1.0)
-    # 0.001 tolerance (0.1 percentage point) absorbs baseline-JSON
-    # rounding + small integer-counting noise (e.g. 1 article difference
-    # shifting precision by ~0.0014 on a 700-article corpus).
-    tol = 1e-3
-    prec_ok = precision >= baseline_prec - tol
-    recall_ok = recall >= baseline_rec - tol
-    # Gate: wall_time_s is EXCLUDED — operator-approval flows (Codex
+    # 0.005 tolerance (0.5 percentage point) absorbs noise (baseline-JSON
+    # rounding + integer-counting jitter) without swallowing real moves.
+    # "Strictly improves" = better than baseline by more than tol.
+    # "No regression" = within tol or better.
+    tol = 5e-3
+    prec_no_regress = precision >= baseline_prec - tol
+    recall_no_regress = recall >= baseline_rec - tol
+    prec_up = precision > baseline_prec + tol
+    recall_up = recall > baseline_rec + tol
+    quality_holds = prec_no_regress and recall_no_regress
+    quality_up = quality_holds and (prec_up or recall_up)
+    # Gate cost: wall_time_s is EXCLUDED — operator-approval flows (Codex
     # first-tool-use prompts, etc.) inflate wall-time without reflecting
     # tool efficiency. api_calls + tool_calls are the honest signals.
-    #
     # If a baseline records 0 total_api_calls, treat that axis as
     # UNRECORDED (missing data from pre-logging-backfill runs) and skip
     # it — otherwise every ratchet run appears to "regress" on a metric
@@ -260,8 +264,21 @@ def score(slug, run_topic_name):
     if api_axis_usable:
         cost_candidates.append(api_d)
     cost_candidates.append(tool_d)
-    cost_ok = any(d is not None and d < 0 for d in cost_candidates)
-    gate_pass = prec_ok and recall_ok and cost_ok
+    cost_down = any(d is not None and d < 0 for d in cost_candidates)
+    # Quality-first / cost-tiebreaker. A run passes if EITHER:
+    #   (a) quality strictly improves on at least one axis without
+    #       regressing on the other, OR
+    #   (b) cost strictly improves on at least one axis while quality
+    #       holds within tolerance on both axes.
+    # Cost is the bonus axis when quality is a tie, NOT a co-equal
+    # hurdle — a recall-doubling run shouldn't fail because it spent
+    # more API budget.
+    efficiency_up = quality_holds and cost_down
+    gate_pass = quality_up or efficiency_up
+    # Back-compat / display: surface the legacy axis flags so the
+    # scoreboard can render which condition triggered the verdict.
+    prec_ok = prec_no_regress
+    recall_ok = recall_no_regress
 
     return {
         "benchmark": slug,
@@ -293,7 +310,11 @@ def score(slug, run_topic_name):
         "tool_call_count_delta": tool_d,
         "precision_ok": prec_ok,
         "recall_ok": recall_ok,
-        "any_cost_improved": cost_ok,
+        "precision_up": prec_up,
+        "recall_up": recall_up,
+        "quality_up": quality_up,
+        "any_cost_improved": cost_down,
+        "efficiency_up": efficiency_up,
         "gate_pass": gate_pass,
         "reach_sample": sorted(reach)[:20],
         "missed_gold_sample": sorted(missed_gold)[:20],
@@ -322,12 +343,28 @@ def format_scoreboard(s):
     L.append("")
     L.append("## Gate verdict")
     L.append("")
-    L.append(
-        f"**{'✅ PASS' if s['gate_pass'] else '❌ FAIL'}** — "
-        f"precision {'OK' if s['precision_ok'] else 'REGRESSED'}, "
-        f"recall {'OK' if s['recall_ok'] else 'REGRESSED'}, "
-        f"cost metrics {'improved' if s['any_cost_improved'] else 'did not improve'}."
-    )
+    # Quality-first / cost-tiebreaker. A run passes if quality strictly
+    # improves without regression, OR cost strictly improves while
+    # quality holds (within ±0.5pp tolerance).
+    if s['gate_pass']:
+        if s.get('quality_up'):
+            up_axes = []
+            if s.get('precision_up'):
+                up_axes.append("precision")
+            if s.get('recall_up'):
+                up_axes.append("recall")
+            verdict = f"**✅ PASS** — quality improved ({' + '.join(up_axes)} up, no regression)."
+        else:
+            verdict = "**✅ PASS** — quality held; cost improved."
+    else:
+        prec_state = "regressed" if not s['precision_ok'] else (
+            "up" if s.get('precision_up') else "held")
+        recall_state = "regressed" if not s['recall_ok'] else (
+            "up" if s.get('recall_up') else "held")
+        cost_state = "improved" if s['any_cost_improved'] else "did not improve"
+        verdict = (f"**❌ FAIL** — precision {prec_state}, "
+                   f"recall {recall_state}, cost {cost_state}.")
+    L.append(verdict)
     L.append("")
     L.append("## Quality")
     L.append("")

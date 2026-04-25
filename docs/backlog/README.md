@@ -44,33 +44,6 @@ Free-form-ish — don't enumerate every variant. AI populates from self-knowledg
 
 **Sequencing note.** Land as a small follow-up after the in-flight apollo-11 dogfood lands so we don't change the schema mid-run.
 
-### ☐ Multi-worker MCP server with session-sticky nginx routing `[NEW — 2026-04-24 three observations; nginx-timeout half shipped]`
-
-**Context.** Partial fix shipped 2026-04-24: nginx `proxy_read_timeout` + `proxy_send_timeout` bumped to 300s (from default 60s) on `/mcp`. This absorbed the 60s → 504 ceiling that was returning bursts of 504s to clients during 2–3 concurrent sessions. Remaining: the backend is still single-threaded-async, so heavy tool calls can still delay new handshakes by tens of seconds (18s observed) and serialize all concurrent sessions behind one coroutine. Below is the proper durable fix.
-
-**What.** Run N Python processes (start N=2) on distinct ports behind nginx with session-header-based sticky routing:
-1. **Systemd template unit** `topic-builder@.service` accepts `%i` as the port (8000, 8001). Enable both `topic-builder@8000` + `topic-builder@8001`. Each runs the current `python server.py` with a PORT env var.
-2. **`server.py`** reads `PORT` from env (default 8000).
-3. **nginx `upstream topic_builder_backend`** block with both 127.0.0.1:8000 + 127.0.0.1:8001 and `hash $http_mcp_session_id consistent;` directive — routes same-session requests to same worker.
-4. **`/mcp` location** changes `proxy_pass http://127.0.0.1:8000` → `proxy_pass http://topic_builder_backend`.
-
-Sticky routing is load-bearing: MCP's `StreamableHTTPSessionManager._server_instances` is an in-memory dict per-process, keyed by `mcp_session_id` header. Without header-based stickiness, a session started on worker A could have subsequent requests land on worker B, which would treat them as unknown session IDs and error.
-
-**Why.** Even with the 300s nginx bump, heavy tool calls still delay incoming handshakes on the same worker. Two workers = two event loops = one busy session doesn't stall the other. Concrete evidence already in the feedback log: three of five 2026-04-24 thin runs flagged `*_504_transient` or `*_transport_timeout` in `tool_friction`.
-
-**Shape.** Changes concentrated in `mcp_server/deploy.sh`:
-- Rewrite the systemd block as a template (`[Service]` with `Environment=PORT=%i`, `WorkingDirectory=/opt/topic-builder/app`, `ExecStart=... server.py`).
-- Enable + start both port instances.
-- Rewrite the nginx server block to add an `upstream topic_builder_backend { server 127.0.0.1:8000; server 127.0.0.1:8001; hash $http_mcp_session_id consistent; }` — and change `proxy_pass` to that upstream.
-- `server.py` already calls `mcp.run(transport="streamable-http")`; need to pass `port=int(os.environ.get("PORT", 8000))` — check FastMCP's `.run()` signature.
-
-**Open questions.**
-- Does the first request of a new session (no `Mcp-Session-Id` header yet) land predictably? With `hash` and empty header value, all new sessions hash to the same worker — imbalanced but harmless. Could add a second-level discriminator like `$request_id` for new sessions specifically. Defer unless load imbalance becomes visible.
-- Module-global state in `wikipedia_api.py` (rate-limit counters, last-request timestamp) is per-worker now. Trivial: each worker rate-limits itself; the total rate-limit budget is effectively N× larger. Since we're nowhere near Wikipedia's ceiling and WMF servers see our aggregate anyway, this is fine.
-- Per-session `_session_topics` dict in `server.py` is already per-process; with sticky routing, a session's state lives on one worker consistently.
-
-**Sequencing.** Ship when no runs are active (requires Python restart, drops sessions). Monitor `usage.jsonl` and `nginx/error.log` for 504 frequency + handshake latency before/after.
-
 ### ☐ Argumentless `fetch_task_brief` with auto-dispatch `[NEW — 2026-04-24]`
 
 **What.** `fetch_task_brief()` with no `task_id` auto-picks the task whose previous run is oldest and returns that one's brief. The operator's kickoff collapses from per-task `fetch_task_brief(task_id="apollo-11-thin")` to a single universal line:
@@ -352,13 +325,13 @@ The 2026-04-23 dogfood `task.md` has already been patched to authorize the loop 
 
 Items worth keeping on the roadmap but not committing to pre-build. Revisit after Tier 1–2 land or as specific signals confirm.
 
-### ☐ Cooperative async yielding in heavy tools `[NEW — 2026-04-24 deferred follow-up]`
+### ☐ Cooperative async yielding in heavy tools `[NEW — 2026-04-24, expanded 2026-04-25 after multi-worker shipped with single-IP limit]`
 
 **What.** Audit the longest-running tools (`get_category_articles` depth walks, `harvest_list_page` on large pages, `auto_score_by_description` on 10k+ corpora, `filter_articles` on large corpora, `resolve_redirects` / reconcile passes) and add periodic `await asyncio.sleep(0)` yield points — or switch synchronous HTTP (`urllib.request`) to `httpx` async — so one heavy call doesn't hold the event loop.
 
-**Why.** The multi-worker fix (Tier 1, linked above) absorbs the visible symptom by running parallel event loops, but a single worker still freezes under any tool that doesn't yield. Real per-tool async-friendliness is the durable end state — especially if we ever scale workers back to 1 (e.g., on a resource-constrained deploy) or accept more than 2 concurrent heavy sessions.
+**Why.** Multi-worker shipped 2026-04-25 absorbed cross-operator concurrency (different client IPs route to different workers via `ip_hash`), but it does NOT solve same-IP parallelism: multiple sessions from one operator's machine all hash to the same worker and share its event loop. Cooperative yielding is the durable fix for that — and it's the only way single-worker deployments (resource-constrained hosts, dev environments) handle ≥2 concurrent heavy sessions.
 
-**Sequencing.** Deferred until the multi-worker fix ships and we observe whether the symptom is fully absorbed or if we still see per-worker blocking under load. Surgical per-tool work; one afternoon per tool at most.
+**Sequencing.** Not high priority — single-IP parallelism limit is documented in `dogfood/README.md`; operationally the workaround is "fire from different machines / cloud VMs." Promote when we see this limit hurt a real workflow, or when we want a durable end state independent of the multi-worker scaffolding. Surgical per-tool work; one afternoon per tool at most.
 
 ### ☐ `browse_edges(min_links="auto")` `[formerly 1.8]`
 
