@@ -5,9 +5,10 @@ Shipped items are logged in `../shipped.md`. `../ratchet-plan.md` is
 the "what to work on next" entry point and draws its shortlist from
 this doc.
 
-Sibling docs in this directory hold larger deferred plans:
+Sibling docs in this directory hold larger plans (deferred or in review):
 - `auth.md` — Wikipedia OAuth + paste-in-chat token flow.
 - `impact-visualizer.md` — publish_topic handle → Impact Visualizer import.
+- `exemplars-and-reach-pass.md` — `list_exemplars` + `get_exemplar` + `start_reach_pass` tools; two-phase dogfood (in review).
 
 Add new items here as signals come in; promote items to
 `../shipped.md` when they land.
