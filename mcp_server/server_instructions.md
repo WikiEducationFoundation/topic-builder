@@ -578,6 +578,17 @@ strategies missed; let the AI (you) judge inclusion against the scope
     - We are a good citizen of Wikimedia infrastructure. Heavy queries
       spend real rate-limit budget that affects other readers.
 
+- FREE VS METERED TOOLS — distinct cost classes worth treating differently.
+  Tools that read locally-stored content (`get_topic_rubric`,
+  `fetch_task_brief`) hit our database only — no Wikimedia API quota,
+  barely any compute. Tools that hit Wikipedia or Wikidata
+  (`harvest_*`, `get_category_*`, `preview_search`,
+  `fetch_descriptions`, `wikidata_*`) cost real API budget and slow
+  the session. Spend liberally on the free preparatory tools — re-read
+  the rubric, draft strategy on paper, consult authored guidance.
+  Five minutes of preparation routinely saves hours of metered API
+  calls on a wrong-shape strategy.
+
 - REFLECTION — capture observations in-band when the moment is rich.
   Most sessions end without the richest signals captured: we have 4
   feedback submissions across 17 topics. The mid-session "huh, that's
@@ -772,6 +783,37 @@ strategies missed; let the AI (you) judge inclusion against the scope
   you can't act on — especially Wikidata / SPARQL / PetScan — should be
   captured verbatim in submit_feedback's missed_strategies field so we
   know what tools to build next.
+
+- REACH EXTENSION — when the obvious gather strategies have been used
+  and the corpus feels settled, but you suspect on-topic articles
+  remain unfound, deliberately try moves that previous strategies
+  don't cover. This is the right posture when the user explicitly
+  wants more reach, or when running a phase-2 reach pass on a
+  benchmark topic.
+    - **Cross-language / cross-wiki sweeps.** Walk the topic's
+      category on a non-English wiki (`get_category_articles` on
+      `Category:<topic>` in de/zh/ja/pt/es), then `wikidata_search_entity`
+      / `resolve_qids` to find enwiki sitelinks. For topics with
+      non-Anglosphere cultural / biographical depth, this is often
+      where the best reach lives — articles English-language
+      discovery has systematically missed across multiple sessions.
+    - **Eponym / namesake chains.** When a person is core to the
+      topic, search for articles named after them: institutions,
+      awards, concepts, species. `P138` (named after) on Wikidata is
+      the structured probe.
+    - **Niche-example probes.** The `~50 candidates × ≥5 subdomains`
+      pattern from SPOT CHECK doubles as a reach move — run another
+      fabrication round with explicit "what ELSE could be in scope?"
+      framing; misses become strategy leads.
+    - **Ask the user for examples**, when one is available — "what's
+      a tangentially-related article you'd want included that we
+      haven't found?" surfaces domain knowledge that hasn't reached
+      the corpus yet.
+  Reach work is bounded — when the last ~10 metered calls have
+  yielded fewer than ~2 on-topic finds, the diminishing-returns curve
+  has bent and it's time to wrap up. Production reach passes are
+  user-driven, not budget-driven; let the user judge when progress
+  has stopped.
 
 - HANDLING TOOL ERRORS: not every error means the topic build can't continue.
   Most errors are transient or recoverable in-conversation.

@@ -4604,6 +4604,11 @@ def submit_feedback(summary: str, what_worked: str = "", what_didnt: str = "",
                     spot_check: dict | None = None,
                     sharp_edges_hit: list[str] | None = None,
                     tool_friction: list[str] | None = None,
+                    phase: int | None = None,
+                    prep_calls_made: list[str] | None = None,
+                    prep_calls_skipped: list[str] | None = None,
+                    phase_1_misses: list[dict] | None = None,
+                    phase_1_confidence_recalibration: float | None = None,
                     topic: str | None = None, ctx: Context = None) -> str:
     """Submit a brief retrospective on this topic-building session so the
     Wiki Education team can improve the tool. Offer to call this at the end
@@ -4671,6 +4676,37 @@ def submit_feedback(summary: str, what_worked: str = "", what_didnt: str = "",
                        "harvest_navbox_empty_on_template"). Aggregates mid-run
                        surprises beyond what individual `note=` entries
                        captured.
+        phase: Optional 1 or 2. In two-phase dogfood / benchmark runs,
+               phase 1 is the thin build (measurement variant) and phase 2
+               is the reach-extension + reflection round. Production runs
+               can leave this null.
+        prep_calls_made: Optional list of preparatory-phase steps you
+                         actually completed before any metered tool call
+                         (phase-1 retrospective accountability). Suggested
+                         tags: "rubric_reread", "strategy_sketch",
+                         "user_confirmation", "list_exemplars",
+                         "get_exemplar:<slug>". Helps us see whether the
+                         prep checklist resists short-circuit.
+        prep_calls_skipped: Optional list of prep steps you didn't take
+                            but, looking back, would have helped (phase-2
+                            reflection on phase-1). Same vocabulary as
+                            prep_calls_made.
+        phase_1_misses: Optional list of dicts (phase-2 only) capturing
+                        classes of articles missed in phase 1 + the
+                        guidance that would have helped. Shape per entry:
+                          {"pattern": "missed all eponymous taxonomy genera",
+                           "guidance_that_would_help": "instruction or
+                            exemplar that would have surfaced this class"}
+                        Class-level patterns are more useful than literal
+                        article titles. These reflections feed
+                        instruction / exemplar updates.
+        phase_1_confidence_recalibration: Optional float (phase-2 only):
+                        delta between your phase-1 self-rated confidence
+                        and what you'd rate it retrospectively after
+                        seeing phase-2 finds. Negative = phase-1 was
+                        overconfident; near-zero = well-calibrated.
+                        Tracks whether interventions actually shrink the
+                        calibration gap.
         topic: The topic name this feedback is about. Pass explicitly if your
                client doesn't maintain an MCP session.
     """
@@ -4704,6 +4740,16 @@ def submit_feedback(summary: str, what_worked: str = "", what_didnt: str = "",
         entry["sharp_edges_hit"] = sharp_edges_hit
     if tool_friction is not None:
         entry["tool_friction"] = tool_friction
+    if phase is not None:
+        entry["phase"] = phase
+    if prep_calls_made is not None:
+        entry["prep_calls_made"] = prep_calls_made
+    if prep_calls_skipped is not None:
+        entry["prep_calls_skipped"] = prep_calls_skipped
+    if phase_1_misses is not None:
+        entry["phase_1_misses"] = phase_1_misses
+    if phase_1_confidence_recalibration is not None:
+        entry["phase_1_confidence_recalibration"] = phase_1_confidence_recalibration
     if tid or topic:
         try:
             lookup_id = tid
@@ -4720,6 +4766,8 @@ def submit_feedback(summary: str, what_worked: str = "", what_didnt: str = "",
     log_params = {"topic": resolved_topic, "rating": rating}
     if isinstance(coverage_estimate, dict) and "confidence" in coverage_estimate:
         log_params["coverage_confidence"] = coverage_estimate.get("confidence")
+    if phase is not None:
+        log_params["phase"] = phase
     log_usage(ctx, "submit_feedback", log_params,
               f"feedback recorded ({len(summary)} chars)",
               start_time=_start, note=note)
