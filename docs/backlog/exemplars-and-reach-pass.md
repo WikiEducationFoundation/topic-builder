@@ -13,35 +13,19 @@ Active checklist:
 
 - [x] **Revise this doc** to reflect the simplified design — done.
 - [x] **Stub the orchids exemplar** at `dogfood/exemplars/orchids.md`
-  — done. Schema observations folded in below.
-- [ ] **Pressure-test menu cards.** Write 3–4 sibling menu cards
-  (apollo-11, crispr-gene-editing, hispanic-latino-stem-us as a
-  spread) and ask a fresh reader to match an unseen test topic to
-  the right card. If the match is unreliable from cards alone, the
-  cards are too lossy and the schema needs more structured signal.
-- [ ] **Review and plan implementation next steps** — lock the
-  schema after the pressure-test; commit to Ship 1 timing.
-
-### Schema observations from the orchids stub
-
-What writing the stub revealed:
-
-- Menu cards naturally run ~15–25 lines, not ~10. Each high-leverage
-  move needs 2–3 sentences to carry *why* without literal params.
-- Full case study runs ~150 lines. Long but everything earned its
-  place. Likely no useful cap below ~120.
-- "Extend, don't replicate" closing fell out naturally and is worth
-  canonicalizing as a required section.
-- Privacy invariant held up by writing in classes ("Brazilian
-  orchidologists," "Chinese orchid symbolism") rather than names.
-- **Menu cards with prose alone may be too lossy** for the AI to
-  judge relevance — re-review surfaced this. Adding a structured
-  shape-axes block alongside the prose so judgment has both kinds of
-  signal. Pressure-test in next-actions.
-- **Staleness needs concrete triggers**, not "drift past N commits."
-  Concrete trigger set: any change to `server_instructions.md` OR
-  signature change to a tool the exemplar references; backstop a
-  90-day revalidation cadence.
+  — done.
+- [x] **Pressure-test menu cards.** Done. Wrote three sibling cards
+  (apollo-11, crispr-gene-editing, hispanic-latino-stem-us). A fresh
+  agent matched all four test topics (Mariner program, Black women
+  in U.S. computing, carnivorous plant species, quantum computing)
+  to their expected exemplar at **high confidence**. Four schema
+  refinements emerged from the agent's meta-comment and are folded
+  into the Ship 2 spec below: scale → order-of-magnitude buckets,
+  `layered: yes/no` → `layered_shape` sub-typed, new
+  `recall_ceiling_driver` structured field, new required "Doesn't
+  apply when" counter-examples section.
+- [ ] **Review and plan implementation next steps** — Ship 1 ready
+  to start.
 
 ## Privacy invariant (load-bearing)
 
@@ -279,10 +263,29 @@ menu of available exemplars, **excluding** the one matching `topic`
 if any. Each menu entry includes:
 
 - Slug + title.
-- **Shape axes block** — structured tags (`structural`, `scale`,
-  `layered`, `non-Anglosphere depth`, `biography density`,
-  `canonical category coverage`) so the AI can filter by structured
-  signal *as well as* prose.
+- **Shape axes block** — structured tags so the AI can filter by
+  structured signal *as well as* prose:
+  - `structural` — high-level kind (taxonomic / named-event /
+    technical-discipline / demographic-intersection / etc.)
+  - `scale` — order-of-magnitude bucket (`tens` / `hundreds` /
+    `thousands` / `tens of thousands`). Crisp non-overlapping
+    buckets, not fake-precise bands.
+  - `layered_shape` — `single` / `concentric` / `core+periphery` /
+    `taxonomy+cultural`. Replaces `layered: yes/no`, which
+    flattened too much.
+  - `non-Anglosphere depth` — `yes` / `moderate` / `low`.
+  - `biography density` — `low` / `medium` / `high` / `very high`.
+  - `canonical category coverage` — `high` / `medium` / `partial` /
+    `low`.
+  - `recall_ceiling_driver` — short phrase naming the single thing
+    that caps recall (`substrate dispersal under parent canopy`,
+    `parent-program stitching`, `shortdesc ambiguity`, `cross-wiki
+    cultural gap`, etc.). This is what the high-leverage moves are
+    organized around; surfacing it as a structured field makes
+    matching faster.
+- **"Doesn't apply when" section** — required. Explicit
+  counter-examples calibrating where this exemplar should NOT be
+  picked. 1–3 short clauses.
 - Shape one-liner.
 - 2–3 sentence summary of approach + outcome.
 - Headline numbers (final corpus size, audited reach, precision /
@@ -462,7 +465,15 @@ to include exemplar steps and the comparison move:
   `allow_own=True` bypass; brief-documented for phase 2.
 - **Menu cards include structured shape axes.** Prose alone is too
   lossy for the AI to judge relevance; structured tags + prose give
-  both kinds of signal.
+  both kinds of signal. Pressure-test confirmed (all four test
+  topics matched at high confidence by a fresh agent).
+- **Schema refinements from the pressure-test.** `scale` uses
+  order-of-magnitude buckets, not bands. `layered_shape` replaces
+  `layered: yes/no` with sub-types (`single` / `concentric` /
+  `core+periphery` / `taxonomy+cultural`). `recall_ceiling_driver`
+  is a required structured field naming what caps recall. A
+  "Doesn't apply when" counter-examples section is required on
+  every menu card.
 - **`list_exemplars` surfaces off-shape limitations explicitly.**
   Don't rely on the AI to infer "nothing relevant"; say it.
 - **Exemplar staleness has concrete triggers.** Server-instructions

@@ -22,14 +22,22 @@ numbers:
 **Shape axes**
 
 - structural: taxonomic
-- scale: very large (~30k species exist on enwiki)
-- layered: yes — taxonomy + cultural + biographical periphery
+- scale: tens of thousands (~13k articles in working set; ~30k
+  species exist on enwiki)
+- layered_shape: taxonomy+cultural — taxonomic mass + cultural /
+  biographical periphery
 - non-Anglosphere depth: yes — Chinese, Japanese, Brazilian, German,
   Dutch traditions
 - biography density: low overall, concentrated in periphery
   (orchidologists)
 - canonical category coverage: high — `Category:Orchidaceae` is
   topic-definitional
+- recall_ceiling_driver: cross-wiki cultural gap + ambiguous
+  parent-taxon placement on Wikidata
+
+**Doesn't apply when:** the topic isn't taxonomic; OR the canonical
+category is incomplete or fuzzy; OR there's no non-Anglosphere
+cultural depth to sweep.
 
 **Shape (prose).** Very large taxonomic topic (~30k species exist on
 Wikipedia) with a small but genuine cultural / biographical /
