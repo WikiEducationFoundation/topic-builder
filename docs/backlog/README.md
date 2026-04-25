@@ -25,6 +25,25 @@ Add new items here as signals come in; promote items to
 
 ## Tier 1 — small, high-leverage
 
+### ☐ Capture agent / model / effort on `submit_feedback` `[NEW — 2026-04-25]`
+
+**What.** Add an optional `runtime` dict to `submit_feedback`:
+
+```python
+runtime: dict | None = None
+# {"agent": "claude-code" | "codex" | "chatgpt" | ...,
+#  "model": "opus-4.7" | "sonnet-4.6" | "gpt-5" | ...,
+#  "effort": "low" | "medium" | "high"}
+```
+
+Free-form-ish — don't enumerate every variant. AI populates from self-knowledge on phase-1 feedback; the brief tells it to.
+
+**Why.** Today this metadata lives only in session-notes filenames (e.g. `session-2026-04-24-thin-claude-code-medium.md`), so it's never joined to the run's actual metrics in the feedback log. Capturing it structurally lets us trend results by agent/model/effort over time, compare claude-code-opus-4.7 vs codex-gpt-5, see whether effort=high actually buys precision, etc. We already have `client_id` from `ctx.client_id` (rough Claude-vs-ChatGPT signal) but not model or effort.
+
+**Shape.** One `runtime` field on `submit_feedback`; serialized verbatim into the JSON line. Update the 5 thin briefs to ask the AI to populate it on phase-1 (the AI usually knows its model accurately; effort is what the operator set, AI can self-report or leave null). Reseed.
+
+**Sequencing note.** Land as a small follow-up after the in-flight apollo-11 dogfood lands so we don't change the schema mid-run.
+
 ### ☐ Multi-worker MCP server with session-sticky nginx routing `[NEW — 2026-04-24 three observations; nginx-timeout half shipped]`
 
 **Context.** Partial fix shipped 2026-04-24: nginx `proxy_read_timeout` + `proxy_send_timeout` bumped to 300s (from default 60s) on `/mcp`. This absorbed the 60s → 504 ceiling that was returning bursts of 504s to clients during 2–3 concurrent sessions. Remaining: the backend is still single-threaded-async, so heavy tool calls can still delay new handshakes by tens of seconds (18s observed) and serialize all concurrent sessions behind one coroutine. Below is the proper durable fix.

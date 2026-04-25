@@ -40,16 +40,26 @@ is a single line. Use this path for all benchmark / ratchet runs.
    `~/tmp/codex-run/` is fine).
 2. **Start your MCP client** (Codex, Claude Code, etc.) with the
    Topic Builder MCP available.
-3. **Paste this as the first message** (swap the task_id for the
-   benchmark you want):
+3. **Paste this as the first message.** The universal form (no
+   `task_id`) auto-dispatches the staleest task — server picks the
+   one that hasn't been run in the longest time, atomically marks
+   it dispatched, and returns its brief. Firing N parallel sessions
+   in quick succession covers N distinct tasks with zero
+   configuration:
+   ```
+   Call fetch_task_brief(), then follow its instructions.
+   ```
+   Or, if you want a specific benchmark, pass `task_id`:
    ```
    Call fetch_task_brief(task_id="apollo-11-thin"), then follow its instructions.
    ```
 4. **Walk away.** The session starts its own topic with a fresh
-   timestamped name, drafts a rubric, runs the pipeline, does spot/gap
-   check, and ends with `submit_feedback`. Expect 20–60 minutes.
+   timestamped name, drafts a rubric, runs the pipeline (now in two
+   phases — thin build, then reach extension), and ends with two
+   `submit_feedback` calls. Expect 20–60 minutes.
 
-**Task IDs currently seeded (all `thin` variant):**
+**Task IDs currently seeded (all `thin` variant — argumentless
+auto-dispatch picks among these by staleness):**
 
 - `apollo-11-thin`
 - `crispr-gene-editing-thin`

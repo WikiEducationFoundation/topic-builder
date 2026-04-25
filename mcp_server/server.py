@@ -132,6 +132,13 @@ mcp = FastMCP(
     instructions=SERVER_INSTRUCTIONS,
 )
 
+# Multi-worker setup: each worker process runs on a distinct port
+# behind nginx, with sticky session-header routing so MCP session
+# state (kept in-memory per-process) stays on the worker that owns
+# it. The PORT env var is set by the systemd template unit
+# `topic-builder@<port>.service`.
+mcp.settings.port = int(os.environ.get("PORT", 8000))
+
 
 def _require_topic(ctx: Context, topic_name: str | None = None) -> tuple[int | None, str, str | None]:
     """Resolve the topic for this call. Returns (topic_id, wiki, error).
@@ -4501,15 +4508,27 @@ def _render_task_template(template: str, ts: str) -> str:
 
 
 @mcp.tool()
-def fetch_task_brief(task_id: str, ctx: Context = None) -> str:
-    """Fetch a dogfood or benchmark task brief by ID. This is the entry
-    point for a research / benchmark run: the operator's kickoff prompt
-    is typically just 'Call fetch_task_brief(task_id="X"), then follow
-    its instructions.' — the returned `brief` field contains everything
-    the AI needs to run the task.
+def fetch_task_brief(task_id: str | None = None,
+                     variant: str = "thin",
+                     ctx: Context = None) -> str:
+    """Fetch a dogfood or benchmark task brief. Two modes:
+
+    - **Auto-dispatch** (call with no args, or only `variant`): the
+      server picks the staleest matching task — smallest
+      `last_dispatched_at`, with never-dispatched tasks (NULL) winning,
+      ties broken by `task_id`. The chosen task's `last_dispatched_at`
+      is bumped to now atomically before the brief is returned, so
+      simultaneous callers within seconds get DIFFERENT tasks
+      (round-robin coverage). The operator's kickoff collapses to one
+      universal line: 'Call fetch_task_brief(), then follow its
+      instructions.'
+    - **Direct mode** (call with `task_id="..."`): fetch a specific
+      task by ID. `variant` is ignored. Use this when you want a
+      specific benchmark, not whatever's staleest.
 
     Returns JSON: {task_id, variant, benchmark_slug, run_topic_name,
-                   brief, metadata, created_at, updated_at}.
+                   brief, metadata, created_at, updated_at,
+                   last_dispatched_at, hours_since_last_dispatch}.
 
     **Template rendering.** The server stores both `run_topic_name` and
     `brief` as templates that may contain `{ts}`. At fetch time, `{ts}`
@@ -4520,32 +4539,83 @@ def fetch_task_brief(task_id: str, ctx: Context = None) -> str:
     Two fetches in the same minute get the same name; fetches ≥1 minute
     apart get distinct names. Don't improvise or modify.
 
-    `variant` distinguishes prompt shapes (e.g. "thin" = minimal
-    guidance, "informed" = includes baseline metrics). Different variants
-    of the same benchmark are scored independently.
+    `variant` filters which task shapes are eligible in auto-dispatch
+    mode. Default `"thin"` is the standard ratchet measurement variant.
+    Pass `variant=""` (or any unknown variant) to disable the filter,
+    though that's rarely what you want.
 
     Do NOT call this tool in normal topic-building sessions. It's a
     research entry point — reach for it only when explicitly instructed
     to run a benchmark / dogfood task.
     """
     _start = _start_call()
-    task = db.get_dogfood_task(task_id)
-    if task is None:
-        available = [t['task_id'] for t in db.list_dogfood_tasks()]
-        err = {
-            'error': f'No task found with task_id={task_id!r}.',
-            'available_task_ids': available,
-            'hint': 'Call list_tasks() to see available task briefs.',
-        }
-        return json.dumps(err, indent=2, ensure_ascii=False)
+
+    # Auto-dispatch mode: pick the staleest task and atomically mark it
+    # dispatched.
+    if task_id is None:
+        filter_variant = variant or None
+        task = db.pick_and_dispatch_dogfood_task(variant=filter_variant)
+        if task is None:
+            all_tasks = db.list_dogfood_tasks()
+            if not all_tasks:
+                err = {
+                    'error': 'No tasks seeded in dogfood_tasks.',
+                    'hint': (
+                        'Operator: seed via '
+                        'scripts/scp_tasks.sh && '
+                        'bash scripts/smoke.sh '
+                        'scripts/seed_dogfood_tasks.py'
+                    ),
+                }
+            else:
+                avail_variants = sorted({t['variant'] for t in all_tasks})
+                err = {
+                    'error': (
+                        f'No tasks match variant={variant!r}. '
+                        'Auto-dispatch requires at least one task '
+                        'with that variant.'
+                    ),
+                    'available_variants': avail_variants,
+                    'hint': (
+                        'Pass a variant that exists, or pass an '
+                        'explicit task_id.'
+                    ),
+                }
+            return json.dumps(err, indent=2, ensure_ascii=False)
+    else:
+        task = db.get_dogfood_task(task_id)
+        if task is None:
+            available = [t['task_id'] for t in db.list_dogfood_tasks()]
+            err = {
+                'error': f'No task found with task_id={task_id!r}.',
+                'available_task_ids': available,
+                'hint': 'Call list_tasks() to see available task briefs.',
+            }
+            return json.dumps(err, indent=2, ensure_ascii=False)
 
     ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M")
     name = _render_task_template(task['run_topic_name_template'], ts)
     brief = _render_task_template(task['brief_markdown'], ts)
 
-    log_usage(ctx, "fetch_task_brief",
-              {"task_id": task_id, "variant": task['variant'],
-               "rendered_name": name},
+    # Compute staleness for visibility in the dispatch log.
+    hours_since_last = None
+    last_dispatched = task.get('last_dispatched_at')
+    if last_dispatched and task_id is None:
+        # Auto-dispatch just bumped this to ~now; staleness is the
+        # PRIOR value, which we no longer have. Skip the field for
+        # the immediate post-dispatch return; operators can compute
+        # it from prior usage.jsonl entries if needed.
+        pass
+
+    log_params = {
+        "task_id": task['task_id'],
+        "variant": task['variant'],
+        "rendered_name": name,
+        "auto_dispatch": task_id is None,
+    }
+    if hours_since_last is not None:
+        log_params["hours_since_last_dispatch"] = hours_since_last
+    log_usage(ctx, "fetch_task_brief", log_params,
               f"served brief ({len(brief)} chars)",
               start_time=_start)
 
@@ -4557,6 +4627,7 @@ def fetch_task_brief(task_id: str, ctx: Context = None) -> str:
         'run_topic_name_template': task['run_topic_name_template'],
         'brief': brief,
         'metadata': task['metadata'],
+        'last_dispatched_at': task.get('last_dispatched_at'),
         'created_at': task['created_at'],
         'updated_at': task['updated_at'],
     }, indent=2, ensure_ascii=False)
@@ -4738,6 +4809,7 @@ def submit_feedback(summary: str, what_worked: str = "", what_didnt: str = "",
                     prep_calls_skipped: list[str] | None = None,
                     phase_1_misses: list[dict] | None = None,
                     phase_1_confidence_recalibration: float | None = None,
+                    runtime: dict | None = None,
                     topic: str | None = None, ctx: Context = None) -> str:
     """Submit a brief retrospective on this topic-building session so the
     Wiki Education team can improve the tool. Offer to call this at the end
@@ -4836,6 +4908,16 @@ def submit_feedback(summary: str, what_worked: str = "", what_didnt: str = "",
                         overconfident; near-zero = well-calibrated.
                         Tracks whether interventions actually shrink the
                         calibration gap.
+        runtime: Optional dict capturing which agent / model / effort
+                 ran this session, so we can trend results across
+                 runtimes. Suggested shape:
+                   {"agent": "claude-code" | "codex" | "chatgpt" | ...,
+                    "model": "opus-4.7" | "sonnet-4.6" | "gpt-5" | ...,
+                    "effort": "low" | "medium" | "high"}
+                 Free-form — populate from self-knowledge (which model
+                 you are) and what the operator told you about effort
+                 (or omit `effort` if unknown). Phase-1 feedback is the
+                 right place to populate this; you can omit on phase-2.
         topic: The topic name this feedback is about. Pass explicitly if your
                client doesn't maintain an MCP session.
     """
@@ -4879,6 +4961,8 @@ def submit_feedback(summary: str, what_worked: str = "", what_didnt: str = "",
         entry["phase_1_misses"] = phase_1_misses
     if phase_1_confidence_recalibration is not None:
         entry["phase_1_confidence_recalibration"] = phase_1_confidence_recalibration
+    if runtime is not None:
+        entry["runtime"] = runtime
     if tid or topic:
         try:
             lookup_id = tid
@@ -4897,6 +4981,11 @@ def submit_feedback(summary: str, what_worked: str = "", what_didnt: str = "",
         log_params["coverage_confidence"] = coverage_estimate.get("confidence")
     if phase is not None:
         log_params["phase"] = phase
+    if isinstance(runtime, dict):
+        for k in ("agent", "model", "effort"):
+            v = runtime.get(k)
+            if v:
+                log_params[f"runtime_{k}"] = v
     log_usage(ctx, "submit_feedback", log_params,
               f"feedback recorded ({len(summary)} chars)",
               start_time=_start, note=note)

@@ -34,10 +34,24 @@ $SCP_CMD "$PROJECT_DIR/scripts/session_status.py" "$DEPLOY_USER@$DEPLOY_HOST:$RE
 echo "==> Installing dependencies"
 $SSH_CMD "cd $REMOTE_DIR && python3 -m venv venv 2>/dev/null; $REMOTE_DIR/venv/bin/pip install -q -r $REMOTE_DIR/app/requirements.txt"
 
-echo "==> Installing systemd service"
-$SSH_CMD "cat > /etc/systemd/system/topic-builder.service << 'EOF'
+echo "==> Retiring legacy single-worker service if present"
+# The pre-multi-worker deploy used a single 'topic-builder.service'.
+# Stop and remove it so the new template instances are the sole live
+# workers. Idempotent (no-op when the legacy unit isn't installed).
+$SSH_CMD "systemctl stop topic-builder.service 2>/dev/null || true"
+$SSH_CMD "systemctl disable topic-builder.service 2>/dev/null || true"
+$SSH_CMD "rm -f /etc/systemd/system/topic-builder.service"
+
+echo "==> Installing systemd template unit"
+# Template unit: %i is the port (e.g. topic-builder@8000.service runs
+# the server with PORT=8000). Two instances (8000 + 8001) run behind
+# nginx with sticky session-header routing — see nginx upstream block
+# below. Each worker is a separate Python process with its own asyncio
+# event loop, so a heavy tool call on one session can't block
+# handshakes on the other worker.
+$SSH_CMD "cat > /etc/systemd/system/topic-builder@.service << 'EOF'
 [Unit]
-Description=Wikipedia Topic Builder MCP Server
+Description=Wikipedia Topic Builder MCP Server (port %i)
 After=network.target
 
 [Service]
@@ -47,6 +61,7 @@ ExecStart=/opt/topic-builder/venv/bin/python server.py
 Restart=always
 RestartSec=5
 Environment=PYTHONUNBUFFERED=1
+Environment=PORT=%i
 
 [Install]
 WantedBy=multi-user.target
@@ -57,6 +72,23 @@ $SSH_CMD "mkdir -p $REMOTE_DIR/data $REMOTE_DIR/exports $REMOTE_DIR/logs"
 
 echo "==> Configuring nginx"
 $SSH_CMD "cat > /etc/nginx/sites-available/topic-builder << 'NGINX'
+upstream topic_builder_backend {
+    # Sticky session routing. MCP keeps per-session state in an
+    # in-memory dict per worker process (StreamableHTTPSessionManager
+    # ._server_instances), keyed by the Mcp-Session-Id header.
+    # Without consistent hashing on this header, a session started
+    # on worker A could land on worker B for follow-up requests and
+    # 404 with 'unknown session id'.
+    #
+    # New sessions (no Mcp-Session-Id yet) all hash to the same
+    # bucket — imbalanced but harmless until load grows. If session-
+    # establishment becomes a bottleneck, add a request-id-based
+    # second-level discriminator here.
+    hash \$http_mcp_session_id consistent;
+    server 127.0.0.1:8000;
+    server 127.0.0.1:8001;
+}
+
 server {
     server_name topic-builder.wikiedu.org;
 
@@ -73,8 +105,8 @@ server {
     }
 
     location /mcp {
-        proxy_pass http://127.0.0.1:8000;
-        proxy_set_header Host 127.0.0.1:8000;
+        proxy_pass http://topic_builder_backend;
+        proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
@@ -84,10 +116,11 @@ server {
         proxy_cache off;
         chunked_transfer_encoding off;
 
-        # Absorb heavy tool calls that hold the single-worker event
-        # loop past the 60s default; prevents 504 bursts under 3+
-        # concurrent sessions. The Python backend itself has 300s
-        # internal budgets on its longest-running tools.
+        # Absorb heavy tool calls that hold a worker's event loop
+        # past the 60s default. Multi-worker means one busy session
+        # doesn't stall the other worker's handshakes, but a single
+        # tool call can still take 5 minutes. Internal Python tool
+        # budgets are 300s on the longest runners.
         proxy_connect_timeout 30s;
         proxy_send_timeout 300s;
         proxy_read_timeout 300s;
@@ -111,10 +144,10 @@ server {
 NGINX
 nginx -t && systemctl reload nginx"
 
-echo "==> Starting service"
-$SSH_CMD "systemctl daemon-reload && systemctl enable topic-builder && systemctl restart topic-builder"
+echo "==> Starting workers"
+$SSH_CMD "systemctl daemon-reload && systemctl enable topic-builder@8000.service topic-builder@8001.service && systemctl restart topic-builder@8000.service topic-builder@8001.service"
 
 echo "==> Checking status"
-$SSH_CMD "sleep 2 && systemctl is-active topic-builder && curl -s http://127.0.0.1:8000/mcp/ | head -c 200 || echo 'Service may still be starting...'"
+$SSH_CMD "sleep 2 && systemctl is-active topic-builder@8000.service && systemctl is-active topic-builder@8001.service && curl -s http://127.0.0.1:8000/mcp/ | head -c 100 && echo && curl -s http://127.0.0.1:8001/mcp/ | head -c 100 || echo 'Workers may still be starting...'"
 
 echo "==> Done"

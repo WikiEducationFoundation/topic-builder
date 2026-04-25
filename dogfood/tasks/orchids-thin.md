@@ -33,7 +33,7 @@ That paragraph is the whole scope you're given. Flesh out the rubric from it you
 
 5. Do SPOT CHECK and GAP CHECK before phase-1 wrap-up per the server instructions. No user is here to propose probe titles — fabricate them yourself.
 
-6. Call `submit_feedback(phase=1, ...)` with honest values for the structured fields. At minimum populate `coverage_estimate`, `strategies_used`, `spot_check`, `sharp_edges_hit`, `tool_friction`, and `prep_calls_made` (which prep-checklist items you actually completed). Don't call `export_csv` — the scoring script pulls the corpus directly from the server.
+6. Call `submit_feedback(phase=1, ...)` with honest values for the structured fields. At minimum populate `coverage_estimate`, `strategies_used`, `spot_check`, `sharp_edges_hit`, `tool_friction`, `prep_calls_made` (which prep-checklist items you actually completed), and `runtime` (`{"agent": "claude-code"|"codex"|"chatgpt"|..., "model": "opus-4.7"|"sonnet-4.6"|"gpt-5"|..., "effort": "low"|"medium"|"high"}` — your self-knowledge about which agent and model is running this; `effort` is what the operator set, leave null if unknown). Don't call `export_csv` — the scoring script pulls the corpus directly from the server.
 
 ## Protocol — phase 2 (reach extension + reflection)
 

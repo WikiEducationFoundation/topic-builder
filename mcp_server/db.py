@@ -107,6 +107,13 @@ def init_db():
         conn.execute(
             "UPDATE dogfood_tasks SET run_topic_name_template = run_topic_name "
             "WHERE run_topic_name_template IS NULL")
+    # Migrate existing DBs that predate auto-dispatch. NULL means
+    # "never dispatched" — sorts first under ASC ordering, so the
+    # auto-dispatch picker selects never-dispatched tasks before
+    # already-dispatched ones (round-robin coverage).
+    if task_cols and 'last_dispatched_at' not in task_cols:
+        conn.execute(
+            "ALTER TABLE dogfood_tasks ADD COLUMN last_dispatched_at TEXT")
     # Migrate existing DBs that predate the centrality rubric. Empty string
     # means "no rubric set yet" — AI should write one at scoping time.
     if 'centrality_rubric' not in topic_cols:
@@ -640,6 +647,55 @@ def get_dogfood_task(task_id):
     return _row_to_task_dict(row) if row else None
 
 
+def pick_and_dispatch_dogfood_task(variant=None):
+    """Atomically pick the staleest dogfood task (smallest
+    last_dispatched_at; NULL sorts first so never-dispatched tasks
+    win), optionally filtered by variant. Marks it dispatched
+    (`last_dispatched_at = now`) and returns the row.
+
+    Round-robin behavior: simultaneous callers within a tiny window
+    get DIFFERENT tasks because each call updates `last_dispatched_at`
+    before returning, so the next caller sees a different staleest.
+    BEGIN IMMEDIATE serializes the SELECT-then-UPDATE pair across
+    concurrent connections.
+
+    Returns None if no tasks match the filter (variant). Caller
+    should distinguish that from an empty DB. Ties on
+    `last_dispatched_at` (e.g. multiple never-dispatched) break by
+    `task_id` ASC for determinism."""
+    conn = _connect()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        sql = "SELECT * FROM dogfood_tasks"
+        params = []
+        if variant:
+            sql += " WHERE variant = ?"
+            params.append(variant)
+        sql += " ORDER BY last_dispatched_at ASC, task_id ASC LIMIT 1"
+        row = conn.execute(sql, params).fetchone()
+        if row is None:
+            conn.rollback()
+            return None
+        chosen_id = row['id']
+        conn.execute(
+            "UPDATE dogfood_tasks "
+            "SET last_dispatched_at = datetime('now') "
+            "WHERE id = ?",
+            (chosen_id,)
+        )
+        conn.commit()
+        # Refetch to get the updated last_dispatched_at value.
+        row = conn.execute(
+            "SELECT * FROM dogfood_tasks WHERE id = ?", (chosen_id,)
+        ).fetchone()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    return _row_to_task_dict(row)
+
+
 def upsert_dogfood_exemplar(slug, title, shape, body_markdown,
                             last_validated_against='', metadata=None):
     """Insert or replace an exemplar. Keyed on slug (UNIQUE).
@@ -754,6 +810,11 @@ def _row_to_task_dict(row):
         template = None
     if not template:
         template = row['run_topic_name']
+    last_dispatched = None
+    try:
+        last_dispatched = row['last_dispatched_at']
+    except (IndexError, KeyError):
+        last_dispatched = None
     return {
         'task_id': row['task_id'],
         'variant': row['variant'],
@@ -761,6 +822,7 @@ def _row_to_task_dict(row):
         'run_topic_name_template': template,
         'brief_markdown': row['brief_markdown'],
         'metadata': meta,
+        'last_dispatched_at': last_dispatched,
         'created_at': row['created_at'],
         'updated_at': row['updated_at'],
     }
