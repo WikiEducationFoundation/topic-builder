@@ -3,13 +3,6 @@ slug: hispanic-latino-stem-us
 title: Hispanic / Latino scientists in U.S. STEM
 shape: demographic × discipline × geographic intersection (biographies-only)
 last_validated_against: 2026-04-25
-numbers:
-  corpus_size: ~400
-  precision: ~95%
-  recall: ~75%
-  reach_audited: ~30
-  api_calls: ~600
-  tool_calls: ~80
 ---
 
 > **Stub status (2026-04-25):** menu card drafted from session notes

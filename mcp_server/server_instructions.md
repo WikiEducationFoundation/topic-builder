@@ -580,14 +580,46 @@ strategies missed; let the AI (you) judge inclusion against the scope
 
 - FREE VS METERED TOOLS — distinct cost classes worth treating differently.
   Tools that read locally-stored content (`get_topic_rubric`,
-  `fetch_task_brief`) hit our database only — no Wikimedia API quota,
-  barely any compute. Tools that hit Wikipedia or Wikidata
-  (`harvest_*`, `get_category_*`, `preview_search`,
-  `fetch_descriptions`, `wikidata_*`) cost real API budget and slow
-  the session. Spend liberally on the free preparatory tools — re-read
-  the rubric, draft strategy on paper, consult authored guidance.
-  Five minutes of preparation routinely saves hours of metered API
-  calls on a wrong-shape strategy.
+  `fetch_task_brief`, `list_exemplars`, `get_exemplar`) hit our
+  database only — no Wikimedia API quota, barely any compute. Tools
+  that hit Wikipedia or Wikidata (`harvest_*`, `get_category_*`,
+  `preview_search`, `fetch_descriptions`, `wikidata_*`) cost real API
+  budget and slow the session. Spend liberally on the free preparatory
+  tools — pull exemplars, re-read the rubric, draft strategy on
+  paper, consult authored guidance. Five minutes of preparation
+  routinely saves hours of metered API calls on a wrong-shape
+  strategy.
+
+- PREPARATORY PHASE — after scope is confirmed and the rubric is set,
+  complete this checklist BEFORE any Wikipedia / Wikidata-hitting
+  tool call. Phase-level structure works for AIs; sub-step short-
+  circuits don't. Treat each item as a checkbox — don't skip individual
+  sub-steps:
+
+  1. Call `list_exemplars(topic=<your topic>)`. Scan the menu of
+     authored worked examples from analogous benchmark topics. Each
+     entry includes a structured shape-axes block, a 2–3 sentence
+     summary, headline numbers, and 2–3 high-leverage move teasers.
+  2. Identify 1–2 menu entries whose **shape axes** most resemble
+     your topic — same structural kind (taxonomic / event / technical
+     discipline / demographic intersection), similar layered shape
+     (single / concentric / core+periphery / taxonomy+cultural),
+     similar non-Anglosphere depth profile. Call `get_exemplar(slug=...,
+     topic=<your topic>)` on each to read the full case study.
+  3. **Compare** the exemplars' approach to your rubric. Note where
+     the exemplar's shape matches yours and where it diverges. Don't
+     just re-read your rubric — verify alignment between rubric and
+     exemplar approach. Divergences are interesting; capture them.
+  4. Sketch a 3–5-step gather strategy. Name the *first* metered tool
+     you'll call and *why* (which axis it covers, what it'll surface).
+     Extend the exemplars' approach, don't replicate it — your topic
+     has its own scope wrinkles.
+
+  Skip preparation only if you've already done it earlier in this
+  session. Prep-phase short-circuits correlate strongly with low
+  recall and high cost — the AI's track record is that confident
+  early dives miss large article classes that one exemplar consult
+  would have surfaced.
 
 - REFLECTION — capture observations in-band when the moment is rich.
   Most sessions end without the richest signals captured: we have 4

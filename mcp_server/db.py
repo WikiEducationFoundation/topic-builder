@@ -64,6 +64,18 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS idx_dogfood_tasks_variant ON dogfood_tasks(variant);
         CREATE INDEX IF NOT EXISTS idx_dogfood_tasks_benchmark ON dogfood_tasks(benchmark_slug);
+        CREATE TABLE IF NOT EXISTS dogfood_exemplars (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            slug TEXT NOT NULL UNIQUE,
+            title TEXT NOT NULL,
+            shape TEXT NOT NULL DEFAULT '',
+            body_markdown TEXT NOT NULL,
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            last_validated_against TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_dogfood_exemplars_slug ON dogfood_exemplars(slug);
     """)
     # Migrate existing DBs that predate the description column. NULL means
     # "not fetched yet"; empty string means "fetched, no short-desc on Wikipedia".
@@ -626,6 +638,81 @@ def get_dogfood_task(task_id):
     ).fetchone()
     conn.close()
     return _row_to_task_dict(row) if row else None
+
+
+def upsert_dogfood_exemplar(slug, title, shape, body_markdown,
+                            last_validated_against='', metadata=None):
+    """Insert or replace an exemplar. Keyed on slug (UNIQUE).
+    Bumps updated_at on replace. Returns the stored row as a dict."""
+    conn = _connect()
+    meta_json = json.dumps(metadata or {}, ensure_ascii=False)
+    conn.execute("""
+        INSERT INTO dogfood_exemplars (slug, title, shape, body_markdown,
+                                       metadata_json, last_validated_against,
+                                       updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+        ON CONFLICT(slug) DO UPDATE SET
+            title = excluded.title,
+            shape = excluded.shape,
+            body_markdown = excluded.body_markdown,
+            metadata_json = excluded.metadata_json,
+            last_validated_against = excluded.last_validated_against,
+            updated_at = datetime('now')
+    """, (slug, title, shape, body_markdown, meta_json, last_validated_against))
+    conn.commit()
+    row = conn.execute(
+        "SELECT * FROM dogfood_exemplars WHERE slug = ?", (slug,)
+    ).fetchone()
+    conn.close()
+    return _row_to_exemplar_dict(row) if row else None
+
+
+def get_dogfood_exemplar(slug):
+    """Return an exemplar dict or None if not found."""
+    conn = _connect()
+    row = conn.execute(
+        "SELECT * FROM dogfood_exemplars WHERE slug = ?", (slug,)
+    ).fetchone()
+    conn.close()
+    return _row_to_exemplar_dict(row) if row else None
+
+
+def list_dogfood_exemplars(exclude_slug=None):
+    """Return all exemplars as dicts, optionally excluding one slug.
+    Ordered by slug."""
+    conn = _connect()
+    if exclude_slug:
+        rows = conn.execute(
+            "SELECT * FROM dogfood_exemplars WHERE slug != ? ORDER BY slug",
+            (exclude_slug,)
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM dogfood_exemplars ORDER BY slug"
+        ).fetchall()
+    conn.close()
+    return [_row_to_exemplar_dict(r) for r in rows]
+
+
+def _row_to_exemplar_dict(row):
+    if row is None:
+        return None
+    meta = {}
+    try:
+        meta = json.loads(row['metadata_json'] or '{}')
+    except Exception:
+        meta = {}
+    return {
+        "id": row['id'],
+        "slug": row['slug'],
+        "title": row['title'],
+        "shape": row['shape'],
+        "body_markdown": row['body_markdown'],
+        "metadata": meta,
+        "last_validated_against": row['last_validated_against'],
+        "created_at": row['created_at'],
+        "updated_at": row['updated_at'],
+    }
 
 
 def list_dogfood_tasks(variant=None, benchmark_slug=None):

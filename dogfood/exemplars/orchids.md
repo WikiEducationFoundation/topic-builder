@@ -3,13 +3,6 @@ slug: orchids
 title: Orchids
 shape: very large taxonomic topic with a small genuine cultural / biographical / historical periphery
 last_validated_against: 2026-04-25
-numbers:
-  corpus_size: ~13000
-  precision: 100%
-  recall: ~85%
-  reach_audited: ~456
-  api_calls: ~2000
-  tool_calls: ~50
 ---
 
 > **Stub status (2026-04-25):** drafted from memory of recent session

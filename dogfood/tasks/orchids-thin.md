@@ -24,9 +24,10 @@ That paragraph is the whole scope you're given. Flesh out the rubric from it you
 2. Draft a rubric from the scope statement and persist it via `set_topic_rubric(rubric=...)`. Follow the SCOPE RUBRIC framework in the server's instructions.
 
 3. **PREPARATORY PHASE** (free-tools-only, before any Wikipedia/Wikidata-hitting tool call):
-   - Read your rubric in full via `get_topic_rubric()`. Confirm it captures the scope edges your topic actually has — biographies in/out, lists in/out, "in popular culture" in/out, etc.
-   - Sketch a 3–5-step gather strategy. Name the *first* metered tool you'll call and *why* (which axis it covers, what it'll surface).
-   - No user is here to confirm; talk it through to yourself, then proceed.
+   - Call `list_exemplars(topic="<your run topic name>")`. Scan the menu of authored worked examples for analogous topic shapes. The exemplar matching this benchmark slug will be excluded from the menu (measurement-integrity gate).
+   - Pick 1–2 menu entries whose **shape axes** most resemble this topic. Call `get_exemplar(slug=..., topic="<your run topic name>")` on each. Read the full case study.
+   - Compare the exemplars' approach to your rubric. Note where the exemplar's shape matches yours and where it diverges — divergences are interesting, capture them.
+   - Sketch a 3–5-step gather strategy. Extend the exemplars rather than replicating them. Name the *first* metered tool you'll call and *why*.
 
 4. Run the standard Topic Builder pipeline (reconnaissance → gather → descriptions → review → cleanup). Follow the server's PIPELINE, COST AWARENESS, NOISE TAXONOMY, KNOWN SHARP EDGES, SOURCE-TRUST, and WRAP-UP guidance. This topic is large — prefer `preview_*` variants before committing.
 
@@ -38,7 +39,7 @@ That paragraph is the whole scope you're given. Flesh out the rubric from it you
 
 After phase-1 `submit_feedback` lands, you continue on the same topic for a focused reach-extension round. Phase 2's metric is *audited reach beyond gold*; phase 1's metrics are what we actually optimize for.
 
-1. Inspect your phase-1 corpus via `describe_topic` and `get_articles_by_source`. Identify articles or *classes of articles* you may have missed.
+1. Call `get_exemplar(slug="orchids", topic="<your run topic name>", allow_own=True)` to read the curated case study for this topic. Phase 2 unlocks the own-topic exemplar that was withheld in phase 1. Compare the case study's tool sequence and lessons to your phase-1 moves; inspect your corpus via `describe_topic` if useful; identify articles or classes of articles that the case study surfaces (or describes as patterns) that your phase-1 work missed.
 
 2. Extend reach using the REACH EXTENSION meta-tactics in `server_instructions.md` (cross-language sweeps, eponym chains, niche-example probes, additional Wikidata-property probes). Apply tactics you didn't try in phase 1.
 

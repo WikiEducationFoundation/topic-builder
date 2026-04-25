@@ -3,13 +3,6 @@ slug: crispr-gene-editing
 title: CRISPR gene editing
 shape: recent technical discipline with applications + ethics layers
 last_validated_against: 2026-04-25
-numbers:
-  corpus_size: ~150
-  precision: ~98%
-  recall: ~75%
-  reach_audited: ~10
-  api_calls: ~200
-  tool_calls: ~50
 ---
 
 > **Stub status (2026-04-25):** menu card drafted from session notes

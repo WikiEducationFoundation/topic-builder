@@ -3,13 +3,6 @@ slug: apollo-11
 title: Apollo 11
 shape: named historical event with concentric program / agency / people reach
 last_validated_against: 2026-04-25
-numbers:
-  corpus_size: ~250
-  precision: ~95%
-  recall: ~80%
-  reach_audited: ~15
-  api_calls: ~180
-  tool_calls: ~45
 ---
 
 > **Stub status (2026-04-25):** menu card drafted from session notes

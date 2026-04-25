@@ -4593,6 +4593,135 @@ def list_tasks(variant: str | None = None,
     }, indent=2, ensure_ascii=False)
 
 
+# ── Exemplars ─────────────────────────────────────────────────────────────
+
+_MENU_HEADER = "# Menu card"
+_CASE_HEADER = "# Full case study"
+
+
+def _split_exemplar_body(body: str):
+    """Split exemplar body into (menu_card, full_case_study) sections by
+    looking for the canonical headers. Returns (whole-body, '') if the
+    headers aren't present (lets us serve in-progress stubs gracefully)."""
+    if _MENU_HEADER not in body or _CASE_HEADER not in body:
+        return body.strip(), ""
+    menu_start = body.index(_MENU_HEADER)
+    case_start = body.index(_CASE_HEADER)
+    menu = body[menu_start:case_start].rstrip()
+    case = body[case_start:].rstrip()
+    return menu, case
+
+
+@mcp.tool()
+def list_exemplars(topic: str, ctx: Context = None) -> str:
+    """List authored worked-example exemplars from analogous benchmark
+    topics. Returns the menu-card section of each exemplar (shape axes,
+    summary, headline numbers, high-leverage move teasers, "doesn't apply
+    when") so the AI can judge relevance without committing to the full
+    case study. Excludes the exemplar matching the caller's `topic` slug
+    (measurement-integrity gate for benchmark runs; harmless on
+    production topics that happen to share a slug).
+
+    Free tool — local DB only, no Wikimedia API quota. Spend liberally:
+    skim the menu, then `get_exemplar(slug=...)` on the 1–2 entries whose
+    shape axes most resemble your topic.
+
+    `topic` is required and is the topic slug or name you're working on
+    (e.g. "orchids"). Slug normalization: lowercased, spaces and quotes
+    collapsed.
+
+    Returns JSON: {count, framing, exemplars: [{slug, title, shape,
+    last_validated_against, menu_card}, ...]}.
+    """
+    own_slug = db._slugify(topic) if topic else None
+    exemplars = db.list_dogfood_exemplars(exclude_slug=None)
+    out = []
+    for ex in exemplars:
+        if own_slug and (ex['slug'] == own_slug or db._slugify(ex['slug']) == own_slug):
+            continue
+        menu, _ = _split_exemplar_body(ex['body_markdown'])
+        out.append({
+            'slug': ex['slug'],
+            'title': ex['title'],
+            'shape': ex['shape'],
+            'last_validated_against': ex['last_validated_against'],
+            'menu_card': menu,
+        })
+    framing = (
+        "These exemplars are authored worked examples from a small set "
+        "of benchmark topics. They span taxonomic / event / technical-"
+        "discipline / demographic-intersection shapes — if your topic "
+        "doesn't closely match any of these shapes, treat them as "
+        "inspiration only, not playbooks. Pick 1–2 whose shape axes "
+        "most resemble yours and call get_exemplar(slug=...) for the "
+        "full case study. Extend, don't replicate."
+    )
+    return json.dumps({
+        'count': len(out),
+        'framing': framing,
+        'exemplars': out,
+    }, indent=2, ensure_ascii=False)
+
+
+@mcp.tool()
+def get_exemplar(slug: str, topic: str,
+                 allow_own: bool = False, ctx: Context = None) -> str:
+    """Fetch the full case study for one exemplar by slug. Returns the
+    detailed tool-call sequence + numeric results + lessons + anti-
+    patterns + extend-don't-replicate framing.
+
+    Both `slug` (which exemplar to fetch) and `topic` (your current topic)
+    are required. The pair gates measurement integrity: if `slug` matches
+    your `topic` AND the exemplar is a benchmark exemplar, the request
+    is refused unless `allow_own=True`. Phase 2 of a two-phase dogfood
+    flow tells you to set `allow_own=True` after submitting phase-1
+    feedback — that's when reading your own topic's exemplar is correct.
+    Setting `allow_own=True` during phase 1 contaminates the thin
+    baseline; don't.
+
+    Free tool — local DB only.
+
+    Returns JSON: {slug, title, shape, last_validated_against, menu_card,
+    full_case_study} on success, or {error, hint} on a refusal.
+    """
+    own_slug = db._slugify(topic) if topic else None
+    target_slug = slug.strip()
+    ex = db.get_dogfood_exemplar(target_slug)
+    if ex is None:
+        # Try slugified match too
+        ex = db.get_dogfood_exemplar(db._slugify(target_slug))
+    if ex is None:
+        available = [e['slug'] for e in db.list_dogfood_exemplars()]
+        return json.dumps({
+            'error': f'No exemplar found with slug={slug!r}.',
+            'available_slugs': available,
+            'hint': 'Call list_exemplars(topic=...) to see what is available.',
+        }, indent=2, ensure_ascii=False)
+    same_as_own = (ex['slug'] == own_slug)
+    if same_as_own and not allow_own:
+        return json.dumps({
+            'error': (
+                f"Exemplar {ex['slug']!r} matches your current topic. "
+                "Reading it during phase 1 would contaminate the thin "
+                "baseline measurement."
+            ),
+            'hint': (
+                'Phase 2 instructions tell you to call this tool with '
+                'allow_own=True after submitting phase-1 feedback. '
+                "Don't bypass the gate during phase 1."
+            ),
+        }, indent=2, ensure_ascii=False)
+    menu, case = _split_exemplar_body(ex['body_markdown'])
+    return json.dumps({
+        'slug': ex['slug'],
+        'title': ex['title'],
+        'shape': ex['shape'],
+        'last_validated_against': ex['last_validated_against'],
+        'menu_card': menu,
+        'full_case_study': case,
+    }, indent=2, ensure_ascii=False)
+
+
 # ── Feedback ──────────────────────────────────────────────────────────────
 
 @mcp.tool()
