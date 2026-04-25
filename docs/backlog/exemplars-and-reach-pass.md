@@ -1,361 +1,489 @@
-# Exemplars + reach pass: two-phase dogfood
+# Exemplars: getting our strategy wisdom actually used
 
-Active design doc for three new MCP tools — `list_exemplars`,
-`get_exemplar`, and `start_reach_pass` — and the dogfood-flow
-restructure they enable. Targeted to ship as one bundle.
+Active design doc for a brief-driven two-phase dogfood flow with
+structured phase-2 reflection (Ship 1) and a pair of exemplar
+MCP tools — `list_exemplars` and `get_exemplar` — with five
+authored exemplars (Ship 2). Sequenced as two ships because Ship 1
+is independently useful and produces both evidence and content
+that Ship 2 needs.
 
-## Intent
+## Status / next actions
 
-Two coupled changes:
+Active checklist:
 
-1. **Exemplar tool.** A new MCP tool returns annotated worked examples
-   (tool-call sequence + numeric results + light narrative + lessons)
-   for known benchmark topics. Server instructions encourage calling
-   it right after rubric is set, before any gather call. This pulls
-   concrete teaching out of `server_instructions.md` into an
-   on-demand resource so instructions stay general (per the
-   server-instructions-style memory).
+- [x] **Revise this doc** to reflect the simplified design — done.
+- [x] **Stub the orchids exemplar** at `dogfood/exemplars/orchids.md`
+  — done. Schema observations folded in below.
+- [ ] **Pressure-test menu cards.** Write 3–4 sibling menu cards
+  (apollo-11, crispr-gene-editing, hispanic-latino-stem-us as a
+  spread) and ask a fresh reader to match an unseen test topic to
+  the right card. If the match is unreliable from cards alone, the
+  cards are too lossy and the schema needs more structured signal.
+- [ ] **Review and plan implementation next steps** — lock the
+  schema after the pressure-test; commit to Ship 1 timing.
 
-2. **Two-phase dogfood runs.** A run becomes two phases in one
-   session: thin build → submit_feedback → call `start_reach_pass` →
-   continue with reach as the explicit goal. `start_reach_pass`
-   returns the best prior run's tool-call sequence + (for benchmark
-   topics) the topic's own exemplar that was withheld in phase 1.
-   Replaces the current thin-vs-informed split.
+### Schema observations from the orchids stub
 
-Both tools are generally available; benchmark topics happen to be the
-first source of fuel.
+What writing the stub revealed:
 
-## Why
-
-- **Reduces server-instructions bloat.** Concrete topic-shape teaching
-  goes to the exemplar tool; instructions hold abstract principles only.
-- **Doubles dogfood signal per session.** Thin baseline AND a
-  reach-extension attempt in one run, instead of separate
-  thin-only and informed-only sessions.
-- **Phase 2 maps directly to the reach axis.** "Reach grows gold" is the
-  point of the system per `CLAUDE.md`; phase 2 makes that the explicit
-  optimization target rather than a happy side effect.
-- **Phase-2 reflection feeds the flywheel.** With phase 1 still fresh,
-  the AI is asked to diagnose what it missed and what guidance would
-  have helped it not miss those things. Those reflections become
-  inputs to reach-strategies updates, server-instruction sharpening,
-  and new exemplars — making phase 1 strictly better over time.
-  Phase 1 is what we optimize; phase 2 is what helps us optimize it.
-- **Privacy-safe by design.** Neither tool ever exposes the gold
-  article list. Only metrics + tool-call traces leak. Biographies in
-  gold (Pulitzer winners, AA-STEM scientists, etc.) stay private
-  regardless of phase. This is a hard invariant, not a soft default.
-
-## New tools
-
-### `list_exemplars(topic: str)` + `get_exemplar(slug: str, topic: str)`
-
-Two tools, menu-then-detail, to keep context lean while letting the AI
-read deeply on the exemplars it judges most relevant.
-
-**`list_exemplars(topic)`** — required `topic` parameter (the current
-topic). Returns a menu of available exemplars, **excluding** the one
-matching `topic` if any. Each menu entry includes:
-
-- Slug + title.
-- Shape one-liner (e.g. "named historical event with peripheral
-  program / agency reach").
-- 2–3 sentence summary of approach + outcome.
-- Headline numbers (final corpus size, audited reach, precision /
-  recall, total api/tool calls).
-- 2–3 "high-leverage move" teasers — enough signal to judge relevance
-  without committing to the full case study.
-
-**`get_exemplar(slug, topic)`** — both parameters required. Returns
-the full case study for one exemplar:
-
-- Tool-call sequence in execution order — tool name + key params +
-  one-line "why this call mattered" narrative per call.
-- Full numeric results.
-- 3–6 lessons capturing what worked, what dead-ended, what the AI
-  almost missed.
-- Anti-patterns / known dead ends.
-
-Refuses (returns withheld notice) when `slug == topic` matches a
-benchmark topic — defense in depth on the gating the menu already
-applies.
-
-The expected flow: AI calls `list_exemplars` once, scans the menu,
-calls `get_exemplar` on 1–2 most-relevant entries. The other 2–3
-exemplars never enter context.
-
-### `start_reach_pass(topic: str)`
-
-- Required `topic` parameter.
-- Returns:
-  - **Best prior run's tool-call sequence** (annotated like an
-    exemplar, but pulled from the actual best run on this topic by
-    audited beyond-gold reach). Available for any topic with run
-    history; absent when the pool is empty.
-  - **The current topic's own exemplar** (if benchmark topic; the one
-    that was withheld from `list_exemplars` / `get_exemplar` during
-    phase 1). Returned in full — this one is maximum-relevance, not
-    a candidate for menu/detail splitting.
-  - **Reach-strategies excerpt** (always; see section below). Phase 2
-    is by definition the moment when obvious strategies have been
-    exhausted — these meta-tactics belong in every reach-pass response,
-    not only the empty-pool case.
-  - Numeric framing: best run's reach number (when present) + a note
-    that phase 2's job is to exceed it, not replicate.
-- Empty-pool case (novel topic with no run history): the
-  reach-strategies excerpt becomes the main payload, framed
-  explicitly — "no prior runs to learn from on this topic; lean on
-  these meta-tactics, ask the user for niche examples, try
-  cross-language comparison, run structured spot-check probes."
-
-## Storage shape
-
-### Exemplars
-
-Mirror the dogfood task-brief pattern:
-
-- Source of truth: `dogfood/exemplars/<slug>.md` markdown files, one
-  per benchmark topic. Frontmatter holds topic shape + numeric
-  summary; body is narrated tool-call sequence + lessons.
-- Seeded into a `dogfood_exemplars` SQLite table by an analog of
-  `scripts/seed_dogfood_tasks.py`. Tool reads from DB at call time.
-- Five initial exemplars to author — one per benchmark topic
-  (apollo-11, crispr-gene-editing, african-american-stem,
-  hispanic-latino-stem-us, orchids). Distill from existing run
-  history + audit notes, not invented.
-
-### Best-run plumbing
-
-- Compute on the fly when `start_reach_pass` is called: scan
-  `benchmarks/<slug>/runs/*.json`, pick the one with the highest
-  audited beyond-gold reach, return its tool-call sequence.
-- No best-run pointer file. Self-correcting; no maintenance step
-  when new runs land.
-- If the scan becomes a perf issue, add an in-memory cache keyed by
-  `(slug, mtime of newest run file)`. Defer until measurement
-  warrants it.
-
-## Reach-strategies doc
-
-A new authored markdown file at `docs/reach-strategies.md` (or
-similar) capturing meta-tactics for extending reach when the obvious
-strategies have already been used. Distinct from per-topic exemplars
-(which teach by example) and from `server_instructions.md` (which
-holds principles, not tactical playbooks).
-
-**Content shape.** A short menu of moves the AI can pick from when
-"obvious strategies" feel exhausted:
-
-- **Cross-language / cross-wiki diff.** Walk a non-English wiki for the
-  same topic; pull articles that have an enwiki sitelink but aren't in
-  the corpus yet, plus articles that exist only in the other-language
-  wiki.
-- **Ask the user.** When working interactively, request 3–5 niche
-  examples the user expects to see. Each miss is a strategy lead, not
-  just one article.
-- **Structured spot-check probes.** Hypothesize ~50 candidate titles
-  across ≥5 natural subdomains, batch-verify presence, classify
-  misses (variant-name / hallucination / real gap), diagnose
-  miss-classes into strategies.
-- **Wikidata-property probes you didn't think of.** P138 (named after)
-  for eponym chains; P171 (parent taxon) for taxonomy; P361 (part of)
-  for parent-program shapes; P31 (instance of) for class-based reach.
-  Always additive, never subtractive (per the additive-vs-subtractive
-  principle).
-- **Navbox on parent / sibling articles.** If you ran `harvest_navbox`
-  on the topic article, try it on the parent program / parent taxon /
-  framing institution.
-- **`morelike:` with high-centrality seeds.** `preview_search` with
-  `query="morelike:<seed>"` using a top-centrality article as the
-  seed often surfaces analogous articles category trees miss.
-- **Eponym / namesake chains.** When a person is core, search for
-  articles named after them (institutions, awards, concepts).
-- **Subject-specific list pages on other wikis.** `find_list_pages`
-  / `intitle:` searches on other wikis can surface curated lists
-  enwiki doesn't have.
-
-**Storage.** Single markdown file. Server reads it at startup or on
-call; `start_reach_pass` returns the body (or a pointer + excerpt
-if the file grows). No DB seeding needed.
-
-**Authoring.** Initial content distilled from accumulated audit
-insights across the 5 benchmark runs. Updated over time as new
-tactics surface. Lives in version control like other docs.
-
-## Server-instructions update
-
-Two small additions in `server_instructions.md`.
-
-**1. Cue exemplars after rubric is set** (in the SCOPE → RUBRIC
-section):
-
-> After `set_topic_rubric` lands, call `list_exemplars(topic=<your
-> topic>)`. Scan the menu, then call `get_exemplar(...)` on the 1–2
-> entries whose shape most resembles your topic. Use them as a
-> starting menu for which strategies to try first. Don't replicate;
-> analogize.
-
-**2. Cost-asymmetry principle** (new bullet, near the additive-vs-
-subtractive principle or KNOWN SHARP EDGES):
-
-> **Free vs. metered tools.** Tools that read our authored content
-> (`list_exemplars`, `get_exemplar`, `get_topic_rubric`,
-> `start_reach_pass`, `fetch_task_brief`) hit local storage only —
-> they cost no Wikimedia API quota and barely any compute. Tools
-> that hit Wikipedia or Wikidata (`harvest_*`, `get_category_*`,
-> `preview_search`, `fetch_descriptions`, `wikidata_*`) cost real
-> API budget. Spend liberally on the free preparatory tools: pull
-> exemplars, re-read the rubric, consult reach-strategies. Five
-> minutes of preparation routinely saves hours of metered API calls
-> on a wrong-shape strategy.
-
-No `start_reach_pass` cue in instructions — phase 2 lives in the
-dogfood task brief, not the general workflow. (Reasoning: phase 2
-is a dogfood / measurement convention; the tool is
-general-availability but the *protocol* of "thin-then-reach" is
-benchmark-specific. Mode-2 power users can call `start_reach_pass`
-directly when useful, and it's discoverable from the tool list.)
-
-**Production reach passes are user-driven, not budget-driven.** When
-a power user is in the loop steering the AI, the AI should iterate
-as long as the user judges progress is being made — no
-AI-self-imposed call ceiling. The autonomous budget above only
-applies in dogfood / benchmark runs where there's no user to call
-"that's enough." `start_reach_pass` itself does not return a budget
-framing; the dogfood brief layers it on for autonomous runs.
-
-## Dogfood task-brief update
-
-Thin briefs (the only briefs after this lands; the `<slug>-informed`
-variants get retired) describe both phases up front:
-
-- **Phase 1.** Build thinly, export, submit_feedback. **This is the
-  measurement variant** — phase-1 metrics drive the ratchet
-  scoreboard. Performance here is what we optimize for.
-- **Phase 2.** Call `start_reach_pass(topic=<run topic>)`. Returns the
-  best prior run's tactics, the current topic's own exemplar, and
-  reach-strategies. Goal is two-fold:
-  1. **Harvest gold.** Find articles even the best prior run missed.
-     Phase-2 audited additions grow `gold.csv` over time.
-  2. **Reflect on phase 1.** Specifically diagnose: which articles
-     were missed in phase 1 and *why*, and what guidance would have
-     helped phase-1-self find them. These reflections come back via
-     a second `submit_feedback` call after phase 2 settles. They
-     are inputs to reach-strategies / server-instructions / exemplar
-     updates — the mechanism by which phase 1 improves.
-
-  Phase-2 budget (autonomous-only — see below):
-  - **Ceiling: ~30 metered tool calls** (Wikipedia/Wikidata-hitting).
-    Free preparatory tools — `get_exemplar`, rubric re-reads,
-    reach-strategies consults — don't count.
-  - **Early exit**: stop when the last 10 metered calls have yielded
-    fewer than 2 on-topic finds.
-  - **Soft headroom to ~60** if mid-strategy with high expected
-    yield on the next call.
-  - Re-export and submit phase-2 feedback when settled.
-
-`submit_feedback` itself stays unchanged — phase-2 instructions live
-in the brief, not in the feedback response. Phase-2 reflection
-content can ride on the existing `notes` / `tool_friction` fields
-for now; if the reflection shape stabilizes, a structured field can
-land later (deferred).
-
-Phase 1 and phase 2 produce separate scoreboard rows (different
-metric: precision/recall/cost on phase 1, audited reach on phase 2).
-The ratchet gate runs on phase 1 only.
-
-## Landing-page update
-
-Add `list_exemplars`, `get_exemplar`, and `start_reach_pass` entries
-to the appropriate sections (probably Reconnaissance for the first
-two, Review for the third).
-
-## Sequencing
-
-Ship as a single coordinated bundle. Partial ship leaves the
-dogfood flow inconsistent.
-
-1. **Exemplar storage + seed script.** New table, markdown files,
-   seed script. Stub one exemplar to validate the shape end-to-end
-   before authoring all five.
-2. **`list_exemplars` + `get_exemplar` MCP tools.** Implement both
-   (menu + detail). Smoke against the stub.
-3. **Author the five exemplars.** Distill from run history + audit
-   notes. This is the bulk of the human work.
-4. **Author `docs/reach-strategies.md`.** Initial menu of meta-tactics
-   (cross-wiki, structured spot-check, Wikidata-property probes,
-   navbox-on-parent, eponym chains, `morelike:` seeding, etc.).
-5. **`start_reach_pass` MCP tool.** Implement with on-the-fly best-run
-   scan; load reach-strategies into the response. Smoke against
-   existing benchmark run JSONs and an empty-pool case.
-6. **Server-instructions cue.** Single addition in scope/rubric
-   section pointing at `list_exemplars` + `get_exemplar`, plus the
-   cost-asymmetry principle bullet.
-7. **Dogfood task-brief rewrite.** Five briefs updated to describe
-   two-phase flow with explicit phase-2 reflection ask. Retire
-   `<slug>-informed` variants from `dogfood_tasks` (drop, not
-   archive — two-phase replaces them).
-8. **Scoreboard separation.** Score script emits separate phase-1 and
-   phase-2 rows; ratchet gate runs on phase 1 only.
-9. **Landing-page entries.**
-10. **Deploy + smoke.**
-11. **End-to-end dogfood run** — single benchmark topic through both
-    phases, validate the seam.
-
-## Decisions locked during design
-
-- **Retire `<slug>-informed` briefs.** Drop, not archive. Two-phase
-  replaces what informed-variant was meant to measure.
-- **Empty-pool `start_reach_pass`.** Returns reach-strategies as
-  primary payload + explicit framing ("no prior runs; lean on
-  meta-tactics, ask the user, try cross-wiki"). No silent fallback.
-- **Separate scoreboards.** Phase 1 and phase 2 produce distinct
-  scoreboard rows; ratchet gate runs on phase 1 only. Phase 2's
-  metric is audited reach, not precision/recall.
-- **Phase-2 stopping criterion is context-dependent.** Autonomous
-  dogfood runs get a budget (~30 metered calls; early exit on <2
-  on-topic finds in the last 10; soft headroom to ~60). Production
-  reach passes are user-driven with no AI-self-imposed ceiling —
-  the AI iterates as long as the user judges progress is being
-  made. `start_reach_pass` does not return a budget; the dogfood
-  brief layers it on.
-- **Phase-2 reflection rides on existing `submit_feedback` fields.**
-  Free-form in `notes` / `tool_friction` for now. Promote to a
-  structured field (e.g. `phase_1_misses: [{pattern,
-  guidance_that_would_help}]`) only if a stable shape emerges from
-  several runs.
-- **Exemplar authoring depth solves itself.** Author the first
-  exemplar, see how the menu-card and case-study lengths feel; the
-  remaining four follow whatever shape that one settles into.
-
-## Out of scope / deferred
-
-- **Production-topic exemplars.** Anyone could in principle accumulate
-  exemplars for arbitrary topics over time; for now, exemplars =
-  benchmark topics only. Revisit if production users want to seed
-  their own.
-- **Exemplar similarity ranking.** Returning exemplars in order of
-  topic-shape similarity to the current topic would be a real lift,
-  but premature without seeing how the AI uses the unranked set
-  first.
-- **Per-tool exemplar fragments.** A future variant could pull
-  exemplar fragments by tool (e.g. "show me how `harvest_navbox`
-  was used in the apollo-11 run"). Useful but not urgent.
-- **Production reach-pass UX.** Mode-2 power users may want a
-  formalized two-phase flow too; for now they can call
-  `start_reach_pass` directly. If demand surfaces, document a
-  recipe.
+- Menu cards naturally run ~15–25 lines, not ~10. Each high-leverage
+  move needs 2–3 sentences to carry *why* without literal params.
+- Full case study runs ~150 lines. Long but everything earned its
+  place. Likely no useful cap below ~120.
+- "Extend, don't replicate" closing fell out naturally and is worth
+  canonicalizing as a required section.
+- Privacy invariant held up by writing in classes ("Brazilian
+  orchidologists," "Chinese orchid symbolism") rather than names.
+- **Menu cards with prose alone may be too lossy** for the AI to
+  judge relevance — re-review surfaced this. Adding a structured
+  shape-axes block alongside the prose so judgment has both kinds of
+  signal. Pressure-test in next-actions.
+- **Staleness needs concrete triggers**, not "drift past N commits."
+  Concrete trigger set: any change to `server_instructions.md` OR
+  signature change to a tool the exemplar references; backstop a
+  90-day revalidation cadence.
 
 ## Privacy invariant (load-bearing)
 
 Gold article lists never appear in any tool response, in any phase,
 ever. Both new tools surface only:
+
 - Tool-call traces (the *moves* a prior run made)
 - Numeric metrics (reach, precision, recall, costs)
 - Authored narrative (lessons; non-revealing of specific gold titles)
+- Class-level descriptions of missed-and-found article shapes
+  ("Brazilian orchidologists", not literal names)
 
-This invariant is the reason gold gating is uniform across phases
-and across production / dogfood. Don't relax it for "convenience" —
-biographies in gold include real people whose inclusion judgments
-shouldn't leak even to the AI building the list.
+This invariant is the reason gold gating is uniform across phases,
+across production / dogfood, and across both new tools. Don't relax
+it for "convenience" — biographies in gold include real people whose
+inclusion judgments shouldn't leak even to the AI building the list.
+
+## The problem
+
+The biggest failing of current runs — production AND dogfood — is
+that the strategic wisdom and tool surface we already have don't
+get used. The AI dives in with a plausible-looking plan, exhausts
+the obvious moves, and stops. Our principles aren't wrong; they
+don't reach the AI at the moment of choice.
+
+Concrete shapes this takes (cross-validated across recent dogfood
+runs):
+
+- AI doesn't browse the rubric framework or available probes before
+  starting; gets to "stuck" before consulting authored guidance.
+- AI ignores additive Wikidata-property probes (P138 / P171 / P361)
+  on shapes where they'd be high-leverage first moves.
+- AI under-uses `morelike:` and cross-wiki checks even when
+  `server_instructions.md` mentions both.
+- Phase-1 self-rated confidence sits at 0.7+ while actual recall
+  lands 35–60% — the AI doesn't know what it doesn't know, because
+  it hasn't seen what others did on similar shapes.
+
+The plan: a brief-driven two-phase dogfood flow with structured
+reflection, plus curated worked examples (exemplars) consulted via
+a preparatory-phase posture that makes consulting them a step the
+AI *checks off*, not a hint it routes around.
+
+## Intent
+
+Two ships:
+
+- **Ship 1** — Brief restructure into two phases (thin build →
+  reflect-and-extend) with structured reflection fields on
+  `submit_feedback`, scoreboard separation, and a partial server-
+  instructions update covering reach-extension meta-tactics + a
+  degraded preparatory-phase checklist (rubric + strategy sketch).
+  Lands in days. Validates the flywheel. Reflections from the
+  first 5 thin runs become both evidence (whether worked-example
+  guidance is what's missing) and content (drafts of the first
+  exemplars).
+- **Ship 2** — Two exemplar tools (`list_exemplars`,
+  `get_exemplar`), five authored exemplars, the upgraded prep
+  checklist with exemplar steps, and staleness discipline. Lands
+  once Ship 1 has shown the reflection mechanism is paying off.
+
+Ship 1 is genuinely independent — it's not a stripped Ship 2. The
+two ships solve overlapping but distinct problems: Ship 1 surfaces
+*where the AI got stuck and what it would have wanted*; Ship 2
+*provides what it would have wanted*.
+
+## Why
+
+- **AI underuses authored wisdom.** Primary motivation. See "The
+  problem" above.
+- **Reduces server-instructions bloat.** Concrete topic-shape
+  teaching goes to exemplars; instructions hold abstract principles
+  and meta-tactics only.
+- **Doubles dogfood signal per session.** Thin baseline + reach-
+  extension attempt in one run instead of two separate sessions.
+- **Phase-2 reflection feeds the flywheel.** With phase 1 still
+  fresh, the AI is asked to diagnose what it missed and what
+  guidance would have helped. Reflections become inputs to
+  instruction sharpening + new exemplars — the mechanism by which
+  phase 1 improves. Phase 1 is what we optimize; phase 2 is how we
+  optimize it.
+- **Calibrates self-confidence.** Today's confidence-vs-recall gap
+  is 0.7+ confidence vs. 35–60% recall. Phase-2 reflection
+  including a `phase_1_confidence_recalibration` field surfaces the
+  delta directly so we can track whether interventions actually
+  shrink it.
+
+---
+
+# Ship 1: brief + structured reflection
+
+Lands first. No new tools; brief content + `submit_feedback` schema
++ a partial server-instructions update.
+
+## Dogfood task-brief update
+
+Thin briefs (the only briefs after this lands; `<slug>-informed`
+variants get retired) describe both phases up front.
+
+**Phase 1.** Build thinly, export, submit_feedback. Brief includes
+the **degraded preparatory-phase checklist** (Ship-1 version):
+
+> 1. [ ] Read your rubric in full. Confirm it captures the scope
+>    edges your topic actually has (lists in/out, biographies
+>    in/out, "in popular culture" in/out, etc.).
+> 2. [ ] Sketch a 3–5-step strategy to the user (or to yourself
+>    if autonomous). Name the *first* metered tool you'll call and
+>    *why*.
+> 3. [ ] Confirm scope + strategy with the user, if interactive.
+>
+> Skip preparation only if you've already done it earlier in this
+> session. Don't skip individual sub-steps.
+
+This is the measurement variant — phase-1 metrics drive the ratchet
+scoreboard.
+
+**Phase 2.** After phase-1 `submit_feedback` lands, brief instructs:
+
+1. Look at your phase-1 corpus. Identify articles or *classes* of
+   articles that you may have missed.
+2. Extend reach. Use the reach-extension meta-tactics in
+   `server_instructions.md` (cross-wiki, eponym chains, structured
+   spot-check, Wikidata-property probes) that you didn't try in
+   phase 1. The strategies are general — apply them to your
+   specific topic.
+3. Re-export.
+4. Submit phase-2 `submit_feedback` with the **structured phase-1
+   reflection** (see schema below).
+
+Phase-2 budget (autonomous-only, first-cut numbers — flag for
+tuning after several runs):
+
+- **Ceiling: ~30 metered tool calls.**
+- **Early exit**: stop when last 10 metered calls yielded fewer
+  than 2 on-topic finds.
+- **Soft headroom to ~60** if mid-strategy with high expected
+  yield on the next call.
+
+**Production reach passes are user-driven**, not budget-driven.
+The autonomous budget applies only when no user is in the loop.
+
+Phase 1 and phase 2 produce separate scoreboard rows (phase 1 =
+precision/recall/cost; phase 2 = audited reach). Ratchet gate runs
+on phase 1 only.
+
+## Phase-2 reflection schema
+
+Add to `submit_feedback` (structured from day 1):
+
+- `phase: int` — 1 or 2; identifies the round.
+- `phase_1_misses: list[dict]` *(phase 2 only)* — each entry:
+  - `pattern: str` — e.g. "missed all eponymous taxonomy genera",
+    "missed Spanish-language biographies".
+  - `guidance_that_would_help: str` — what an instruction or
+    exemplar could say to surface this class next time.
+- `phase_1_confidence_recalibration: float | None` *(phase 2 only)*
+  — delta between phase-1 self-rated confidence and retrospectively-
+  true confidence after seeing phase-2 finds. Negative = phase-1
+  was overconfident; near-zero = well-calibrated. Tracks whether
+  interventions actually shrink the calibration gap.
+- `prep_calls_made: list[str]` *(phase 1)* — which prep-checklist
+  steps were completed (rubric re-read, strategy sketch, user
+  confirmation). Retrospective accountability — closes the loop on
+  whether the prep checklist actually got followed.
+- `prep_calls_skipped: list[str]` *(phase 2)* — looking back, which
+  prep steps would have helped that you didn't take?
+
+Fields are optional/nullable. Phase-1 calls populate `prep_calls_made`;
+phase-2 calls populate `phase_1_misses` +
+`phase_1_confidence_recalibration` + `prep_calls_skipped`.
+
+## Server-instructions update (Ship 1 portion)
+
+Two additions in `server_instructions.md`:
+
+**1. Cost-asymmetry principle** (new bullet near KNOWN SHARP EDGES):
+
+> **Free vs. metered tools.** Tools that read authored content
+> (`get_topic_rubric`, `fetch_task_brief`) hit local storage only —
+> no Wikimedia API quota. Tools that hit Wikipedia or Wikidata
+> (`harvest_*`, `get_category_*`, `preview_search`,
+> `fetch_descriptions`, `wikidata_*`) cost real API budget. Spend
+> liberally on the free preparatory tools.
+
+(The list expands in Ship 2 when `list_exemplars` / `get_exemplar`
+land.)
+
+**2. Reach-extension meta-tactics delta** — fold into existing
+sections only the *delta* not already covered. Specifically:
+
+- Cross-wiki / cross-language sweeps as a reach move, not just a
+  primary strategy.
+- "Ask the user for 3–5 niche examples" framed as a reach probe,
+  not just a scope tool.
+- Eponym / namesake chains for person-centric topics.
+- Structured spot-check probes (~50 candidates × ≥5 subdomains).
+
+Existing content (SHAPE → PROPERTY table, KNOWN SHARP EDGES,
+SOURCE-TRUST, intersectional-leads pointer) stays as-is — those
+already cover the rest of the meta-tactic surface.
+
+## Sequencing for Ship 1
+
+1. **`submit_feedback` schema update.** Add the structured
+   reflection fields. DB migration if needed.
+2. **Server-instructions update.** Cost-asymmetry principle +
+   reach-extension meta-tactic delta.
+3. **Dogfood task-brief rewrite.** Five briefs updated to describe
+   two-phase flow with degraded prep checklist + phase-2 reflection
+   ask. Retire `<slug>-informed` variants from `dogfood_tasks`.
+4. **Scoreboard separation.** Score script emits separate phase-1
+   and phase-2 rows; ratchet gate runs on phase 1 only.
+5. **Deploy + smoke.**
+6. **End-to-end dogfood run** through both phases — single benchmark
+   topic.
+7. **Run all 5 thin variants** under the new flow. Reflections from
+   these become Ship 2's evidence + content.
+
+---
+
+# Ship 2: exemplar tools + authored content
+
+Lands after Ship 1 has produced reflections that confirm exemplar-
+shaped guidance is what's missing. Tools, content, prep-checklist
+upgrade, and staleness discipline.
+
+## New tools
+
+### `list_exemplars(topic: str)` + `get_exemplar(slug: str, topic: str, allow_own: bool = False)`
+
+Two tools, menu-then-detail, to keep context lean.
+
+**`list_exemplars(topic)`** — required `topic` parameter. Returns a
+menu of available exemplars, **excluding** the one matching `topic`
+if any. Each menu entry includes:
+
+- Slug + title.
+- **Shape axes block** — structured tags (`structural`, `scale`,
+  `layered`, `non-Anglosphere depth`, `biography density`,
+  `canonical category coverage`) so the AI can filter by structured
+  signal *as well as* prose.
+- Shape one-liner.
+- 2–3 sentence summary of approach + outcome.
+- Headline numbers (final corpus size, audited reach, precision /
+  recall, total api/tool calls).
+- 2–3 "high-leverage move" teasers — enough signal to judge
+  relevance without the full case study.
+
+Menu cards omit literal call params (tool name + decision narrative
+only) — see anti-replication framing below.
+
+**Off-shape framing.** When no exemplar's shape axes match the
+caller's topic axes within a similarity threshold, response includes
+an explicit framing line: *"None of the available exemplars closely
+match this topic's shape — they're from English-language
+taxonomy / biographical / event-program shapes. Skim if curious;
+don't force a match."* Surfacing the limitation rather than relying
+on the AI to infer it.
+
+**`get_exemplar(slug, topic, allow_own=False)`** — returns the full
+case study for one exemplar:
+
+- Tool-call sequence in execution order — tool name + key params
+  + one-line "why this call mattered" narrative per call.
+- Full numeric results.
+- 3–6 lessons capturing what worked, what dead-ended, what the AI
+  almost missed.
+- Anti-patterns / known dead ends.
+- Required closing section: "Extend, don't replicate" — frames the
+  case study as a menu of moves with known costs and yields, not a
+  recipe.
+
+Refuses (returns withheld notice) when `slug == topic` matches a
+benchmark topic UNLESS `allow_own=True`. Phase 2's brief instructs
+the AI to set `allow_own=True` after submitting phase-1 feedback.
+
+The gate is *measurement-integrity*, not privacy — exemplars don't
+leak gold articles in any case. The gate prevents accidental self-
+fetch from contaminating the thin baseline.
+
+**Expected flow in phase 1** (Ship 2 onward): AI calls
+`list_exemplars` once during the preparatory phase, scans the menu,
+calls `get_exemplar` on 1–2 most-relevant entries. The other 2–3
+exemplars never enter context.
+
+**Phase 2** (Ship 2 onward): AI calls `get_exemplar(slug=<own>,
+topic=<own>, allow_own=True)` to pull the case study for the topic
+it just built. Compares to its own moves, identifies misses, extends
+reach.
+
+**Anti-replication framing.** The artifact is a tool sequence and
+will get followed as a recipe unless we frame against it.
+Mitigations:
+- Menu cards omit literal params; full params live behind
+  `get_exemplar`.
+- Lessons sections lead with "why this approach" not "do this."
+- Closing section explicitly says "extend, don't replicate."
+- Server instructions and dogfood briefs both repeat the framing.
+
+## Storage shape
+
+Mirror the dogfood task-brief pattern:
+
+- Source of truth: `dogfood/exemplars/<slug>.md` markdown files,
+  one per benchmark topic. Frontmatter holds shape axes + numeric
+  summary + `last_validated_against`. Body holds menu-card content
+  + full case study, split by header.
+- Seeded into a `dogfood_exemplars` SQLite table by an analog of
+  `scripts/seed_dogfood_tasks.py`. Tool reads from DB at call time.
+- Five initial exemplars to author — one per benchmark topic
+  (apollo-11, crispr-gene-editing, african-american-stem,
+  hispanic-latino-stem-us, orchids). Distill from existing run
+  history + audit notes + Ship-1 reflections, not invented.
+
+### Staleness discipline (concrete)
+
+Each exemplar carries `last_validated_against`: a commit hash of
+the repo state at last human review.
+
+**Triggers** that mark an exemplar stale (flagged in
+`list_exemplars` menu output):
+
+- Any commit since `last_validated_against` that touches
+  `server_instructions.md`.
+- Any commit that changes the signature, removes, or renames a tool
+  the exemplar references in its tool-call sequence (parsed from
+  the case-study body).
+- 90-day backstop: if neither of the above fires within 90 days,
+  flag for periodic revalidation regardless.
+
+Detection is a small helper script (`scripts/check_exemplar_staleness.py`)
+that runs locally or in CI; it emits a list of stale exemplars +
+reasons. `list_exemplars` calls it (or reads its cached output) and
+surfaces stale-flags in menu entries: *"⚠ Validated 2026-04-25;
+`server_instructions.md` has changed 4 times since — verify before
+relying."*
+
+## Server-instructions update (Ship 2 portion)
+
+**Upgrade the preparatory-phase checklist** (introduced in Ship 1)
+to include exemplar steps and the comparison move:
+
+> **PREPARATORY PHASE.** After scope is plain-language confirmed
+> and the rubric is set, complete this checklist before any
+> Wikipedia-or-Wikidata-hitting tool call. All steps use free
+> tools (no API quota). Spending a few minutes here routinely
+> saves hours of wrong-shape strategy:
+>
+> 1. [ ] Call `list_exemplars(topic=<your topic>)`. Scan the menu.
+> 2. [ ] Identify 1–2 menu entries whose **shape axes** most
+>    resemble your topic. Call `get_exemplar(slug=..., topic=<your
+>    topic>)` on each. Read the full case study.
+> 3. [ ] **Compare** the exemplars' approach to your rubric. Note
+>    where the exemplar's shape matches yours and where it
+>    diverges. Don't just re-read the rubric — verify alignment.
+> 4. [ ] Sketch a 3–5-step strategy to the user (or to yourself
+>    if autonomous). Name the *first* metered tool you'll call and
+>    *why*. Extend the exemplar's approach, don't replicate it.
+>
+> Skip preparation only if you've completed it earlier in this
+> session. Don't skip individual sub-steps — prep-phase short-
+> circuits correlate strongly with low recall and high cost.
+
+**Extend the cost-asymmetry principle bullet** to include
+`list_exemplars` and `get_exemplar` in the free-tools list.
+
+## Sequencing for Ship 2
+
+1. **Pressure-test menu cards** (from next-actions checklist) —
+   write 3–4 sibling cards, validate fresh-reader can match. Lock
+   schema only after this passes.
+2. **Exemplar storage + seed script.** New table, markdown files
+   convention, seed script.
+3. **`list_exemplars` + `get_exemplar` MCP tools.** Implement, with
+   off-shape framing + staleness flag surfacing. Smoke against the
+   orchids stub.
+4. **Author the remaining four exemplars.** Distill from run
+   history + audit notes + Ship-1 reflections.
+5. **Staleness detection script.** `scripts/check_exemplar_staleness.py`
+   + integration into `list_exemplars` response.
+6. **Server-instructions update.** Upgrade prep checklist, extend
+   cost-asymmetry list.
+7. **Dogfood task-brief rewrite (Ship 2).** Briefs replace degraded
+   prep checklist with full version; phase-2 instructions reference
+   `get_exemplar(allow_own=True)`.
+8. **Landing-page entries** for `list_exemplars` and `get_exemplar`.
+9. **Deploy + smoke.**
+10. **End-to-end dogfood run** through both phases with exemplar
+    consultation.
+
+---
+
+## Decisions locked during design
+
+- **Two-ship sequencing.** Ship 1 is independently useful;
+  reflections from Ship-1 runs become evidence and content for
+  Ship 2.
+- **Drop `start_reach_pass`.** Phase 2 is brief-driven; existing
+  tools cover the unlock.
+- **Drop separate `reach-strategies.md`.** Meta-tactics fold into
+  `server_instructions.md` (where production runs benefit).
+- **Retire `<slug>-informed` briefs.** Drop, not archive — two-phase
+  replaces them.
+- **Separate scoreboards.** Phase 1 = precision/recall/cost; phase 2
+  = audited reach. Ratchet gate runs on phase 1 only.
+- **Phase-2 stopping criterion is context-dependent.** Autonomous
+  dogfood: budget. Production: user-driven, no AI ceiling.
+- **Structured reflection from day 1.** `phase`, `phase_1_misses`,
+  `phase_1_confidence_recalibration`, `prep_calls_made/skipped`
+  added to `submit_feedback` in Ship 1.
+- **Preparatory phase is a numbered checklist, not a principle.** AI
+  follows phase-level structure well; sub-steps within a phase
+  short-circuit. Explicit list resists short-circuit.
+- **Prep-checklist comparison step is a *comparison*, not a re-read.**
+  "Re-read your rubric" is a no-op; "verify alignment between rubric
+  and exemplar approach" is an actual move.
+- **`get_exemplar` gate is measurement-integrity, not privacy.**
+  `allow_own=True` bypass; brief-documented for phase 2.
+- **Menu cards include structured shape axes.** Prose alone is too
+  lossy for the AI to judge relevance; structured tags + prose give
+  both kinds of signal.
+- **`list_exemplars` surfaces off-shape limitations explicitly.**
+  Don't rely on the AI to infer "nothing relevant"; say it.
+- **Exemplar staleness has concrete triggers.** Server-instructions
+  edits + signature changes to referenced tools + 90-day backstop.
+  Detection via helper script; surfaced in menu output.
+
+## Out of scope / deferred
+
+- **Production-topic exemplars.** For now, exemplars = benchmark
+  topics. Revisit if production users want to seed their own.
+- **Exemplar similarity ranking.** Topic-shape-similarity ordering
+  would be a real lift, but premature without seeing how the AI
+  uses the unranked set first.
+- **Per-tool exemplar fragments.** Future variant could pull
+  fragments by tool used. Useful but not urgent.
+- **Soft runtime gate on first metered call.** First gather-shaped
+  call after `set_topic_rubric` could warn if `list_exemplars`
+  hasn't been called this session. Defense in depth, deferred until
+  we see prep-phase short-circuits even with the brief checklist +
+  retrospective accountability.
+- **Best-run-trace tool.** The curated exemplar IS the institutional
+  best-run trace; no runtime scan needed. Revisit if exemplars feel
+  too high-level and a literal recent-best-run lookup would add
+  value.
