@@ -13,9 +13,11 @@ Each improvement cycle:
 2. **Implement + deploy** — match the precedent from Chunks 2–6: one
    small focused change, syntax-checked, smoke-tested, deployed via
    `bash mcp_server/deploy.sh`.
-3. **Run fresh builds** of each of the 5 benchmark topics, under NEW
-   topic names (e.g. `apollo-11 ratchet-2026-04-25`) so the historical
-   baseline topics stay intact as the ground truth.
+3. **Run fresh builds** of each ratchet-included benchmark topic,
+   under NEW topic names (e.g. `apollo-11 ratchet-2026-04-25`) so the
+   historical baseline topics stay intact as the ground truth. The
+   ratchet doesn't have to run on every benchmark — see
+   `docs/adding-exemplars.md` for the inclusion rubric.
 4. **Score each:**
    ```
    python3 scripts/benchmark_score.py <slug> "<run-topic>"
@@ -78,11 +80,13 @@ flags reach additions, audit them, and if they pass, append to
 - Main-article-as-list-page fallback pattern in instructions.
 
 **Scaffolded (benchmark infrastructure):**
-- 5 benchmark topics — `apollo-11`, `crispr-gene-editing`,
-  `african-american-stem`, `hispanic-latino-stem-us`, `orchids` —
-  each with `scope.md`, `rubric.txt`, `baseline.json`, audited
-  `gold.csv`, `audit.py` (reproducible classifier), `audit_notes.md`
-  (human commentary), `README.md`.
+- Benchmark topics — `apollo-11`, `crispr-gene-editing`,
+  `african-american-stem`, `hispanic-latino-stem-us`, `orchids`
+  (scaffolded 2026-04-23), `climate-change` (scaffolded 2026-04-25,
+  the project's origin topic) — each with `scope.md`, `rubric.txt`,
+  `baseline.json`, audited `gold.csv`, `audit.py` (reproducible
+  classifier), `audit_notes.md` (human commentary), `README.md`.
+  The suite size isn't fixed; new shapes get added as they surface.
 - `scripts/bootstrap_benchmark.py` — baseline.json + gold.csv dumper
   for new benchmarks.
 - `scripts/benchmark_score.py` — the scoreboard.

@@ -17,7 +17,7 @@ Three user modes matter, and we optimize for depth:
 Principles for changes:
 
 - **Completeness, not corpus size.** The goal is finding articles that belong to a topic, not inflating the count. A topic with 800 on-topic articles is better than one with 1200 mostly-on-topic articles.
-- **Measure improvements, don't just ship them.** The 5-topic benchmark ratchet (`docs/ratchet-plan.md`) is the proving ground. A tool change that doesn't pass the gate — precision + recall don't regress, ≥1 cost metric improves — doesn't land.
+- **Measure improvements, don't just ship them.** The benchmark ratchet (`docs/ratchet-plan.md`) is the proving ground. A tool change that doesn't pass the gate — precision + recall don't regress, ≥1 cost metric improves — doesn't land. The suite size isn't fixed; new shapes get added when worth measuring (`docs/adding-exemplars.md`).
 - **Reach grows gold.** The aspirational axis isn't the gate — it's whether a run surfaces on-topic articles beyond current gold. Audited additions grow `gold.csv` and make future recall measurements honest.
 - **Centrality is AI judgment, not tool computation.** The server persists rubrics and scores; the AI drafts the rubric with the user and assigns scores. Don't build "compute score X from signal Y" features — lean into the AI + rubric.
 - **Evidence-based tool additions.** New tools emerge from observed failures in dogfood sessions (usually cross-validated across multiple sessions), not from speculation. Single-session signals go to the backlog's deferred tier.
@@ -37,11 +37,12 @@ mcp_server/          # production code
 └── deploy_landing.sh# landing-only deploy (no service restart)
 
 docs/                # plans and operational reference
-├── ratchet-plan.md    # current: how to use the benchmark ratchet
-├── shipped.md         # log of items that landed
-├── operations.md      # host layout, admin one-liners
-├── build-workflow.md  # how the AI works through backlog items
-└── backlog/           # open work — prioritized list + specific plans
+├── ratchet-plan.md      # current: how to use the benchmark ratchet
+├── shipped.md           # log of items that landed
+├── operations.md        # host layout, admin one-liners
+├── build-workflow.md    # how the AI works through backlog items
+├── adding-exemplars.md  # recipe for new exemplars / dogfood tasks / benchmarks
+└── backlog/             # open work — prioritized list + specific plans
     ├── README.md                  # open-items list
     ├── auth.md                    # deferred: Wikipedia OAuth
     └── impact-visualizer.md       # deferred: IV handoff
@@ -51,12 +52,14 @@ scripts/             # standalone helpers for benchmark scoring, dogfood
                      # pre-MCP one-offs kept as shell-usable probes.
 
 benchmarks/          # gold-standard topic audits + replay harness.
-                     # 5 topics scaffolded 2026-04-23: apollo-11,
-                     # crispr-gene-editing, african-american-stem,
-                     # hispanic-latino-stem-us, orchids. Each has
-                     # scope.md, rubric.txt, baseline.json, gold.csv
-                     # (gitignored — names + judgments). See
-                     # benchmarks/README.md for the workflow.
+                     # 2026-04-23: apollo-11, crispr-gene-editing,
+                     # african-american-stem, hispanic-latino-stem-us,
+                     # orchids. 2026-04-25: climate-change (origin
+                     # topic). Suite size isn't fixed; see
+                     # docs/adding-exemplars.md. Each has scope.md,
+                     # rubric.txt, baseline.json, gold.csv (gitignored
+                     # — names + judgments). See benchmarks/README.md
+                     # for the workflow.
 ```
 
 ## Architecture at a glance

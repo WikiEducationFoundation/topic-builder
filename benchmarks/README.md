@@ -13,20 +13,30 @@ can have uneven effects across topic classes. Benchmarks let us answer "did
 this change improve things?" quantitatively instead of relying on
 ad-hoc impressions from dogfood sessions.
 
-## The five benchmarks
+## The benchmarks
 
-Four of the five follow the standard layout below:
+The size of the suite isn't fixed — benchmarks get added when a new
+topic shape is worth measuring against, or when a Wiki-Education
+priority topic merits per-cycle quality measurement. Five members
+followed the standard layout below as of 2026-04-23; climate-change
+joined 2026-04-25. See `docs/adding-exemplars.md` for the inclusion
+rubric and `docs/ratchet-plan.md` for which benchmarks each ratchet
+cycle measures.
+
+Standard-layout members:
 
 - `apollo-11` — single historical event + cultural tail
 - `crispr-gene-editing` — scientific discipline with distinctive vocabulary
 - `african-american-stem` — intersectional biography
 - `orchids` — taxonomy at scale + cross-wiki (the marquee completeness test)
+- `climate-change` — well-organized academic + movement + policy
+  (origin topic of the project; bootstrapped 2026-04-25)
 
-The fifth, **`hispanic-latino-stem-us`**, is slightly nonstandard: it
-was bootstrapped from a 2026-04-17 dogfood session audit and integrated
-into the 5-benchmark suite later. It carries extra artifacts from that
-original pass (`calls.jsonl`, `baseline.md`, review-queue state) that
-the other four don't have. See its per-topic README for the full map.
+**`hispanic-latino-stem-us`** is slightly nonstandard: it was
+bootstrapped from a 2026-04-17 dogfood session audit and integrated
+into the suite later. It carries extra artifacts from that original
+pass (`calls.jsonl`, `baseline.md`, review-queue state) that the
+others don't have. See its per-topic README for the full map.
 
 ## Per-topic layout (as of 2026-04-23)
 
@@ -146,7 +156,7 @@ shared storage, do it through a private mechanism — not this repo.
 ## Design notes
 
 - **Fresh AI-driven builds, scored against frozen gold.** Each ratchet
-  cycle starts a fresh AI-driven session for each of the 5 benchmark
+  cycle starts a fresh AI-driven session for each of the benchmark
   topics under a new topic name — the baseline topic is left
   untouched. The scoreboard measures the new run against the audited
   `gold.csv`. AI behaviour variance shows up in the results alongside

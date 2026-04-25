@@ -1,0 +1,72 @@
+# Centrality rubric — climate-change benchmark
+# Frozen 2026-04-25. A rubric change invalidates gold.csv and requires re-audit.
+
+CENTRAL — Articles directly about climate change / global warming and
+  its science, attribution, modeling, and projections; the IPCC and its
+  reports; named international climate agreements, conferences, and
+  frameworks (UNFCCC, Kyoto, Paris, every annual COP); the global
+  climate movement, named protests, and climate-policy campaigns;
+  climate impacts and effects (sea level rise, species range shifts,
+  climate-driven migration, climate-attributed extreme weather events,
+  ice sheet loss); climate-tipping-points and feedback mechanisms;
+  climate scientists, activists, and policy figures whose primary
+  notability is climate work; major climate NGOs / advocacy orgs /
+  governmental bodies whose mission is climate; "Climate change in
+  [country/region]" articles; named, climate-attributed extreme
+  weather events; annual "[year] in climate change" summaries.
+
+PERIPHERAL — Mitigation technologies and energy systems whose article
+  frames them in climate-response terms (renewable energy, solar /
+  wind / hydro, EVs, carbon capture and storage, nuclear power as
+  low-carbon, energy efficiency, green building, carbon markets,
+  ESG); paleoclimate, atmospheric science, and oceanography articles
+  whose subject is the climate-relevant mechanism (greenhouse-gas
+  chemistry at the aggregate level, methane clathrates, ocean
+  acidification, glacier hydrology, carbon cycle); deforestation and
+  land-use change articles, including "Deforestation in [country]";
+  biographies of scientists / activists / politicians whose climate
+  work is significant but not their primary identity; cultural works
+  about climate (films, novels, video games, art) when climate is the
+  explicit subject; environmental movements and orgs whose scope
+  includes climate; geographic / national energy-transition articles
+  ("Energy in [country]" when framed around decarbonization);
+  sustainability / circular-economy articles when the framing is
+  environmental.
+
+OUT — Petroleum geology, gas / oil industry processes that aren't
+  climate-framed (drilling, refining, well-completion, pipeline
+  operations); chemistry of methane / CO₂ / fluorocarbons unrelated
+  to atmospheric / climate context (industrial processes, food
+  chemistry, "carbonated" beverages, semiconductor uses, individual
+  fluorocarbon refrigerant articles); generic meteorology and weather
+  articles not framed as climate (everyday forecasting, generic storm
+  taxonomy, individual non-attributed weather events); generic
+  engineering articles about renewable-tech components when not
+  climate-framed (specific turbine bearings, panel-manufacturing
+  techniques); generic motor-vehicle articles even if low-emission;
+  biographies of energy-industry figures whose work is not climate-
+  centric; works of fiction with only incidental climate themes;
+  "X in popular culture" pages that mostly enumerate fiction;
+  generic country / capital-city articles surfaced via "by country"
+  list-page harvests; "Geography of [country]" articles.
+
+# Notes for auditors:
+# - Climate change is unusually well-organized on Wikipedia: a strong
+#   WikiProject (4,453 articles tagged), a dense category tree (depth-3
+#   safe pull = 2,933 articles), mature curated indexes (Index of
+#   climate change articles, Glossary of climate change). The build
+#   triangulates well — 32% multi-sourced in the 2026-04-25 baseline.
+# - Source-trust is reasonable on `wikiproject:Climate change` and on
+#   `category:Climate change` at depth ≤3 with chemistry-drift branches
+#   pruned (Methane / Greenhouse gases / Carbon dioxide / Sustainable
+#   energy excluded). Articles only-from-`list_page:Outline of solar
+#   energy` need stricter review — the source surfaces engineering /
+#   biographical noise alongside genuine periphery.
+# - The Toyota-vehicles pattern and the "Geography of [country]"
+#   pattern were both pruned in the baseline run; an audit classifier
+#   should re-block those pre-commit if it sees them re-appear.
+# - Climate activist (P106=Q61048378) Wikidata sitelinks are noisy:
+#   poets, actors, and celebrities-with-climate-causes are tagged with
+#   that property. Default PERIPHERAL when title-only, CENTRAL when the
+#   shortdesc explicitly identifies climate-activism as the primary
+#   role.

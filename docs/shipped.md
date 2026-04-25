@@ -315,6 +315,22 @@ Two new MCP tools — `list_exemplars(topic)` and `get_exemplar(slug, topic, all
 - **Runtime metadata field** `runtime: {agent, model, effort}` on `submit_feedback` so we can trend results across claude-code-opus-4.7 vs codex-gpt-5 vs different effort levels. Was filename-only before. Briefs ask the AI to populate from self-knowledge.
 - **Deferred:** full case studies for the 4 sibling exemplars (orchids has full; the rest are menu-card stubs). The crispr Codex run flagged this as `tool_friction: "own_exemplar_full_case_study_empty"` — real signal that authoring the rest is value, not polish.
 
+## climate-change benchmark + dogfood task + exemplar (2026-04-25)
+
+The project's origin topic — climate change was the test subject for the 2026-04-16 development phase that produced the project's load-bearing design principles (LLM-as-quality-gate, centrality-not-binary, periphery-edge-browsing, multi-strategy gather; see `docs/development-narrative.md`). The original build, executed via standalone Python scripts before the MCP server existed, reached 5,349 articles. This addition reproduces it through the current MCP tool surface and lands it as a full benchmark + brief + exemplar.
+
+- **Build (autonomous, MCP-server end-to-end):** 6,562 articles at 32% multi-source triangulation, 83 tool calls / 2,476 API calls / ~17 min wall, AI self-rating 8 / coverage 0.85. Strategies fired: WikiProject Climate change (4,453), depth-3 category sweep with chemistry-drift branches pruned (+1,402 net new), 7 list/index/glossary/outline harvests (+~700), CirrusSearch intitle/morelike (+~400), Wikidata P31/P101/P106 probes (+~140), edge-browse from periphery seeds (+72). Cleanup: redirect-resolution merged 436 dupes, filter dropped 256 disambig/list/meta, 42 Toyota-vehicle pattern, 70 "Geography of [country]" pattern, 18 hand-rejects. Exceeded the original 5,349-article build by ~1,200 via WikiProject + Wikidata-property + edge-browse layers the original couldn't reach.
+
+- **Benchmark scaffold:** `benchmarks/climate-change/{scope.md, rubric.txt, README.md, baseline.json, audit.py, runs/}` committed; `gold.csv` + `audit_summary.md` + `audit_notes.md` gitignored. First-pass keyword classifier landed 1,770 IN / 4,276 PERIPHERAL / 435 OUT / 81 uncertain (~1.2% uncertain — manageable for human follow-up). Sample-precision audit pending. `audit.py` follows the orchids source-trust pattern with chemistry-drift / Toyota / Geography / fluorocarbon-refrigerant exclusions, plus a noise-channel-gated geography-OUT rule that protects WikiProject-tagged articles from over-classification (Antarctica, the Africa Initiatives, etc.).
+
+- **Dogfood task brief:** `dogfood/tasks/climate-change-thin.md` follows the standard two-phase protocol; seeded into `dogfood_tasks` DB.
+
+- **Exemplar:** `dogfood/exemplars/climate-change.md` — full case study (391 lines), grounded in the actual run. Shape axes: well-organized public-policy + science + movement, scale "thousands," `layered_shape: multi-layered` (science core + institutions + movement + regional + mitigation tech + cultural tail), high non-Anglosphere depth, medium biography density, high canonical category coverage. Recall-ceiling driver: cross-wiki periphery + PetScan-style category∩template intersection (both unexploited in baseline). Seeded into `dogfood_exemplars` DB.
+
+- **Doc updates:** `docs/adding-exemplars.md` written as the recipe for future additions (covers shape-only exemplar / brief-only / full benchmark paths). `benchmarks/README.md`, `docs/ratchet-plan.md`, and `CLAUDE.md` updated to drop the fixed-five framing — suite size isn't sacred; new shapes get added when worth measuring.
+
+- **Ratchet inclusion:** deferred. Adds a "well-organized academic + movement" shape the existing five don't cover, but the per-cycle cost is meaningful (~2,500 API calls). Decision lives in operator hands per the rubric in `docs/adding-exemplars.md`.
+
 ## Ratchet gate logic — quality-first, cost as tiebreaker (2026-04-25)
 
 Earlier formulation ("must improve at least one cost metric without regressing quality") punished runs that legitimately improved recall at higher cost. CRISPR (52 → 92.5% recall) and orchids (50 → 96.9% recall) failed the gate despite being clear product wins. Wrong incentive. New formulation:
