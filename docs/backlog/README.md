@@ -296,6 +296,27 @@ Six wikis, six different names, one QID underneath. Each wrong guess costs a rou
 
 **Open questions.** How does the tool know what "class" the topic is? Inference from dominant categories? Explicit AI-provided? Probably explicit, documented in instructions.
 
+### ☐ Efficiency-mode runs (gold-aware) for exemplar authoring `[NEW — 2026-04-25]`
+
+**What.** A new dogfood task variant — call it `efficiency` — where the AI is given gold directly (read from `benchmarks/<slug>/gold.csv`, not via the server) and asked to *converge on baseline precision/recall with the fewest tool calls possible*. Inverts the discovery posture: instead of exploring blindly, the AI optimizes the path. Each run produces a tool-call sequence that hits baseline metrics — the minimal-viable strategy for that topic shape.
+
+**Why.** Discovery runs find articles at variable cost; efficiency runs find the *cheapest known path* to baseline-equivalent quality. The output is high-quality raw material for exemplar case studies — the documented tool sequence becomes "what we now know works for this shape, in this many calls." Closes the loop between dogfood evidence and exemplar content.
+
+**Privacy / measurement-integrity tradeoff.** This deliberately violates the gold-never-leaks invariant for these specific runs — that's the point. Efficiency runs are NOT measurement runs (we're not testing recall/precision blindly); they're optimization runs whose output is a tool sequence, not a corpus judgment. The invariant still holds for `thin` variant runs and for production users.
+
+**Shape.**
+- New brief variant `<slug>-efficiency` that explicitly hands gold to the AI ("here is the gold set; build the corpus matching it as cheaply as possible").
+- The brief points the AI at the local `gold.csv` (or surfaces it via a new server-side tool that returns gold for benchmark topics — TBD which is cleaner).
+- Goal: hit baseline ±0.5pp precision/recall with strictly fewer api_calls and tool_calls.
+- Output: the run's tool sequence + a short reflection on which moves were necessary vs ornamental. This feeds directly into exemplar case-study authoring.
+
+**Open questions.**
+- Server tool vs filesystem read? A server tool (`get_gold(slug)` for benchmark topics, refused otherwise) is more discoverable and doesn't require local file access. A filesystem read keeps the server's privacy gate intact for other contexts. Lean: server tool gated to known benchmark slugs.
+- Does this get its own separate scoreboard? Probably yes — quality "matched baseline within tolerance" + cost delta — different verdict shape than discovery runs.
+- How often run? Probably once per benchmark per substantive instruction/tool-surface change, treating efficiency-mode output as a refresh of the exemplar's case-study tool sequence.
+
+**Sequencing note.** Conceptually adjacent to the exemplar tools (Ship 2). Worth designing once we have a clearer sense of which exemplar case-studies need authoring (after a few more discovery runs land).
+
 ### ☐ Self-administered spot-check modality `[formerly 6.7]`
 
 **What.** Promote the "ask the user to name 3–5 niche examples" spot-check into a structured self-evaluation loop the AI can run without human input. Pairs with the Tier 1 `coverage_estimate` field — this item is the instruction changes that direct the AI into the loop.
