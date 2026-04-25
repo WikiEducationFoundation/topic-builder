@@ -18,6 +18,7 @@ import unicodedata
 import urllib.parse
 from pathlib import Path
 from mcp.server.fastmcp import FastMCP, Context
+from mcp.server.fastmcp.server import TransportSecuritySettings
 
 from wikipedia_api import (
     api_query, api_query_all, api_get, normalize_title, wiki_api_url,
@@ -127,9 +128,31 @@ except FileNotFoundError:
         "server_instructions.md is missing — running with a minimal stub."
     )
 
+# MCP 1.27+ enables DNS rebinding protection by default with an empty
+# allowed_hosts list, which means it rejects every Host header. Our
+# deployment is fronted by nginx with TLS termination on
+# topic-builder.wikiedu.org and the Python process binds to 127.0.0.1
+# only, so the DNS-rebinding threat model doesn't apply to this
+# deployment — but rather than disable the middleware entirely, we
+# allowlist the specific Host headers we actually accept. nginx
+# forwards `Host: $host` for production traffic; smoke tests against
+# the loopback ports use Host: 127.0.0.1:<port>.
+_ALLOWED_HOSTS = [
+    "topic-builder.wikiedu.org",
+    "127.0.0.1",
+    "127.0.0.1:8000",
+    "127.0.0.1:8001",
+    "localhost",
+    "localhost:8000",
+    "localhost:8001",
+]
+
 mcp = FastMCP(
     "Wikipedia Topic Builder",
     instructions=SERVER_INSTRUCTIONS,
+    transport_security=TransportSecuritySettings(
+        allowed_hosts=_ALLOWED_HOSTS,
+    ),
 )
 
 # Multi-worker setup: each worker process runs on a distinct port
