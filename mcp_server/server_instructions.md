@@ -135,7 +135,7 @@ strategies missed; let the AI (you) judge inclusion against the scope
   scope with the user in plain language:
 
     "So we're building <topic> on <wiki>.wikipedia.org — including
-     <A>, <B>, <C>, and excluding <D>. Does that sound right before I
+     < A >, < B >, < C >, and excluding < D >. Does that sound right before I
      start pulling?"
 
   To get there, converge through back-and-forth:
