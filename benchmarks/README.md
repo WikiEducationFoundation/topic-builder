@@ -114,7 +114,7 @@ rules are silent. The pattern (drop-in for any new benchmark's
 `audit.py`):
 
 ```python
-PRESERVE_FROM_FILE = {"in", "peripheral", "out", "redirect"}
+PRESERVE_FROM_FILE = {"in", "peripheral", "out", "redirect", "redlink"}
 preserved = []
 for row in body:
     title, prior, sources, score, desc, _notes = row
@@ -137,6 +137,49 @@ read as false-positive churn. `audit.py` is gitignored (it pairs
 names with judgments), so the safety net lives in each operator's
 local copy — but the pattern is documented here so new benchmarks
 inherit it.
+
+**Validate against Wikipedia ground truth (redlinks + redirects).**
+The keyword classifier in `audit.py` can label a title `in` /
+`peripheral` / `out` based on its name and description, but it can't
+tell whether the title actually has a Wikipedia article. Two facts
+the classifier can't infer:
+
+- The title might not exist on Wikipedia at all (`redlink`).
+- The title might be a redirect to a canonical article (`redirect`)
+  that's already in gold under its real name — counting both inflates
+  `gold_in` and depresses recall measurements.
+
+`benchmarks/audit_lib.py` provides `validate_gold_titles(gold_path,
+wiki="en")` — a shared helper that batches all `in` / `peripheral` /
+`redlink` / `redirect`-classified rows through the MediaWiki API
+(`prop=info`, redirects=1, batches of 50, rate-aware backoff) and
+updates the classification:
+
+- `missing` on Wikipedia → `redlink`
+- redirect → `redirect`, with target captured in the `notes` column
+- previously `redlink` but article now exists → `pending_audit`
+  (so the keyword classifier picks it up on next run)
+
+Idempotent. Every `audit.py`'s `main()` should call it as the last
+step (after the keyword classifier has written back), so existence
+ground truth trumps pattern-derived verdicts:
+
+```python
+import sys
+sys.path.insert(0, os.path.dirname(HERE))
+from audit_lib import validate_gold_titles  # noqa: E402
+
+# ... rest of audit.py ...
+
+def main():
+    # ... keyword classifier + safety net + write back ...
+    print()
+    validate_gold_titles(GOLD_PATH, wiki="en")
+```
+
+The helper itself lives in version control (`benchmarks/audit_lib.py`)
+since it contains no name-judgment pairs — only generic existence-
+checking logic. `audit.py` files remain gitignored.
 
 **Apply overlays** (if any — e.g. AA STEM has 20 WebFetch-resolved
 cases):
