@@ -36,6 +36,22 @@ Add new items here as signals come in; promote items to
 
 **Sequencing.** Small, independent. Ship before the next ratchet cycle so future runs aren't dependent on AI noticing the leak.
 
+### ☐ `preview_wikidata_property` titles-only output `[NEW — 2026-04-26]`
+
+**What.** A read-only sibling of `wikidata_entities_by_property` that returns just `{title, sitelink_count}` per result, without entity bodies. Same params, smaller payload.
+
+**Why.** `wikidata_entities_by_property(property=..., value=..., limit=500)` returns full entity records and routinely exceeds the MCP token cap. Hit twice in the 2026-04-26 climate-change phase-2 run (~73K chars per call). The AI's workaround was to read the tool-result file off-channel and parse it with python — fine for power users on local hosts, untenable for a published web skill where the AI doesn't have filesystem access.
+
+A titles-only mode lets the AI page through the full result set (use the title list to pick what to fetch in detail) without ever blowing the token cap. Pairs with the existing `wikidata-class-instance-enumeration` move where you typically want to page through hundreds of P31 instances.
+
+**Shape.** New tool `preview_wikidata_property(property, value, limit=500)` returning `{count, results: [{title, sitelink_count, qid}]}`. Reuse the existing `wikidata_entities_by_property` plumbing; just project to a smaller record. Existing tool stays for cases where the entity body is genuinely needed.
+
+**Open questions.**
+- Should the existing `wikidata_entities_by_property` also accept a `titles_only=True` flag instead of a separate tool? Lean separate tool — matches the `preview_*` convention used for `harvest_list_page`, `category_pull`, `similar`. Same shape, same naming.
+- Sort order: by sitelink_count descending (most-cited first) is the most useful default — surfaces the well-attested entities at the top of a long list.
+
+**Sequencing note.** Single-session evidence (climate-change 2026-04-26), but the failure shape (token-cap collision on a heavily-curated property) will recur on any large biography-axis Wikidata probe (P101 / P106 on big fields). Worth Tier 1 if a second session hits it.
+
 ### ☐ Capture agent / model / effort on `submit_feedback` `[NEW — 2026-04-25]`
 
 **What.** Add an optional `runtime` dict to `submit_feedback`:
