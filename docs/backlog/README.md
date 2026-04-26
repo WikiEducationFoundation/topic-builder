@@ -9,6 +9,7 @@ Sibling docs in this directory hold larger plans (deferred or in review):
 - `auth.md` — Wikipedia OAuth + paste-in-chat token flow.
 - `impact-visualizer.md` — publish_topic handle → Impact Visualizer import.
 - `exemplars-and-reach-pass.md` — `list_exemplars` + `get_exemplar` tools; preparatory-phase server-instructions posture; brief-driven two-phase dogfood (in review).
+- `composable-strategy-guidance.md` — decompositional complement to exemplars: shape-axis vocabulary, move catalog, failure-mode catalog, active scaffolding at `set_topic_rubric`, decomposed calibration. Three sequenced ships; subsumes 2026-04-24 proposed items A/B/C/D.
 
 Add new items here as signals come in; promote items to
 `../shipped.md` when they land.

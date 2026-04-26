@@ -331,6 +331,166 @@ The project's origin topic — climate change was the test subject for the 2026-
 
 - **Ratchet inclusion:** deferred. Adds a "well-organized academic + movement" shape the existing five don't cover, but the per-cycle cost is meaningful (~2,500 API calls). Decision lives in operator hands per the rubric in `docs/adding-exemplars.md`.
 
+## Composable strategy guidance — Ships 1 + 2 + 3 (2026-04-26)
+
+Three sequenced ships landing the decompositional strategy layer
+designed in `docs/backlog/composable-strategy-guidance.md`.
+Subsumes 2026-04-24-proposed items A (force-shape-first-move),
+B (calibrate-vs-signals), C (shape-typed wrap-up checklist),
+D (surface triangulation).
+
+### Ship 1 — info architecture, no server feature work
+
+- **`mcp_server/shape_axes.md`** (new, 17k chars) — canonical 8-axis
+  vocabulary used across exemplars, moves, failure modes, and
+  calibration. Per Sage's reframe, the `recall_ceiling_drivers`
+  axis is multi-valued + open-ended + AI-perceived (not a closed
+  enum), with 10 anchor names but explicit invitation to name
+  novel drivers including out-of-tool strategies.
+- **`mcp_server/strategy_moves.md`** (new, 26k chars) — 27 named
+  atomic strategy moves in 6 phases (recon, bulk gather, reach,
+  similarity, cleanup, audit). Each move has preconditions keyed
+  to shape axes, sequence, expected yield + noise, rescue.
+  Authored by synthesis from existing dogfood notes (orchids
+  exemplar + 2026-04-23 run-2 + 2026-04-24 thin-variant +
+  2026-04-25 nine-topic survey + SHAPE→PROPERTY table); every
+  entry maps to at least one observed case.
+- **`mcp_server/failure_modes.md`** (new, 22k chars) — 19 named
+  anti-patterns in 6 groups (topic-shape modeling, source-trust,
+  identity collisions, tool misuse, workflow/state, metacognitive).
+  Same authoring principle: every entry grounded in observed
+  evidence.
+- **`mcp_server/server_instructions.md`** (restructured, 50k → 55k)
+  — 13 thematic `##` section headers replacing the single
+  IMPORTANT GUIDELINES blob; SHAPE→WIKIDATA PROPERTY table
+  replaced with shape→moves index pointer; PREPARATORY PHASE
+  expanded to include topic-profile commit + move catalog browse
+  + failure-mode forecast; KNOWN SHARP EDGES preamble
+  cross-references the failure-mode catalog.
+- **`mcp_server/server.py`** — `_load_instructions()` reads the
+  three companion files at startup and concatenates with
+  `# Companion: <path>` separators so production MCP clients see
+  the catalogs in the instructions stream rather than as dead
+  file references. `mcp_server/deploy.sh` updated to bundle the
+  companion files.
+
+### Ship 2 — active scaffolding
+
+- **`set_topic_rubric` accepts `topic_profile: dict`** — the AI
+  commits its axis profile at the natural commit point; response
+  returns `applicable_moves` (catalog moves whose preconditions
+  match), `relevant_failure_modes`, `recommended_first_move` with
+  rationale, and `recall_ceiling_estimate` echoing AI-named
+  drivers. Powered by `_strategy_recommendations(profile)` helper
+  with explicit if/elif rules; back-compat preserved (omitting
+  `topic_profile` returns today's response).
+- **`describe_topic` adds 6 synthetic signals**: `triangulation_pct`
+  (always), `top_single_source_contributors` (always), full
+  `redirect_collapse` block from persisted metadata, full
+  `strategy_execution` block (`shape_strategies_attempted` from
+  `_TOOL_TO_MOVE` map of 24 tools, `shape_strategies_unused_but_applicable`
+  when profile is committed, `yield_last_n_calls` with
+  rising/plateau/declining/exhausted classifier requiring ≥4 samples).
+- **New `audit_progress(topic)` MCP tool** — read-only synthesis
+  of corpus state + usage log + catalogs into:
+  attempted_moves / unused_but_applicable / detected_failure_modes
+  (best-effort scanner covering ~8 of 19 catalog entries) /
+  yield_last_n_calls / one-paragraph recommendation. Cheap (~40ms,
+  zero API calls). Recommended pre-export gate; mid-build pivot
+  signal when yield trends declining.
+- **DB**: `metadata_json` column on topics with auto-migration;
+  `db.get_topic_metadata` / `db.update_topic_metadata` helpers.
+  `set_topic_rubric` persists profile; `resolve_redirects` writes
+  `last_redirect_collapse_pct` + timestamp + pre/post counts on
+  committed runs.
+
+### Ship 3 — decomposed calibration
+
+- **`submit_feedback` server-derives calibration band** —
+  `_compute_calibration_signals(topic_id, topic_name, spot_check)`
+  pulls triangulation_pct, attempted/applicable counts,
+  spot_check_hit_rate, redirect_collapse_rate, yield_trajectory
+  from corpus state + usage log + persisted metadata.
+  `_calibration_band(signals)` maps to low/moderate/high with
+  explicit thresholds (triangulation < 20% OR coverage < 50% →
+  low; ≥40% AND ≥75% AND not rising → high; else moderate;
+  tiny-corpus override skips triangulation rule for <50 articles).
+- **`coverage_estimate` accepts both old and new shapes**.
+  Old `{confidence, rationale, remaining_strategies}` works
+  unchanged; new `{ai_override, ai_override_rationale,
+  remaining_strategies}` is preferred and lets the AI override
+  the band-derived estimate while the override is captured
+  separately for trend analysis. Server response surfaces the
+  band + rationale + flags AI/server disagreement at submit time.
+- **New `strategy_execution` field on `submit_feedback`** —
+  AI supplies `moves_attempted` / `moves_succeeded` /
+  `moves_skipped_reason` / `failure_modes_observed`; server
+  auto-augments with `moves_observed_from_log` (from the
+  `_TOOL_TO_MOVE` map). Both stored for cross-reference; intent
+  vs observation comparison is itself a signal.
+- **`scripts/analyze_calibration.py`** (new) — post-hoc analysis
+  joining feedback records (with band + signals) to gold-derived
+  recall (where benchmarks exist). Tabulates band vs actual
+  recall + per-band summary; surfaces residual error against the
+  band-derivation thresholds. Reuses `benchmark_score.py`'s
+  `load_env` / `ssh_cmd` / `fetch_run_state`. The empirical input
+  for tuning the band thresholds; threshold values in
+  `_calibration_band` are explicit constants, tuned by residuals
+  not intuition.
+
+### Validation
+
+- **Ship 1 validation** (2026-04-25, before Ships 2+3): Brutalist
+  architecture build (841 articles, 12% triangulation). Confirmed
+  prep checklist works as a felt experience; mid-build profile
+  correction triggered cleanly when canonical_navbox=True profile
+  forecast was wrong (no Template:Brutalist architecture). Two
+  catalog refinements landed from this run:
+  `lossy-redirect-bio-to-non-bio` generalized to
+  `lossy-redirect-target-meaning-divergence`; `wp-intersect-category`
+  got a small-canonical-category caveat.
+- **Ships 2–3 validation** (2026-04-26): on-host smoke against
+  the validated Brutalist topic. `audit_progress` correctly
+  flagged `cross-wiki-gap-probe-lightweight` as
+  unused-but-applicable (matching the recall-ceiling driver named
+  pre-build) and named `wp-broader-than-topic` failure mode from
+  the profile's `dedicated_wp=broader-only` declaration.
+  `submit_feedback` band derivation: triangulation 12% → "low" with
+  rationale "triangulation 12.2% < 20% threshold."
+  Empirical end-to-end validation against an actual benchmark
+  (apollo-11 thin-variant) is the next test; `analyze_calibration.py`
+  will tabulate band vs gold-derived recall once that lands.
+
+### Known limitations / follow-ups
+
+- **Failure-mode auto-detection covers ~8 of 19 catalog entries.**
+  The rest need human judgement (eponym collisions, ambiguous
+  namesakes, adversarial categories without explicit profile flag,
+  list-page prose contamination, etc.). Catalog stays
+  authoritative; the scanner is a fast filter.
+- **Tool→move mapping is coarse** in `_TOOL_TO_MOVE`:
+  `harvest_navbox` always maps to `founder-navbox-cascade`, never
+  `parent-program-navbox`, even though Apollo-shape calls would
+  be the latter. Disambiguating requires parsing the template-name
+  parameter from the log entry.
+- **Recommendation logic is hardcoded if/elif rules**, not
+  catalog-parsed preconditions. Adding a move to
+  `strategy_moves.md` requires also adding a rule in
+  `_strategy_recommendations`. Maintenance discipline issue.
+- **Pre-Ship-2 topics** built before today won't have
+  `last_redirect_collapse_pct` populated until a fresh
+  `resolve_redirects` fires. Degrades to null cleanly; no
+  retroactive backfill needed.
+- **`yield_last_n_calls.trend` requires ≥4 samples** before it
+  classifies; tiny topics show "unknown" until enough corpus-
+  affecting calls have fired.
+- **Axis vocabulary doesn't distinguish topic-own-navbox vs
+  parent-program-navbox.** For Apollo-shape topics with
+  `canonical_navbox=True`, the recommended first move is
+  `parent-program-navbox`, but that move's rationale assumes a
+  parent program exists. Tweak for v2: add a
+  `parent_program_navbox_exists` sub-flag.
+
 ## Ratchet gate logic — quality-first, cost as tiebreaker (2026-04-25)
 
 Earlier formulation ("must improve at least one cost metric without regressing quality") punished runs that legitimately improved recall at higher cost. CRISPR (52 → 92.5% recall) and orchids (50 → 96.9% recall) failed the gate despite being clear product wins. Wrong incentive. New formulation:

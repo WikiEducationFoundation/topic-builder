@@ -115,18 +115,40 @@ def log_usage(ctx: Context, tool_name: str, params: dict | None = None,
 
 
 # Server instructions are maintained as Markdown in server_instructions.md
-# for readability and clean diffs. Edit that file to change AI guidance;
-# the running process reads it at startup, so a deploy + restart picks up
-# any change. If the file is missing, fall back to a minimal stub so the
-# server still boots (should never happen in a real deploy).
-_INSTRUCTIONS_PATH = Path(__file__).parent / "server_instructions.md"
-try:
-    SERVER_INSTRUCTIONS = _INSTRUCTIONS_PATH.read_text(encoding="utf-8")
-except FileNotFoundError:
-    SERVER_INSTRUCTIONS = (
-        "You are a Wikipedia topic mapping assistant. "
-        "server_instructions.md is missing — running with a minimal stub."
-    )
+# for readability and clean diffs. Three companion catalogs — shape_axes.md
+# (axis vocabulary), strategy_moves.md (named atomic moves), failure_modes.md
+# (named anti-patterns) — are appended at startup so production MCP clients
+# see them in the instructions stream rather than as dead file references.
+# Edit any of these files to change AI guidance; the running process reads
+# them at startup, so a deploy + restart picks up any change. If the main
+# file is missing, fall back to a minimal stub so the server still boots
+# (should never happen in a real deploy); missing companions are silently
+# omitted.
+_INSTRUCTIONS_DIR = Path(__file__).parent
+_INSTRUCTIONS_PATH = _INSTRUCTIONS_DIR / "server_instructions.md"
+_COMPANION_FILES = ["shape_axes.md", "strategy_moves.md", "failure_modes.md"]
+
+
+def _load_instructions() -> str:
+    try:
+        main = _INSTRUCTIONS_PATH.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return (
+            "You are a Wikipedia topic mapping assistant. "
+            "server_instructions.md is missing — running with a minimal stub."
+        )
+    parts = [main]
+    for name in _COMPANION_FILES:
+        path = _INSTRUCTIONS_DIR / name
+        try:
+            body = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            continue
+        parts.append(f"\n\n---\n\n# Companion: `mcp_server/{name}`\n\n{body}")
+    return "".join(parts)
+
+
+SERVER_INSTRUCTIONS = _load_instructions()
 
 # MCP 1.27+ enables DNS rebinding protection by default with an empty
 # allowed_hosts list, which means it rejects every Host header. Our
@@ -298,8 +320,179 @@ def reset_topic(note: str = "", topic: str | None = None, ctx: Context = None) -
     return f"Reset topic '{topic_name}'. Removed all {count} articles. Working list is now empty."
 
 
+def _strategy_recommendations(profile: dict) -> dict:
+    """Map a committed topic profile (axis values per shape_axes.md) to
+    the catalog moves whose preconditions match, plus the relevant
+    failure modes and a recommended first metered move.
+
+    Profile shape (all keys optional; unknowns degrade gracefully):
+      scale: "small" | "medium" | "large" | "huge"
+      structural_primitives: {
+        canonical_category: bool,
+        dedicated_wp: bool | "broader-only" | "registered-but-empty",
+        curated_list_pages: bool,
+        canonical_navbox: bool,
+        canonical_infobox: bool,
+      }
+      biographical_density: "high" | "medium" | "low"
+      multilinguality: "deep" | "moderate" | "shallow" | "english-dominant"
+      topic_vs_parent: "standalone" | "subtype-of-parent" |
+        "superset-of-children" | "peer-of-siblings"
+      time_profile: "recent" | "historical-bounded" | "ongoing" |
+        "multi-period"
+      periphery_type: "cultural" | "technical" | "political" | "minimal"
+      recall_ceiling_drivers: list[str] (open-ended; AI-perceived;
+        common anchors and out-of-tool strategies both welcome)
+    """
+    sp = profile.get("structural_primitives") or {}
+    has_canonical_cat = bool(sp.get("canonical_category"))
+    dedicated_wp = sp.get("dedicated_wp")
+    has_lists = bool(sp.get("curated_list_pages"))
+    has_navbox = bool(sp.get("canonical_navbox"))
+
+    bio = profile.get("biographical_density")
+    multi = profile.get("multilinguality")
+    parent_rel = profile.get("topic_vs_parent")
+    time_p = profile.get("time_profile")
+    scale = profile.get("scale")
+    drivers = profile.get("recall_ceiling_drivers") or []
+
+    moves: list[str] = []
+
+    # Always-applicable recon
+    moves.append("category-shape-survey-with-branch-identification")
+    moves.append("wikiproject-recon")
+    if has_lists or "curated_list_pages" not in sp:
+        moves.append("list-page-discovery-and-triage")
+    moves.append("topic-qid-resolution")
+
+    # Bulk gather
+    if has_canonical_cat:
+        moves.append("branch-excluded-category-sweep")
+    if dedicated_wp == "broader-only" and has_canonical_cat and scale != "small":
+        moves.append("wp-intersect-category")
+    if has_navbox:
+        moves.append("founder-navbox-cascade")
+    if time_p == "historical-bounded" and has_navbox:
+        moves.append("parent-program-navbox")
+    moves.append("wikidata-property-probe-additive")
+    if (not has_canonical_cat) and time_p == "recent":
+        moves.append("targeted-search-anchored-by-vocabulary")
+
+    # Reach
+    if multi in ("deep", "moderate") and scale != "huge":
+        moves.append("cross-wiki-gap-probe-lightweight")
+    if multi == "deep":
+        moves.append("parallel-wiki-build-and-walk-back")
+
+    # Cleanup
+    moves.append("redirect-resolution-pass")
+    moves.append("description-fetch-then-pattern-clean")
+    if bio == "high":
+        moves.append("shortdesc-ambiguity-disambiguation")
+
+    # Audit
+    moves.append("triangulation-audit")
+    moves.append("niche-example-fabrication-spot-check")
+
+    # Dedup, preserve order
+    seen: set[str] = set()
+    moves = [m for m in moves if not (m in seen or seen.add(m))]
+
+    # Failure modes flagged by the profile
+    failure_modes: list[str] = []
+    if has_canonical_cat:
+        failure_modes.append("adversarial-categories-under-topic-root")
+        failure_modes.append("fictional-X-bleeds-under-real-X-root")
+    if dedicated_wp == "broader-only":
+        failure_modes.append("wp-broader-than-topic")
+    if dedicated_wp == "registered-but-empty":
+        failure_modes.append("wp-registered-but-empty")
+    if parent_rel == "subtype-of-parent":
+        failure_modes.append("topic-is-subtype-of-parent")
+    if bio == "high":
+        failure_modes.append("profession-axis-implicit-leak")
+    if "consolidation-into-list-pages" in drivers:
+        failure_modes.append("consolidation-into-list-pages")
+    if "heritage-redirect-mass" in drivers or time_p == "historical-bounded":
+        failure_modes.append("heritage-redirect-mass")
+    if time_p == "historical-bounded" and not has_navbox:
+        failure_modes.append("main-article-context-link-noise")
+    # Metacognitive — worth surfacing on every profile so the AI watches
+    # for them in itself.
+    failure_modes.append("shape-typed-first-move-skipped")
+    failure_modes.append("calibration-pegged-at-protocol-following")
+
+    # Recommended first move — the highest-leverage call given profile
+    if has_navbox and time_p == "historical-bounded":
+        recommended = (
+            "parent-program-navbox",
+            "navbox is the highest-leverage first move on concentric-event "
+            "/ historical-bounded shapes; stitches across program / "
+            "agencies / facilities layers the flagship category alone misses",
+        )
+    elif has_canonical_cat:
+        recommended = (
+            "branch-excluded-category-sweep",
+            "canonical category is the bulk source; survey first at "
+            "depth=2 with count_articles=True to identify adversarial / "
+            "fictional / cultural-tail subcats for the exclude list",
+        )
+    elif time_p == "recent" or not has_canonical_cat:
+        recommended = (
+            "targeted-search-anchored-by-vocabulary",
+            "structurally-poor topics need vocabulary-led discovery as the "
+            "anchor; preview_search before commit",
+        )
+    else:
+        recommended = (
+            "wikiproject-recon",
+            "structural posture unclear — start with WP recon to find any "
+            "tagged backbone before committing to a gather strategy",
+        )
+
+    # Recall ceiling estimate — echo AI-named drivers with shape-keyed advice
+    drivers_text = ", ".join(drivers) if drivers else "none named"
+    if multi == "deep" and "cross-wiki-gap" in drivers:
+        ceiling_est = (
+            f"Drivers named: {drivers_text}. Cross-wiki gap is the "
+            "highest-leverage reach axis on multilinguality=deep topics; "
+            "don't declare done without cross-wiki-gap-probe-lightweight."
+        )
+    elif parent_rel == "subtype-of-parent":
+        ceiling_est = (
+            f"Drivers named: {drivers_text}. As subtype-of-parent, "
+            "category sweep on the parent over-pulls; Wikidata property "
+            "probe (additive) is the move that narrows."
+        )
+    elif drivers:
+        ceiling_est = (
+            f"Drivers named: {drivers_text}. Watch for them at audit time; "
+            "if any remain unaddressed at wrap-up, that's the honest "
+            "recall ceiling for this build."
+        )
+    else:
+        ceiling_est = (
+            "No ceiling drivers named. You're forecasting an honest cap; "
+            "if recall feels unbounded, name one as the audit anchor — "
+            "the absence of a ceiling driver IS itself a forecast worth "
+            "examining."
+        )
+
+    return {
+        "applicable_moves": moves,
+        "relevant_failure_modes": failure_modes,
+        "recommended_first_move": {
+            "name": recommended[0],
+            "rationale": recommended[1],
+        },
+        "recall_ceiling_estimate": ceiling_est,
+    }
+
+
 @mcp.tool()
-def set_topic_rubric(rubric: str, note: str = "",
+def set_topic_rubric(rubric: str, topic_profile: dict | None = None,
+                     note: str = "",
                      topic: str | None = None, ctx: Context = None) -> str:
     """Persist a centrality rubric for the active topic. Call this AFTER
     confirming scope with the user, BEFORE any gather call — the rubric
@@ -323,10 +516,40 @@ def set_topic_rubric(rubric: str, note: str = "",
     rubric is overwritten. When scope drifts mid-build, stop, update
     the rubric, then proceed.
 
+    Pass `topic_profile` to receive shape-keyed strategy guidance in
+    the response — applicable moves from `mcp_server/strategy_moves.md`,
+    relevant failure modes from `mcp_server/failure_modes.md`, a
+    recommended first metered move with rationale, and a recall-ceiling
+    estimate that echoes your named drivers. The profile uses the axis
+    vocabulary in `mcp_server/shape_axes.md`.
+
     Args:
         rubric: Prose rubric. Recommended ~100–500 chars across the
                 three sections — enough to be unambiguous without
                 becoming a policy document.
+        topic_profile: Optional dict committing the topic's axis profile.
+                Triggers the strategy-recommendation response. Shape:
+                {
+                  "scale": "small"|"medium"|"large"|"huge",
+                  "structural_primitives": {
+                    "canonical_category": bool,
+                    "dedicated_wp": bool|"broader-only"|"registered-but-empty",
+                    "curated_list_pages": bool,
+                    "canonical_navbox": bool,
+                    "canonical_infobox": bool,
+                  },
+                  "biographical_density": "high"|"medium"|"low",
+                  "multilinguality": "deep"|"moderate"|"shallow"|"english-dominant",
+                  "topic_vs_parent": "standalone"|"subtype-of-parent"|
+                    "superset-of-children"|"peer-of-siblings",
+                  "time_profile": "recent"|"historical-bounded"|"ongoing"|
+                    "multi-period",
+                  "periphery_type": "cultural"|"technical"|"political"|"minimal",
+                  "recall_ceiling_drivers": [<open-ended; common anchors in
+                    shape_axes.md, but novel namings welcome>]
+                }
+                Unknown axis values are tolerated. Profile is logged for
+                cross-session analysis.
         note: Optional free-text observation for this call's log entry.
         topic: Optional topic name. Pass if your client doesn't maintain
                an MCP session; otherwise uses the session's current topic.
@@ -340,12 +563,7 @@ def set_topic_rubric(rubric: str, note: str = "",
     db.set_topic_rubric(topic_id, rubric)
     _, topic_name, _ = _get_topic(ctx)
 
-    log_usage(ctx, "set_topic_rubric",
-              {"rubric_chars": len(rubric), "had_prior": bool(prior)},
-              f"rubric set ({len(rubric)} chars, "
-              f"{'revised' if prior else 'initial'})",
-              start_time=_start, note=note)
-    return json.dumps({
+    response: dict = {
         'topic': topic_name,
         'rubric': rubric,
         'rubric_chars': len(rubric),
@@ -355,7 +573,30 @@ def set_topic_rubric(rubric: str, note: str = "",
             'classify each candidate as CENTRAL / PERIPHERAL / OUT. '
             'Revise via set_topic_rubric again if a scope wrinkle surfaces.'
         ),
-    }, indent=2, ensure_ascii=False)
+    }
+
+    if topic_profile is not None:
+        # Persist the profile so describe_topic / audit_progress can
+        # cross-reference attempted moves against axis-applicable ones.
+        db.update_topic_metadata(topic_id, {"topic_profile": topic_profile})
+        response['topic_profile'] = topic_profile
+        response['strategy'] = _strategy_recommendations(topic_profile)
+        response['note'] += (
+            ' Shape-keyed strategy guidance returned in `strategy` — '
+            'cross-reference move names against `mcp_server/strategy_moves.md` '
+            'and failure modes against `mcp_server/failure_modes.md`.'
+        )
+
+    log_payload = {"rubric_chars": len(rubric), "had_prior": bool(prior)}
+    if topic_profile is not None:
+        log_payload["profile"] = topic_profile
+    log_usage(ctx, "set_topic_rubric", log_payload,
+              f"rubric set ({len(rubric)} chars, "
+              f"{'revised' if prior else 'initial'}"
+              f"{'; profile committed' if topic_profile is not None else ''})",
+              start_time=_start, note=note)
+
+    return json.dumps(response, indent=2, ensure_ascii=False)
 
 
 @mcp.tool()
@@ -482,6 +723,128 @@ def resume_topic(name: str, ctx: Context = None) -> str:
     return resumed
 
 
+# Tool-name → strategy-move-name mapping for shape_strategies_attempted
+# derivation. Some tools support multiple moves; we use the most common
+# interpretation. Entries set to None are support tools (fetch_descriptions,
+# resolve_qids, get_articles*) that don't represent a strategy move on
+# their own.
+_TOOL_TO_MOVE = {
+    "survey_categories": "category-shape-survey-with-branch-identification",
+    "preview_category_pull": "category-shape-survey-with-branch-identification",
+    "find_wikiprojects": "wikiproject-recon",
+    "check_wikiproject": "wikiproject-recon",
+    "get_wikiproject_articles": "wikiproject-recon",
+    "find_list_pages": "list-page-discovery-and-triage",
+    "wikidata_search_entity": "topic-qid-resolution",
+    "get_category_articles": "branch-excluded-category-sweep",
+    "harvest_navbox": "founder-navbox-cascade",
+    "harvest_list_page": "main-article-as-list-page",
+    "preview_harvest_list_page": "main-article-as-list-page",
+    "search_articles": "targeted-search-anchored-by-vocabulary",
+    "preview_search": "targeted-search-anchored-by-vocabulary",
+    "search_similar": "morelike-from-pure-topic-seed",
+    "preview_similar": "morelike-from-pure-topic-seed",
+    "wikidata_entities_by_property": "wikidata-property-probe-additive",
+    "wikidata_query": "wikidata-property-probe-additive",
+    "resolve_redirects": "redirect-resolution-pass",
+    "remove_by_pattern": "description-fetch-then-pattern-clean",
+    "auto_score_by_description": "auto-reject-by-disqualifying-shortdesc",
+    "remove_by_source": "source-targeted-noise-removal",
+    "fetch_article_leads": "shortdesc-ambiguity-disambiguation",
+    "browse_edges": "peripheral-edge-browse",
+    "describe_topic": "triangulation-audit",
+    # Note: cross-wiki-gap-probe-lightweight and parallel-wiki-build-and-walk-back
+    # require external SPARQL or cross-wiki workflow not detectable from a
+    # single tool-call signature. Not auto-detected.
+}
+
+
+def _classify_yield_trend(yields: list[int]) -> str:
+    """Classify a list of per-call yields (most recent last) into a
+    trend label. Empty / very-short → 'unknown'; otherwise compare the
+    most-recent half against the older half."""
+    if len(yields) < 4:
+        return "unknown"
+    half = len(yields) // 2
+    older = yields[:half]
+    recent = yields[-half:]
+    older_mean = sum(older) / len(older)
+    recent_mean = sum(recent) / len(recent)
+    if recent_mean < 2 and older_mean < 2:
+        return "exhausted"
+    if recent_mean < older_mean * 0.5:
+        return "declining"
+    if recent_mean > older_mean * 1.5:
+        return "rising"
+    return "plateau"
+
+
+def _topic_strategy_summary(topic_name: str,
+                            max_lines: int = 20000,
+                            window: int = 12) -> dict:
+    """Read recent usage-log entries for `topic_name` and derive:
+    - shape_strategies_attempted: deduped move names from _TOOL_TO_MOVE
+    - yield_last_n_calls: per-call yields (articles_count diff between
+      consecutive calls) over the last `window` corpus-affecting calls,
+      plus a trend label."""
+    log_path = os.path.join(LOG_DIR, 'usage.jsonl')
+    if not os.path.exists(log_path):
+        return {
+            "shape_strategies_attempted": [],
+            "yield_last_n_calls": {"samples": [], "trend": "no_log"},
+        }
+    try:
+        with open(log_path, 'r') as f:
+            lines = f.readlines()
+    except Exception:
+        return {
+            "shape_strategies_attempted": [],
+            "yield_last_n_calls": {"samples": [], "trend": "log_unreadable"},
+        }
+
+    moves: list[str] = []
+    moves_seen: set[str] = set()
+    yields: list[dict] = []
+    last_count: int | None = None
+    for line in lines[-max_lines:]:
+        try:
+            entry = json.loads(line)
+        except Exception:
+            continue
+        if entry.get('topic') != topic_name:
+            continue
+        tool = entry.get('tool')
+        if tool in _TOOL_TO_MOVE:
+            move = _TOOL_TO_MOVE[tool]
+            if move and move not in moves_seen:
+                moves.append(move)
+                moves_seen.add(move)
+        # Track corpus-affecting yield (delta in articles_count).
+        articles_count = entry.get('articles_count')
+        if articles_count is not None:
+            if last_count is not None:
+                delta = articles_count - last_count
+                if delta != 0:  # only record calls that mutated the corpus
+                    yields.append({
+                        "ts": entry.get('ts'),
+                        "tool": tool,
+                        "delta": delta,
+                    })
+            last_count = articles_count
+
+    samples = yields[-window:] if window > 0 else yields
+    trend = _classify_yield_trend([s["delta"] for s in samples
+                                    if s["delta"] > 0])
+    return {
+        "shape_strategies_attempted": moves,
+        "yield_last_n_calls": {
+            "samples": samples,
+            "trend": trend,
+            "window": window,
+        },
+    }
+
+
 def _topic_cost_summary(topic_name: str, max_lines: int = 20000) -> dict | None:
     """Aggregate per-topic cost from usage.jsonl: lifetime Wikipedia API
     calls, rate-limit hits, timeouts, and a recent-heavy-calls tail.
@@ -571,9 +934,20 @@ def describe_topic(top_first_words_limit: int = 20,
     """Shape-of-corpus overview for the current topic. Returns title
     length distribution, most-common first words, count of articles
     without descriptions, suspicious-pattern counts (year-prefixed,
-    all-caps, very-short titles), and source-shape stats (single-source
-    vs multi-source articles). Useful mid-flow to catch contamination
-    you'd otherwise only notice by paging `get_articles`.
+    all-caps, very-short titles), source-shape stats with
+    triangulation percentage, redirect-collapse-rate diagnostic from
+    the most recent resolve_redirects, and strategy-execution signals
+    (which named moves from `mcp_server/strategy_moves.md` have fired,
+    which axis-applicable moves remain unused, yield trend over the
+    last N corpus-affecting calls). Useful mid-flow to catch
+    contamination, calibration, and undertriangulation that you'd
+    otherwise only notice by paging `get_articles`.
+
+    The strategy-execution block is fully populated only after
+    `set_topic_rubric(topic_profile=...)` has committed an axis
+    profile; without one, only the attempted-moves list and yield
+    trend are computable. The triangulation_pct, redirect_collapse,
+    and yield trend are always populated.
 
     Think of it as `DataFrame.describe()` for a topic. Everything runs
     in-process against the current working list — no Wikipedia API
@@ -605,6 +979,7 @@ def describe_topic(top_first_words_limit: int = 20,
     one_word = 0
     very_short = 0
     source_counts: collections.Counter[str] = collections.Counter()
+    single_source_by_source: collections.Counter[str] = collections.Counter()
     single_source = 0
     multi_source = 0
 
@@ -634,6 +1009,7 @@ def describe_topic(top_first_words_limit: int = 20,
             source_counts[s] += 1
         if len(sources) == 1:
             single_source += 1
+            single_source_by_source[sources[0]] += 1
         elif len(sources) > 1:
             multi_source += 1
 
@@ -642,8 +1018,24 @@ def describe_topic(top_first_words_limit: int = 20,
         key=lambda kv: int(kv[0].split('_')[0])
     ))
 
+    triangulation_pct = (multi_source / total) if total > 0 else 0.0
+
+    # Strategy-execution signals (derived from usage log + persisted profile).
+    topic_name = _get_topic(ctx)[1]
+    strategy_summary = _topic_strategy_summary(topic_name)
+    metadata = db.get_topic_metadata(topic_id)
+    profile = metadata.get("topic_profile")
+
+    unused_applicable: list[str] = []
+    profile_applicable: list[str] = []
+    if profile:
+        applicable = _strategy_recommendations(profile)["applicable_moves"]
+        profile_applicable = applicable
+        attempted = set(strategy_summary["shape_strategies_attempted"])
+        unused_applicable = [m for m in applicable if m not in attempted]
+
     result = {
-        'topic': _get_topic(ctx)[1],
+        'topic': topic_name,
         'total_articles': total,
         'title_length_distribution': sorted_length_dist,
         'top_first_words': [
@@ -661,6 +1053,36 @@ def describe_topic(top_first_words_limit: int = 20,
             'total_sources': len(source_counts),
             'articles_with_single_source': single_source,
             'articles_with_multiple_sources': multi_source,
+            'triangulation_pct': round(triangulation_pct, 4),
+            # Top sources contributing single-sourced articles, sorted by
+            # count desc. Sources at the top of this list are NOT
+            # triangulating with the rest of the corpus — common for
+            # search-led pulls and one-off list-page harvests.
+            'top_single_source_contributors': [
+                {'source': s, 'single_sourced_count': c}
+                for s, c in single_source_by_source.most_common(10)
+            ],
+        },
+        'redirect_collapse': {
+            'last_collapse_pct': metadata.get('last_redirect_collapse_pct'),
+            'last_resolved_at': metadata.get('last_redirect_resolve_at'),
+            'last_pre_total': metadata.get('last_redirect_pre_total'),
+            'last_merged_duplicates': metadata.get(
+                'last_redirect_merged_duplicates'),
+            'diagnostic': (
+                'Collapse rate is a noise signal. <5% = clean editor '
+                'curation; 5–10% = normal; >10% suggests heritage / '
+                'transliteration / consolidation mass — investigate '
+                'before trusting source counts.'
+            ),
+        },
+        'strategy_execution': {
+            'shape_strategies_attempted': strategy_summary[
+                'shape_strategies_attempted'],
+            'shape_strategies_unused_but_applicable': unused_applicable,
+            'profile_committed': profile is not None,
+            'profile_applicable_moves_total': len(profile_applicable),
+            'yield_last_n_calls': strategy_summary['yield_last_n_calls'],
         },
         'centrality_rubric': db.get_topic_rubric(topic_id),
     }
@@ -671,10 +1093,456 @@ def describe_topic(top_first_words_limit: int = 20,
             'set_topic_rubric — CENTRAL / PERIPHERAL / OUT. The rubric '
             'frames all later review and is exported alongside the CSV.'
         )
+    if not profile:
+        result['profile_reminder'] = (
+            'No topic_profile committed for this topic yet. Pass '
+            'topic_profile to set_topic_rubric (axis vocabulary in '
+            'mcp_server/shape_axes.md) to unlock '
+            'shape_strategies_unused_but_applicable in this report.'
+        )
     log_usage(ctx, "describe_topic",
               {"top_first_words_limit": top_first_words_limit},
-              f"{total} articles", start_time=_start, note=note)
+              f"{total} articles, triangulation {triangulation_pct:.1%}",
+              start_time=_start, note=note)
     return json.dumps(result, indent=2, ensure_ascii=False)
+
+
+# ── Active scaffolding: failure-mode detection + audit_progress ─────────
+
+
+def _detect_failure_modes(topic_id: int, topic_name: str,
+                          profile: dict | None,
+                          strategy_summary: dict,
+                          metadata: dict,
+                          all_articles: dict) -> list[dict]:
+    """Scan corpus state + usage log for symptoms of named failure modes
+    from `mcp_server/failure_modes.md`. Returns a list of
+    {name, evidence, severity} dicts. Auto-detection is best-effort:
+    some failure modes (eponym-collisions, ambiguous-namesake) need
+    human review, others (adversarial-categories) need topic knowledge.
+    The catalog is the authoritative source; this is a fast scanner."""
+    matches: list[dict] = []
+    attempted = set(strategy_summary.get("shape_strategies_attempted") or [])
+
+    # 1. heritage-redirect-mass — collapse_pct > 0.10
+    collapse_pct = metadata.get("last_redirect_collapse_pct")
+    if collapse_pct is not None and collapse_pct > 0.10:
+        matches.append({
+            "name": "heritage-redirect-mass",
+            "severity": "warning",
+            "evidence": (
+                f"resolve_redirects collapsed "
+                f"{collapse_pct * 100:.1f}% of titles into canonicals "
+                f"(threshold: >10%). Heritage / transliteration / "
+                "consolidation mass; trust source counts cautiously."
+            ),
+        })
+
+    # 2. wp-registered-but-empty — get_wikiproject_articles returned 0
+    log_path = os.path.join(LOG_DIR, 'usage.jsonl')
+    if os.path.exists(log_path):
+        try:
+            with open(log_path, 'r') as f:
+                lines = f.readlines()
+        except Exception:
+            lines = []
+        for line in lines[-20000:]:
+            try:
+                entry = json.loads(line)
+            except Exception:
+                continue
+            if entry.get('topic') != topic_name:
+                continue
+            tool = entry.get('tool')
+            result = entry.get('result') or ''
+            params = entry.get('params') or {}
+            if tool == "get_wikiproject_articles" and result.startswith("0 "):
+                project = params.get("project", "<unknown>")
+                matches.append({
+                    "name": "wp-registered-but-empty",
+                    "severity": "info",
+                    "evidence": (
+                        f"WikiProject '{project}' tags 0 articles. "
+                        "Skip the WP source; rely on category + "
+                        "list-page + search."
+                    ),
+                })
+            # 3. profession-axis-implicit-leak — auto_score_by_description
+            #    with required_any axes
+            if tool == "auto_score_by_description":
+                axes = params.get("axes") or []
+                if axes:
+                    matches.append({
+                        "name": "profession-axis-implicit-leak",
+                        "severity": "warning",
+                        "evidence": (
+                            f"auto_score_by_description run with axes "
+                            f"{axes}. On intersectional bio topics, "
+                            "axes can reject genuine in-scope articles "
+                            "whose shortdesc elides the demographic. "
+                            "Sample-check rejections."
+                        ),
+                    })
+
+    # 4. shape-typed-first-move-skipped — recommended first move
+    #    not in attempted; only when profile is committed
+    if profile is not None:
+        rec = _strategy_recommendations(profile)
+        first_move = rec["recommended_first_move"]["name"]
+        if first_move not in attempted and attempted:
+            matches.append({
+                "name": "shape-typed-first-move-skipped",
+                "severity": "warning",
+                "evidence": (
+                    f"Profile recommended '{first_move}' as first "
+                    "move; it has not fired this session. "
+                    f"Rationale: {rec['recommended_first_move']['rationale']}"
+                ),
+            })
+
+    # 5. topic-is-subtype-of-parent — declared in profile
+    if profile and profile.get("topic_vs_parent") == "subtype-of-parent":
+        matches.append({
+            "name": "topic-is-subtype-of-parent",
+            "severity": "info",
+            "evidence": (
+                "Profile declares topic-vs-parent=subtype-of-parent. "
+                "Category sweep on the parent over-pulls; "
+                "wikidata-property-probe-additive is the move that "
+                "narrows. Filter post-pull on per-article inclusion."
+            ),
+        })
+
+    # 6. fictional-X-bleeds-under-real-X — source labels matching fiction-y
+    #    subcat names
+    fiction_pat = re.compile(
+        r"(fictional|fiction(?:\s+about)?|"
+        r"films?\s+(?:set\s+on|about)|"
+        r"novels?\s+(?:set\s+on|about)|"
+        r"works?\s+(?:set\s+on|about)|"
+        r"in\s+popular\s+culture)",
+        re.IGNORECASE)
+    fictional_sources: set[str] = set()
+    for art in all_articles.values():
+        for s in art.get("sources") or []:
+            if fiction_pat.search(s):
+                fictional_sources.add(s)
+    if fictional_sources:
+        sample = sorted(fictional_sources)[:3]
+        matches.append({
+            "name": "fictional-X-bleeds-under-real-X-root",
+            "severity": "info",
+            "evidence": (
+                f"Sources contain fiction-flavored labels: {sample}"
+                f"{' …' if len(fictional_sources) > 3 else ''}. "
+                "Real-world topic with fictional-content branches; "
+                "review per-article inclusion or remove_by_source."
+            ),
+        })
+
+    # 7. wp-broader-than-topic — declared in profile;
+    #    or get_wikiproject_articles brought in many articles relative
+    #    to canonical category
+    if profile:
+        sp = profile.get("structural_primitives") or {}
+        if sp.get("dedicated_wp") == "broader-only":
+            matches.append({
+                "name": "wp-broader-than-topic",
+                "severity": "info",
+                "evidence": (
+                    "Profile declares the WP is broader than the topic. "
+                    "Use wp-intersect-category move; pulling the WP "
+                    "alone bloats the working list with out-of-scope "
+                    "articles."
+                ),
+            })
+
+    return matches
+
+
+def _compute_calibration_signals(topic_id: int,
+                                 topic_name: str,
+                                 spot_check: dict | None,
+                                 ) -> dict:
+    """Pull the calibration signals from corpus state + usage log +
+    persisted metadata. Returns a dict with all numeric signals
+    populated (nullable when not derivable). Used by submit_feedback
+    to ground the calibration band in observable state rather than
+    a single AI vibe-call."""
+    all_articles = db.get_all_articles_dict(topic_id)
+    total = len(all_articles)
+    multi_source = sum(1 for a in all_articles.values()
+                       if len(a.get("sources") or []) > 1)
+    triangulation_pct = (multi_source / total) if total > 0 else 0.0
+
+    metadata = db.get_topic_metadata(topic_id)
+    profile = metadata.get("topic_profile")
+
+    strategy_summary = _topic_strategy_summary(topic_name)
+    attempted = strategy_summary["shape_strategies_attempted"]
+    yield_trajectory = strategy_summary["yield_last_n_calls"]["trend"]
+
+    applicable: list[str] = []
+    if profile:
+        applicable = _strategy_recommendations(profile)["applicable_moves"]
+
+    spot_check_hit_rate: float | None = None
+    if isinstance(spot_check, dict):
+        probes = spot_check.get("probes_count")
+        hits = spot_check.get("hits")
+        if probes and probes > 0 and hits is not None:
+            spot_check_hit_rate = hits / probes
+
+    return {
+        "triangulation_pct": round(triangulation_pct, 4),
+        "shape_strategies_attempted": len(attempted),
+        "shape_strategies_applicable": len(applicable),
+        "spot_check_hit_rate": (
+            round(spot_check_hit_rate, 4)
+            if spot_check_hit_rate is not None else None
+        ),
+        "redirect_collapse_rate": metadata.get("last_redirect_collapse_pct"),
+        "yield_trajectory": yield_trajectory,
+        "corpus_size": total,
+        "profile_committed": profile is not None,
+    }
+
+
+def _calibration_band(signals: dict) -> tuple[str, str]:
+    """Map the signal vector to a band ("low" | "moderate" | "high")
+    plus a server-supplied rationale. Thresholds are explicit so the
+    mapping is auditable across sessions; tune from analyze_calibration.py
+    output once we have a few cycles of data joined to gold-derived
+    recall."""
+    triangulation = signals.get("triangulation_pct") or 0.0
+    attempted = signals.get("shape_strategies_attempted") or 0
+    applicable = signals.get("shape_strategies_applicable") or 0
+    yield_trajectory = signals.get("yield_trajectory") or "unknown"
+    corpus_size = signals.get("corpus_size") or 0
+
+    # Coverage ratio: 0 when no profile committed (treat as "unknown
+    # coverage" — bias toward not promoting to high).
+    coverage_ratio = (attempted / applicable) if applicable > 0 else 0.0
+
+    # Tiny-corpus override: triangulation_pct is meaningless on <50
+    # articles. Don't penalize early builds.
+    tiny_corpus = corpus_size < 50
+
+    reasons: list[str] = []
+    if not tiny_corpus and triangulation < 0.20:
+        reasons.append(
+            f"triangulation {triangulation * 100:.1f}% < 20% threshold")
+    if applicable > 0 and coverage_ratio < 0.50:
+        reasons.append(
+            f"only {attempted}/{applicable} applicable moves attempted "
+            f"({coverage_ratio * 100:.0f}%)")
+
+    if reasons:
+        return ("low", "; ".join(reasons) + ".")
+
+    high_reasons: list[str] = []
+    if triangulation >= 0.40:
+        high_reasons.append(
+            f"triangulation {triangulation * 100:.1f}% above 40% threshold")
+    if applicable > 0 and coverage_ratio >= 0.75:
+        high_reasons.append(
+            f"{attempted}/{applicable} applicable moves attempted "
+            f"({coverage_ratio * 100:.0f}%)")
+
+    if (len(high_reasons) >= 2
+            and yield_trajectory != "rising"
+            and not tiny_corpus):
+        return ("high",
+                "; ".join(high_reasons) + (
+                    f"; yield trajectory '{yield_trajectory}' indicates "
+                    "plateau / exhaustion."
+                ))
+
+    # Default: moderate
+    parts = []
+    parts.append(f"triangulation {triangulation * 100:.1f}%")
+    if applicable > 0:
+        parts.append(f"{attempted}/{applicable} applicable moves attempted")
+    parts.append(f"yield trajectory '{yield_trajectory}'")
+    if tiny_corpus:
+        parts.append("corpus too small to evaluate triangulation")
+    return ("moderate",
+            ", ".join(parts) + " — neither low nor high triggers met.")
+
+
+def _synthesize_audit_recommendation(corpus_size: int,
+                                     triangulation_pct: float,
+                                     yield_trend: str,
+                                     unused_moves: list[str],
+                                     failure_modes: list[dict],
+                                     profile_committed: bool) -> str:
+    """Compose a one-paragraph recommendation from the audit signals."""
+    parts: list[str] = []
+
+    # Lead with corpus state
+    parts.append(f"Corpus is {corpus_size} articles at "
+                 f"{triangulation_pct * 100:.1f}% triangulation.")
+    if triangulation_pct < 0.20 and corpus_size > 50:
+        parts.append("Triangulation is below the 20% undertriangulated "
+                     "threshold — reach for an orthogonal source before "
+                     "wrapping.")
+    elif triangulation_pct >= 0.40:
+        parts.append("Triangulation is healthy; remaining gaps are "
+                     "unlikely to come from another bulk pull.")
+
+    # Yield trend
+    if yield_trend == "declining":
+        parts.append("Recent calls show declining yield; diminishing-returns "
+                     "curve is bending — consider wrap-up or pivot to a "
+                     "fundamentally different reach axis.")
+    elif yield_trend == "exhausted":
+        parts.append("Recent calls returned ~zero new articles; reach "
+                     "from current strategies is exhausted.")
+    elif yield_trend == "rising":
+        parts.append("Yield is rising — current strategy is paying; "
+                     "stay on it before pivoting.")
+
+    # Failure modes (top 2 by severity)
+    warnings = [f for f in failure_modes if f.get("severity") == "warning"]
+    if warnings:
+        names = ", ".join(f["name"] for f in warnings[:2])
+        parts.append(f"Active warning failure modes: {names}. See evidence "
+                     "list for what to do.")
+
+    # Unused applicable moves (top 2)
+    if profile_committed and unused_moves:
+        top_unused = unused_moves[:2]
+        parts.append(f"Highest-priority unused moves: {', '.join(top_unused)}. "
+                     "These were applicable per your committed profile but "
+                     "have not fired.")
+
+    if not profile_committed:
+        parts.append("No topic profile committed — pass topic_profile to "
+                     "set_topic_rubric to unlock unused-but-applicable move "
+                     "detection.")
+
+    return " ".join(parts)
+
+
+@mcp.tool()
+def audit_progress(note: str = "",
+                   topic: str | None = None, ctx: Context = None) -> str:
+    """Read-only diagnostic that synthesizes corpus state + usage log
+    + the move and failure-mode catalogs into a checklist of what's
+    been done, what's likely missing, and what's likely going wrong.
+
+    Pairs with `set_topic_rubric(topic_profile=...)`: pass the profile
+    once, then call `audit_progress` mid-build (when yield is
+    declining) or pre-export (as the wrap-up gate). Returns:
+
+    - `corpus`: total / triangulation_pct / redirect_collapse_pct
+    - `strategy_execution`:
+        attempted_moves (from usage log + tool→move map),
+        unused_but_applicable (from profile + move catalog),
+        yield_last_n_calls (samples + trend),
+    - `detected_failure_modes`: list of {name, evidence, severity}
+        matched by scanning corpus state + usage log against catalog
+        rules
+    - `recommendation`: one-paragraph synthesis with the highest-
+        leverage next move and any active warnings
+
+    Detection is best-effort and based on observable signals; it
+    misses failure modes that need human judgement (eponym collisions,
+    ambiguous namesakes, adversarial categories without explicit
+    profile flags). The catalog (`mcp_server/failure_modes.md`) is
+    authoritative; this scanner is a fast filter.
+
+    Cheap — runs in-process against the working list and the local
+    usage log. No Wikipedia API calls.
+
+    Args:
+        note: Optional free-text observation for this call's log entry.
+        topic: Optional topic name. Pass if your client doesn't
+               maintain an MCP session.
+    """
+    _start = _start_call()
+    topic_id, _wiki, err = _require_topic(ctx, topic)
+    if err:
+        return err
+
+    _, topic_name, _ = _get_topic(ctx)
+    all_articles = db.get_all_articles_dict(topic_id)
+    total = len(all_articles)
+    multi_source = sum(1 for a in all_articles.values()
+                       if len(a.get("sources") or []) > 1)
+    triangulation_pct = (multi_source / total) if total > 0 else 0.0
+
+    metadata = db.get_topic_metadata(topic_id)
+    profile = metadata.get("topic_profile")
+
+    strategy_summary = _topic_strategy_summary(topic_name)
+    yield_trend = strategy_summary["yield_last_n_calls"]["trend"]
+
+    unused_moves: list[str] = []
+    profile_applicable_count = 0
+    if profile:
+        rec = _strategy_recommendations(profile)
+        applicable = rec["applicable_moves"]
+        profile_applicable_count = len(applicable)
+        attempted_set = set(strategy_summary["shape_strategies_attempted"])
+        unused_moves = [m for m in applicable if m not in attempted_set]
+
+    failure_modes = _detect_failure_modes(
+        topic_id=topic_id,
+        topic_name=topic_name,
+        profile=profile,
+        strategy_summary=strategy_summary,
+        metadata=metadata,
+        all_articles=all_articles,
+    )
+
+    recommendation = _synthesize_audit_recommendation(
+        corpus_size=total,
+        triangulation_pct=triangulation_pct,
+        yield_trend=yield_trend,
+        unused_moves=unused_moves,
+        failure_modes=failure_modes,
+        profile_committed=profile is not None,
+    )
+
+    response = {
+        "topic": topic_name,
+        "corpus": {
+            "total_articles": total,
+            "triangulation_pct": round(triangulation_pct, 4),
+            "last_redirect_collapse_pct": metadata.get(
+                "last_redirect_collapse_pct"),
+        },
+        "strategy_execution": {
+            "attempted_moves": strategy_summary["shape_strategies_attempted"],
+            "unused_but_applicable": unused_moves,
+            "profile_committed": profile is not None,
+            "profile_applicable_moves_total": profile_applicable_count,
+            "yield_last_n_calls": strategy_summary["yield_last_n_calls"],
+        },
+        "detected_failure_modes": failure_modes,
+        "recommendation": recommendation,
+        "note": (
+            "Cross-reference move names against "
+            "`mcp_server/strategy_moves.md` and failure modes against "
+            "`mcp_server/failure_modes.md` for full preconditions, "
+            "rescues, and evidence."
+        ),
+    }
+
+    if not profile:
+        response["profile_reminder"] = (
+            "No topic_profile committed. Pass topic_profile to "
+            "set_topic_rubric (axis vocabulary in shape_axes.md) to "
+            "unlock unused-but-applicable detection in this report."
+        )
+
+    log_usage(ctx, "audit_progress",
+              {"profile_committed": profile is not None},
+              f"{total} articles, {len(failure_modes)} failure modes, "
+              f"{len(unused_moves)} unused moves",
+              start_time=_start, note=note)
+    return json.dumps(response, indent=2, ensure_ascii=False)
 
 
 # ── Reconnaissance tools ──────────────────────────────────────────────────
@@ -4047,6 +4915,20 @@ def resolve_redirects(dry_run: bool = False, note: str = "",
     else:
         result['committed'] = False
 
+    # Persist collapse stats so describe_topic can surface the rate as a
+    # noise diagnostic (>10% suggests heritage / consolidation patterns
+    # worth investigating). Only on a committed real run.
+    if not dry_run and result.get('committed') is True:
+        pre_total = len(titles)
+        collapse_pct = (merged_duplicates / pre_total) if pre_total > 0 else 0.0
+        db.update_topic_metadata(topic_id, {
+            "last_redirect_collapse_pct": round(collapse_pct, 4),
+            "last_redirect_resolve_at": datetime.datetime.now(
+                datetime.timezone.utc).isoformat(),
+            "last_redirect_pre_total": pre_total,
+            "last_redirect_merged_duplicates": merged_duplicates,
+        })
+
     result['cost'] = _cost_report(_start)
     log_usage(ctx, "resolve_redirects",
               {"dry_run": dry_run},
@@ -4833,6 +5715,7 @@ def submit_feedback(summary: str, what_worked: str = "", what_didnt: str = "",
                     phase_1_misses: list[dict] | None = None,
                     phase_1_confidence_recalibration: float | None = None,
                     runtime: dict | None = None,
+                    strategy_execution: dict | None = None,
                     topic: str | None = None, ctx: Context = None) -> str:
     """Submit a brief retrospective on this topic-building session so the
     Wiki Education team can improve the tool. Offer to call this at the end
@@ -4864,14 +5747,42 @@ def submit_feedback(summary: str, what_worked: str = "", what_didnt: str = "",
         note: Optional free-text observation for this call's log entry.
               Use for mid-flow reflection; empty by default.
         coverage_estimate: Optional dict capturing your self-estimated
-                           completeness at wrap-up. Shape:
+                           completeness at wrap-up. Two accepted shapes:
+
+                           Old (back-compat):
                              {"confidence": 0.0–1.0,
                               "rationale": "one-sentence why",
-                              "remaining_strategies": ["strategy1", ...]}
-                           `confidence` is how complete you think the corpus
-                           is relative to the scope. `remaining_strategies`
-                           lists tool shapes that DO exist but weren't applied
-                           this session.
+                              "remaining_strategies": [...]}
+
+                           New (decomposed; preferred):
+                             {"ai_override": 0.0–1.0 | null,
+                              "ai_override_rationale": "...",
+                              "remaining_strategies": [...]}
+
+                           Either way, the server auto-derives the
+                           calibration `signals` object (triangulation_pct,
+                           shape_strategies_attempted /_applicable,
+                           spot_check_hit_rate, redirect_collapse_rate,
+                           yield_trajectory) from corpus state + usage log
+                           + persisted profile, computes a `band`
+                           ("low" | "moderate" | "high") with explicit
+                           rationale, and stores all three on the feedback
+                           record. The `ai_override` field is for cases
+                           where domain knowledge tells you the band-
+                           derived estimate is wrong; explain in
+                           `ai_override_rationale`.
+        strategy_execution: Optional dict capturing your strategy execution
+                            log. Shape:
+                              {"moves_attempted": ["move-name", ...],
+                               "moves_succeeded": [<subset>],
+                               "moves_skipped_reason": {"move": "why", ...},
+                               "failure_modes_observed": ["mode-name", ...]}
+                            Move names from `mcp_server/strategy_moves.md`;
+                            failure mode names from
+                            `mcp_server/failure_modes.md`. The server also
+                            auto-derives `moves_attempted_observed` from
+                            tool calls in the usage log; both are stored
+                            for cross-reference.
         strategies_used: Optional list of tool-family tags capturing the
                          gather / review strategies you actually applied, in
                          rough order of usefulness. Suggested vocabulary:
@@ -4954,6 +5865,61 @@ def submit_feedback(summary: str, what_worked: str = "", what_didnt: str = "",
     except Exception:
         pass
 
+    # Resolve topic_id for signal derivation
+    lookup_id = tid
+    if not lookup_id and topic:
+        try:
+            lookup_id, _, _ = db.get_topic_by_name(topic)
+        except Exception:
+            lookup_id = None
+
+    # Auto-derive calibration signals + band from corpus state. Always
+    # computed when a topic is resolvable; degrades gracefully when
+    # signals are missing.
+    derived_signals: dict | None = None
+    band: str | None = None
+    band_rationale: str | None = None
+    if lookup_id:
+        try:
+            derived_signals = _compute_calibration_signals(
+                topic_id=lookup_id,
+                topic_name=resolved_topic,
+                spot_check=spot_check,
+            )
+            band, band_rationale = _calibration_band(derived_signals)
+        except Exception:
+            derived_signals = None
+
+    # Reshape coverage_estimate: merge AI input with derived signals + band
+    # under a stable structured schema. Old-shape input ({confidence:...})
+    # is preserved alongside the new fields for back-compat.
+    enriched_coverage: dict | None = None
+    if coverage_estimate is not None or derived_signals is not None:
+        enriched_coverage = {}
+        if coverage_estimate is not None:
+            # Preserve all AI-supplied fields verbatim
+            enriched_coverage.update(coverage_estimate)
+        if derived_signals is not None:
+            enriched_coverage["signals"] = derived_signals
+        if band is not None:
+            enriched_coverage["band"] = band
+            enriched_coverage["band_rationale"] = band_rationale
+
+    # Auto-derive strategy_execution observed-from-log and merge with any
+    # AI-supplied intent. Both are stored for cross-reference.
+    enriched_strategy: dict | None = None
+    if strategy_execution is not None or lookup_id:
+        enriched_strategy = {}
+        if strategy_execution is not None:
+            enriched_strategy.update(strategy_execution)
+        if lookup_id:
+            try:
+                summary_log = _topic_strategy_summary(resolved_topic)
+                enriched_strategy["moves_observed_from_log"] = (
+                    summary_log["shape_strategies_attempted"])
+            except Exception:
+                pass
+
     entry = {
         "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "topic": resolved_topic,
@@ -4964,8 +5930,8 @@ def submit_feedback(summary: str, what_worked: str = "", what_didnt: str = "",
         "what_didnt": what_didnt,
         "missed_strategies": missed_strategies,
     }
-    if coverage_estimate is not None:
-        entry["coverage_estimate"] = coverage_estimate
+    if enriched_coverage is not None:
+        entry["coverage_estimate"] = enriched_coverage
     if strategies_used is not None:
         entry["strategies_used"] = strategies_used
     if spot_check is not None:
@@ -4986,22 +5952,25 @@ def submit_feedback(summary: str, what_worked: str = "", what_didnt: str = "",
         entry["phase_1_confidence_recalibration"] = phase_1_confidence_recalibration
     if runtime is not None:
         entry["runtime"] = runtime
-    if tid or topic:
+    if enriched_strategy is not None:
+        entry["strategy_execution"] = enriched_strategy
+    if lookup_id:
         try:
-            lookup_id = tid
-            if not lookup_id and topic:
-                lookup_id, _, _ = db.get_topic_by_name(topic)
-            if lookup_id:
-                status = db.get_status(lookup_id)
-                entry["articles_count"] = status["total_articles"]
-                entry["scored_count"] = status["scored"]
+            status = db.get_status(lookup_id)
+            entry["articles_count"] = status["total_articles"]
+            entry["scored_count"] = status["scored"]
         except Exception:
             pass
 
     db.append_feedback(entry)
     log_params = {"topic": resolved_topic, "rating": rating}
+    # Old-shape fallback: AI may pass legacy {"confidence": ...}
     if isinstance(coverage_estimate, dict) and "confidence" in coverage_estimate:
         log_params["coverage_confidence"] = coverage_estimate.get("confidence")
+    if isinstance(coverage_estimate, dict) and "ai_override" in coverage_estimate:
+        log_params["coverage_ai_override"] = coverage_estimate.get("ai_override")
+    if band is not None:
+        log_params["coverage_band"] = band
     if phase is not None:
         log_params["phase"] = phase
     if isinstance(runtime, dict):
@@ -5010,10 +5979,36 @@ def submit_feedback(summary: str, what_worked: str = "", what_didnt: str = "",
             if v:
                 log_params[f"runtime_{k}"] = v
     log_usage(ctx, "submit_feedback", log_params,
-              f"feedback recorded ({len(summary)} chars)",
+              f"feedback recorded ({len(summary)} chars"
+              f"{f', band={band}' if band else ''})",
               start_time=_start, note=note)
-    return ("Thanks — feedback recorded. The Wiki Education team will review it. "
-            "Tell the user their feedback was submitted.")
+
+    # Enhanced response: surface the computed band + comparison to AI
+    # override (if any), so the calibration loop is visible at submit time.
+    response_lines = [
+        "Thanks — feedback recorded. The Wiki Education team will review it.",
+    ]
+    if band is not None and derived_signals is not None:
+        response_lines.append(
+            f"Calibration band: {band} — {band_rationale}"
+        )
+        if isinstance(coverage_estimate, dict):
+            ai_conf = coverage_estimate.get("confidence")
+            ai_override = coverage_estimate.get("ai_override")
+            if ai_conf is not None:
+                response_lines.append(
+                    f"Your stated confidence: {ai_conf}. Server-derived "
+                    f"band: {band}. If they disagree meaningfully, the "
+                    "ai_override field on coverage_estimate is the right "
+                    "place to record your domain-knowledge correction."
+                )
+            elif ai_override is not None:
+                response_lines.append(
+                    f"AI override recorded: {ai_override}."
+                )
+    response_lines.append(
+        "Tell the user their feedback was submitted.")
+    return " ".join(response_lines)
 
 
 if __name__ == "__main__":

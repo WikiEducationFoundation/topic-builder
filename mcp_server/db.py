@@ -119,6 +119,42 @@ def init_db():
     if 'centrality_rubric' not in topic_cols:
         conn.execute(
             "ALTER TABLE topics ADD COLUMN centrality_rubric TEXT NOT NULL DEFAULT ''")
+    # Migrate existing DBs that predate Ship 2 topic metadata. Stores a small
+    # JSON KV: topic_profile (axis values from shape_axes.md), and
+    # last_redirect_collapse stats (collapse pct + timestamp from the most
+    # recent resolve_redirects call). NULL/empty-dict means "no metadata
+    # captured yet" — backward-compatible with pre-Ship-2 topics.
+    if 'metadata_json' not in topic_cols:
+        conn.execute(
+            "ALTER TABLE topics ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}'")
+    conn.commit()
+    conn.close()
+
+
+def get_topic_metadata(topic_id):
+    """Return the topic's metadata KV dict, or {} if none."""
+    conn = _connect()
+    row = conn.execute("SELECT metadata_json FROM topics WHERE id = ?",
+                       (topic_id,)).fetchone()
+    conn.close()
+    if not row:
+        return {}
+    try:
+        import json
+        return json.loads(row['metadata_json'] or '{}')
+    except (ValueError, TypeError):
+        return {}
+
+
+def update_topic_metadata(topic_id, updates):
+    """Merge `updates` (a dict) into the topic's metadata KV. Existing keys
+    are overwritten by `updates`; keys not in `updates` are preserved."""
+    import json
+    current = get_topic_metadata(topic_id)
+    current.update(updates)
+    conn = _connect()
+    conn.execute("UPDATE topics SET metadata_json = ?, updated_at = datetime('now') "
+                 "WHERE id = ?", (json.dumps(current, ensure_ascii=False), topic_id))
     conn.commit()
     conn.close()
 

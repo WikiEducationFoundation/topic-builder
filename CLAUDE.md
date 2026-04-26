@@ -4,7 +4,7 @@
 
 An MCP server that helps an AI assistant identify every Wikipedia article belonging to an arbitrary subject, ending with a downloadable CSV ready for the Wiki Education [Impact Visualizer](https://github.com/WikiEducationFoundation/impact-visualizer). The AI drives the workflow; users steer it through conversation.
 
-The server runs at `https://topic-builder.wikiedu.org/mcp` and exposes ~50 tools across start/reset, reconnaissance, gathering, scoring, cleanup, export, feedback, and benchmark-run entry points. Two MCP clients matter right now: **Claude** (stateful sessions) and **ChatGPT** (stateless — opens a new session per tool call); Codex is the third and what we use for ratchet runs.
+The server runs at `https://topic-builder.wikiedu.org/mcp` and exposes ~51 tools across start/reset, reconnaissance, gathering, scoring, cleanup, review (incl. `audit_progress` diagnostic), export, feedback, and benchmark-run entry points. The AI-facing strategy substrate is split across `mcp_server/server_instructions.md` (pipeline + principles + sharp edges), `mcp_server/shape_axes.md` (canonical 8-axis topic-shape vocabulary), `mcp_server/strategy_moves.md` (27 named atomic moves with preconditions / sequence / yield / rescue), and `mcp_server/failure_modes.md` (19 named anti-patterns with detection cues + rescues); all four are concatenated into the FastMCP `instructions=` string at startup. Two MCP clients matter right now: **Claude** (stateful sessions) and **ChatGPT** (stateless — opens a new session per tool call); Codex is the third and what we use for ratchet runs.
 
 ## How we're evolving this system
 
