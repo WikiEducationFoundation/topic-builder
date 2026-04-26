@@ -64,7 +64,8 @@ def topic_to_slug(topic_name, slugs):
 
 def read_gold(slug):
     """Load the IN set from benchmarks/<slug>/gold.csv. Returns
-    a frozenset of titles classified `in`."""
+    a frozenset of titles classified `in` or `peripheral` (gold_in
+    in the scoreboard's recall-denominator sense)."""
     gold_path = os.path.join(BENCHMARKS_DIR, slug, "gold.csv")
     if not os.path.exists(gold_path):
         return None
@@ -72,11 +73,12 @@ def read_gold(slug):
     with open(gold_path, encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for row in reader:
-            classification = (row.get("classification")
+            classification = (row.get("on_topic")
+                              or row.get("classification")
                               or row.get("class")
                               or "").strip().lower()
             title = (row.get("title") or "").strip()
-            if title and classification == "in":
+            if title and classification in ("in", "peripheral"):
                 in_set.add(title)
     return frozenset(in_set)
 
@@ -206,6 +208,18 @@ def main():
             "residual_error"]
     print("| " + " | ".join(cols) + " |")
     print("|" + "|".join(["---"] * len(cols)) + "|")
+    def _fmt(v, fmt):
+        """Format a numeric field, gracefully handling string values
+        (older feedback used 'low'/'medium'/'high' for confidence)."""
+        if v is None:
+            return "—"
+        if isinstance(v, str):
+            return v
+        try:
+            return format(v, fmt)
+        except (TypeError, ValueError):
+            return str(v)
+
     for r in rows:
         att_app = (f"{r['attempted']}/{r['applicable']}"
                    if r['applicable'] else "—")
@@ -214,14 +228,12 @@ def main():
             r["topic"][:40],
             r["slug"],
             r["band"],
-            f"{r['ai_confidence']:.2f}" if r["ai_confidence"] is not None else "—",
-            f"{r['ai_override']:.2f}" if r["ai_override"] is not None else "—",
-            (f"{r['triangulation_pct']:.2%}"
-             if r["triangulation_pct"] is not None else "—"),
+            _fmt(r["ai_confidence"], ".2f"),
+            _fmt(r["ai_override"], ".2f"),
+            _fmt(r["triangulation_pct"], ".2%"),
             att_app,
             f"{r['actual_recall']:.2%}",
-            (f"{r['residual_error']:+.2f}"
-             if r['residual_error'] is not None else "—"),
+            _fmt(r['residual_error'], "+.2f"),
         ]) + " |")
 
     # Per-band summary
