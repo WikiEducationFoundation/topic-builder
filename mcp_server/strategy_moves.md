@@ -255,6 +255,65 @@ rescue:        if 0 results: the property isn't well-curated for this
                  topic class; skip and triangulate by other strategies
 ```
 
+## wikidata-occupation-and-field-paired-probe
+
+```
+preconditions: shape includes biography-heavy periphery (climate
+                 change, AI safety, public health, scientific-
+                 discipline or social-movement topics); topic QID
+                 is resolved; P101 (field of work) is a plausible
+                 probe.
+sequence:      run wikidata-property-probe-additive with
+                 P101=<topic QID> and capture results →
+               identify the canonical occupation QIDs members
+                 typically hold (climatologist, climate activist,
+                 epidemiologist, AI researcher, etc.); look them
+                 up via wikidata_search_entity if you don't know
+                 them →
+               run the same probe with P106=<occupation QID> for
+                 each. Treat both passes as additive.
+expected:      P101 catches researchers whose Wikidata explicitly
+                 tags their field as the topic. P106 catches
+                 historical and adjacent-field figures whose
+                 occupation matches the typical role but whose
+                 field-of-work is tagged differently. The two
+                 overlap heavily but each catches biographies the
+                 other misses by 30-40%.
+evidence:      climate-change run 2026-04-26 phase 2:
+                 P106=climatologist (Q1113838) added 51 historical
+                 scientists that P101=Q125928 had entirely missed
+                 — Humboldt, Halley, Wegener, Köppen, Milanković,
+                 Bjerknes, Plass, Callendar.
+rescue:        if you can't enumerate occupation QIDs cleanly,
+                 fall back to intitle searches over the canonical
+                 occupation noun + a topic-vocabulary anchor.
+```
+
+## wikidata-class-instance-enumeration
+
+```
+preconditions: topic includes well-defined named classes (UN
+                 Climate Change Conference, IPCC report, NATO
+                 summit, Olympic Games edition, Apollo mission,
+                 climate treaty); the class QID is identifiable.
+sequence:      identify the class QID via wikidata_search_entity
+                 (e.g., Q7888355 = UN Climate Change Conference) →
+               wikidata_entities_by_property(P31, <class-QID>) →
+               check sitelinks; add_articles for the missing ones.
+expected:      clean enumeration with very high precision —
+                 typically every result is a topic-class instance.
+                 Doubles as a precision check (everything returned
+                 should already be in corpus) AND a recall
+                 completeness probe (anything missing is a clear
+                 gap).
+evidence:      climate-change run 2026-04-26 phase 2: P31=Q7888355
+                 returned 33 COPs cleanly and surfaced 6 yearly
+                 conferences category+search had missed.
+rescue:        if the class returns >100 instances and you only
+                 want a sub-period, follow up with a SPARQL
+                 wikidata_query that adds a date-range filter.
+```
+
 ## genus-species-list-harvest
 
 ```
@@ -317,6 +376,38 @@ rescue:        if recall too low: morelike-from-pure-topic-seed
                  from the search-discovered articles, OR expand
                  the vocabulary set with named techniques /
                  sub-concepts
+```
+
+## intitle-canonical-phrasing-enumeration
+
+```
+preconditions: topic has multiple canonical phrasings (climate
+                 change / global warming / decarbonization / net
+                 zero / greenhouse gas; gun control / firearm
+                 regulation / Second Amendment; women in STEM /
+                 women in science / female scientists). Topics
+                 whose name in casual usage and in technical
+                 literature differ.
+sequence:      enumerate the canonical phrasing variants (3–7
+                 typical) →
+               for each: preview_search(query=intitle:<phrasing>)
+                 → review → add_articles, OR run them as a single
+                 compound intitle: query joined by OR (mind the
+                 query-length limit — CirrusSearch silently
+                 truncates long compound queries).
+expected:      phrasing variants frequently disagree on which
+                 articles they title-match; "climate change"-
+                 titled articles miss "global warming"-titled ones
+                 and vice versa. Per-variant yield typically
+                 10-100 new articles depending on phrasing
+                 diversity.
+evidence:      climate-change run 2026-04-26 phase 2: enumerating
+                 "deforestation" / "global warming" / "greenhouse
+                 gas" / "carbon emission" added 101 articles after
+                 phase 1 had only run "climate change".
+rescue:        if a variant returns 0 net-new: its hits are already
+                 covered by other variants — skip and don't enumerate
+                 deeper.
 ```
 
 ## geographic-feature-class-probe
@@ -440,6 +531,41 @@ WARNING:       avoid seeding from polymaths or politically-prominent
 rescue:        if seed turned out polymath-shaped: revert via
                  remove_by_source("search:morelike:<seed>") and
                  reseed from a concept/work
+```
+
+## morelike-anchor-cluster-from-rubric-layers
+
+```
+preconditions: phase-2 reach extension OR your rubric distinguishes
+                 multiple layers (science core / policy / movement /
+                 cultural / regional, etc.) and you want each layer's
+                 neighborhood probed.
+sequence:      pick 5–8 anchor articles, one per rubric layer
+                 (climate-change example: Carbon-tax for policy,
+                 Climate-movement for activism, Effects-of-climate-
+                 change for impacts, Climate-change-denial for
+                 controversy, Carbon-dioxide-in-the-atmosphere for
+                 science core) →
+               for each: preview_similar(seed_article=<anchor>,
+                                         limit=20) →
+               filter low-noise candidates → add_articles.
+expected:      cheap reach-extension at low noise per anchor.
+                 Each anchor contributes 2-8 finds on average; the
+                 cumulative cluster of 5-8 anchors is the value —
+                 reaches into corners of the topic that single-
+                 anchor morelike misses by being too central.
+WARNING:       same polymath caveat as morelike-from-pure-topic-
+                 seed — pick concept/event/work anchors, not
+                 biographical hub nodes.
+evidence:      climate-change run 2026-04-26 phase 2: 5 anchors
+                 added 23 articles cumulatively for low cost
+                 (Carbon-tax, Climate-movement, Climate-change-
+                 denial, Effects-of-climate-change, Carbon-dioxide-
+                 in-the-atmosphere).
+rescue:        if an anchor returned 0 finds, it's saturated by
+                 your existing corpus — pick a different layer
+                 representative; don't keep digging on a single
+                 axis.
 ```
 
 ## intersection-via-source-overlap
