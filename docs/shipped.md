@@ -331,6 +331,19 @@ The project's origin topic — climate change was the test subject for the 2026-
 
 - **Ratchet inclusion:** deferred. Adds a "well-organized academic + movement" shape the existing five don't cover, but the per-cycle cost is meaningful (~2,500 API calls). Decision lives in operator hands per the rubric in `docs/adding-exemplars.md`.
 
+## Exemplar integrity gate fix — slug-normalization leak (2026-04-26)
+
+Surfaced mid-run in the 2026-04-26 apollo-11 dogfood: the AI saw an
+`apollo-11` card in `list_exemplars` while running the apollo-11
+benchmark and recognized it as a measurement-integrity leak the gate
+should have caught. Root cause: `_slugify` doesn't fold hyphens, so
+templated run-topic names like `apollo-11-thin 20260426T0123` slugify
+to `apollo-11-thin_20260426t0123` and never equal exemplar slug
+`apollo-11` under exact match. Fix: new `_topic_matches_exemplar`
+helper that accepts exact match plus prefix-followed-by-`-`-or-`_`,
+applied in both `list_exemplars` (filter) and `get_exemplar` (gate).
+Commit `c4e70d0`.
+
 ## Composable strategy guidance — Ships 1 + 2 + 3 (2026-04-26)
 
 Three sequenced ships landing the decompositional strategy layer

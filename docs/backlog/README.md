@@ -26,7 +26,7 @@ Add new items here as signals come in; promote items to
 
 ## Tier 1 — small, high-leverage
 
-### ☐ Exemplar integrity gate leaks via slug normalization `[NEW — 2026-04-26]`
+### ☑ Exemplar integrity gate leaks via slug normalization `[shipped 2026-04-26]`
 
 **What.** `list_exemplars` / `get_exemplar` normalize the requested slug (e.g. lower-casing, hyphen folding) before lookup, but the integrity gate that hides an exemplar when the active topic matches its benchmark slug compares against the *raw* (un-normalized) slug. Result: an exemplar for benchmark `apollo-11` remains visible in the menu and fetchable while a run on the same benchmark is in progress, defeating the gate.
 
