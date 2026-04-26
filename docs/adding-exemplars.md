@@ -212,6 +212,33 @@ exemplars are still useful — the menu card teaches shape-matching
 even when the case study isn't fleshed out yet. A future build can
 upgrade the stub by replacing it with a real-run-grounded version.
 
+### Cross-exemplar references must carry the caveats
+
+The AI reads many exemplars in a single session — own-topic gated
+to phase 2, others freely accessible in phase 1. If your exemplar
+references another topic ("the navbox cascade pattern that works
+for Apollo 11"), the AI may act on that reference WITHOUT reading
+the source exemplar. The reference becomes a load-bearing claim.
+
+Two safe patterns:
+
+1. **Make the reference self-contained**, with the relevant caveat
+   inline:
+   > "the parent-program navbox cascade — Apollo 11's
+   > `Template:Apollo program` works with ~75% noise, see
+   > apollo-11 exemplar's anti-patterns — has nothing to anchor
+   > here"
+2. **Explicitly tell the AI to consult the source**:
+   > "...see apollo-11 exemplar before treating this as a clean
+   > recipe."
+
+Avoid bare contrastive references like "X works for Apollo 11" —
+that reads as an endorsement and the AI will skip the source. The
+2026-04-26 orchids run cited the orchids exemplar's "navbox-
+cascade works for Apollo 11" framing as justification for
+`harvest_navbox("Apollo11series")` as the first metered move,
+without consulting the apollo-11 exemplar's noise-rate caveat.
+
 ## Path B: exemplar + dogfood task brief
 
 If you want an AI to be able to fetch and execute the topic via

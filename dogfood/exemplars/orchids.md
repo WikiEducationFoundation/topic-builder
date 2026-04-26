@@ -41,8 +41,10 @@ canonical category (`Category:Orchids`) of decent depth, no
 dedicated WikiProject (just the broader WikiProject Plants), no
 family-level navbox (`Template:Orchidaceae` and `Template:Orchids`
 both don't exist on enwiki — there's no equivalent to
-`Template:Apollo program` for the family), but rich Wikidata: P171
-(parent taxon) is densely populated for orchid taxa.
+`Template:Apollo program` for the family — and even there the
+parent-program navbox cascades with ~75% noise, see the apollo-11
+exemplar's anti-patterns), but rich Wikidata: P171 (parent taxon)
+is densely populated for orchid taxa.
 
 **Summary.** A complete build needs three layers: a category-tree
 mass pull for taxa (precision-safe because the topic-named category
@@ -262,9 +264,10 @@ two-phase):
 
 - **Probing for `Template:Orchidaceae` or `Template:Orchids`.**
   Neither exists on enwiki. There is no family-level navbox for
-  orchids. The navbox-cascade move that works for "Apollo 11" or
-  "single Tour de France" doesn't apply here. If you need a
-  navbox-type signal, use `get_article_templates(title="Orchid",
+  orchids. The parent-program navbox-cascade move applied
+  elsewhere — Apollo program for Apollo 11, with substantial
+  cleanup — has nothing to anchor here. If you need a navbox-type
+  signal, use `get_article_templates(title="Orchid",
   filter="navbox")` to enumerate what's actually used on the
   canonical article.
 
