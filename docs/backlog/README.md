@@ -26,6 +26,32 @@ Add new items here as signals come in; promote items to
 
 ## Tier 1 — small, high-leverage
 
+### ☐ Pagination for `get_article_links` and `get_article_backlinks` `[NEW — 2026-04-26]`
+
+**What.** Both seed-mining tools currently accept `limit=` (default 500, hard-cap 5000) and return `truncated=True` when the result set is larger, with no way to fetch the next page. Add a `continue_token` to the response and accept it as an input arg so the caller can paginate.
+
+**Why.** Hit immediately on the 2026-04-26 apollo-11-thin run — phase-1 feedback flagged: *"get_article_links truncated at 500 with no continuation token; main A11 article links to ~1000+ items per article body but I could only see the first 500 — likely undercounts neighborhood probes."* The hard 5000-cap matters more for `get_article_backlinks`: prominent articles have 10K+ backlinks (Apollo 11 has ~15K), and the seed-mining strategy explicitly wants to walk the long tail at low signal density. Without pagination, the AI is stuck with whatever's in the first window.
+
+**Shape.** MediaWiki's API already supports continuation natively — `plcontinue` for `prop=links`, `blcontinue` for `list=backlinks`. The current code-paths break out of the loop when `len() >= limit`; instead, the loop should capture the API's continue cursor at the truncation boundary and return it. New input arg `continue_token: str | None = None` is forwarded into the params on the next call.
+
+```python
+# response shape:
+{
+    "title": "Apollo 11",
+    "count": 500,
+    "truncated": true,
+    "continue_token": "links|123|Foo",   # opaque to the AI; passes back as-is
+    "links": [...],
+}
+```
+
+**Open questions.**
+- Same pagination shape for both tools, or unify under a shared helper? Lean unified — both use `_paginate_query(prop_or_list, ...)`.
+- Cap `limit` lower by default (200?) since pagination makes higher caps less load-bearing, or keep at 500? Lean keep at 500 — most cases are satisfied in one call; pagination is for the long-tail outliers.
+- For `get_article_backlinks` specifically: should we offer a "first-N-then-stop" cursor by signal density (e.g., stop when the title prefix changes, or when description doesn't mention the topic)? Probably not in v1 — let the AI manage cursor traversal.
+
+**Sequencing.** Tier 1 — small change, immediate user (the next apollo run will use the new toolkit). No schema change to anything persisted.
+
 ### ☑ Exemplar integrity gate leaks via slug normalization `[shipped 2026-04-26]`
 
 **What.** `list_exemplars` / `get_exemplar` normalize the requested slug (e.g. lower-casing, hyphen folding) before lookup, but the integrity gate that hides an exemplar when the active topic matches its benchmark slug compares against the *raw* (un-normalized) slug. Result: an exemplar for benchmark `apollo-11` remains visible in the menu and fetchable while a run on the same benchmark is in progress, defeating the gate.
