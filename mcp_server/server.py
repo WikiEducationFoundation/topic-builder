@@ -31,6 +31,7 @@ from wikipedia_api import (
     wikidata_sparql as _wikidata_sparql,
     wikidata_entities_by_property as _wikidata_entities_by_property,
     wikidata_search_entity as _wikidata_search_entity,
+    WIKIDATA_API as _WIKIDATA_API,
 )
 import db
 
@@ -1967,6 +1968,631 @@ def find_list_pages(subject: str, wiki: str | None = None,
               f"{len(filtered)} pages (of {len(all_candidates)} candidates)",
               start_time=_start, note=note)
     return json.dumps(result, indent=2, ensure_ascii=False)
+
+
+# ── Seed-anchored mining ──────────────────────────────────────────────────
+#
+# Mine every connection from a single canonical article: outgoing links,
+# incoming links, the categories the article belongs to, the navbox /
+# infobox / WikiProject templates it uses, the full Wikidata property
+# dump on its QID. Especially valuable for sparse-resource topics
+# (single named events, single named works) where category sweep alone
+# undersells recall — the canonical article aggregates connections
+# that are otherwise scattered across the topic's structural primitives.
+#
+# All five are read-only candidate generators. Review the returned
+# titles, then commit the relevant ones via `add_articles(...)` with a
+# source label like `seed:<title>:links`.
+
+def _default_wiki(ctx, topic):
+    """Resolve wiki from explicit topic arg, or from session topic, or 'en'."""
+    if topic:
+        topic_id, w, _ = _require_topic(ctx, topic)
+        if w:
+            return w
+    if ctx is not None:
+        tid, _name, w = _get_topic(ctx)
+        if w:
+            return w
+    return 'en'
+
+
+@mcp.tool()
+def get_article_links(title: str, wiki: str | None = None,
+                      limit: int = 500, namespace: int = 0,
+                      note: str = "",
+                      topic: str | None = None,
+                      ctx: Context = None) -> str:
+    """Return mainspace internal links FROM the given article (outgoing).
+
+    Seed-anchored gather: a canonical topic article like "Apollo 11"
+    links to ~200-400 mainspace articles spanning crew, hardware,
+    sites, samples, cultural artifacts, and adjacent missions.
+    Use as a candidate generator for the topic's first-degree
+    neighborhood; pair with `get_article_categories`,
+    `get_article_templates`, `get_article_backlinks` for a complete
+    seed-anchored sweep.
+
+    Free read-only tool. Does not modify the working list. To add
+    selected links, follow up with `add_articles(titles=[...],
+    source="article_links:<title>")`.
+
+    Args:
+        title: Canonical article title (e.g., "Apollo 11").
+        wiki: Wikipedia language code. Default: topic's wiki, or 'en'.
+        limit: Max links to return (default 500, hard-capped at 5000).
+        namespace: MediaWiki namespace ID (default 0 = mainspace).
+        topic: Optional topic name for stateless clients.
+    """
+    _start = _start_call()
+    if wiki is None:
+        wiki = _default_wiki(ctx, topic)
+    limit = max(1, min(int(limit), 5000))
+
+    params = {
+        'action': 'query',
+        'titles': title,
+        'prop': 'links',
+        'plnamespace': str(int(namespace)),
+        'pllimit': 'max',
+        'redirects': '1',
+        'format': 'json',
+        'formatversion': '2',
+    }
+    links: list[str] = []
+    seen: set[str] = set()
+    truncated = False
+    while True:
+        data = api_get(wiki_api_url(wiki), params)
+        for page in data.get('query', {}).get('pages', []) or []:
+            for link in page.get('links', []) or []:
+                t = normalize_title(link.get('title', ''))
+                if not t or t in seen:
+                    continue
+                seen.add(t)
+                links.append(t)
+                if len(links) >= limit:
+                    truncated = True
+                    break
+            if truncated:
+                break
+        if truncated or 'continue' not in data:
+            break
+        params.update(data['continue'])
+
+    log_usage(ctx, "get_article_links",
+              {"title": title, "wiki": wiki, "namespace": namespace,
+               "limit": limit},
+              f"{len(links)} links{' (truncated)' if truncated else ''}",
+              start_time=_start, note=note)
+    return json.dumps({
+        'wiki': wiki,
+        'title': title,
+        'namespace': namespace,
+        'count': len(links),
+        'truncated': truncated,
+        'links': links,
+        'note': (
+            'Review the titles, then commit the relevant ones via '
+            f'add_articles(titles=[...], source="article_links:{title}").'
+        ),
+    }, indent=2, ensure_ascii=False)
+
+
+@mcp.tool()
+def get_article_backlinks(title: str, wiki: str | None = None,
+                          limit: int = 500, namespace: int = 0,
+                          filter_redirects: str = "all",
+                          note: str = "",
+                          topic: str | None = None,
+                          ctx: Context = None) -> str:
+    """Return mainspace articles that link TO the given article ("what
+    links here", incoming links).
+
+    Seed-anchored gather: prominent articles can have thousands of
+    backlinks (Apollo 11 has ~15K), so the long tail is mostly trivial
+    mentions. Cap aggressively with `limit`; the highest-signal
+    backlinks tend to come first because MediaWiki returns them in
+    page-id order (older, more central articles first). For systematic
+    review, harvest in batches and filter by category co-membership or
+    description-keyword match.
+
+    Free read-only tool. Does not modify the working list. To add
+    selected items, follow up with `add_articles(titles=[...],
+    source="article_backlinks:<title>")`.
+
+    Args:
+        title: Article that backlinks point at (e.g., "Apollo 11").
+        wiki: Wikipedia language code. Default: topic's wiki, or 'en'.
+        limit: Max backlinks to return (default 500, hard-capped at 5000).
+        namespace: MediaWiki namespace ID (default 0 = mainspace).
+        filter_redirects: 'all' (default), 'redirects', 'nonredirects'.
+                          Usually 'nonredirects' is what you want — a
+                          redirect's backlinks are almost always
+                          duplicates of the canonical article's.
+        topic: Optional topic name for stateless clients.
+    """
+    _start = _start_call()
+    if wiki is None:
+        wiki = _default_wiki(ctx, topic)
+    limit = max(1, min(int(limit), 5000))
+    if filter_redirects not in ('all', 'redirects', 'nonredirects'):
+        return json.dumps({
+            'error': f"filter_redirects must be 'all', 'redirects', or "
+                     f"'nonredirects' (got {filter_redirects!r})"
+        }, indent=2, ensure_ascii=False)
+
+    params = {
+        'action': 'query',
+        'list': 'backlinks',
+        'bltitle': title,
+        'blnamespace': str(int(namespace)),
+        'bllimit': 'max',
+        'blfilterredir': filter_redirects,
+        'format': 'json',
+        'formatversion': '2',
+    }
+    backlinks: list[str] = []
+    truncated = False
+    while True:
+        data = api_get(wiki_api_url(wiki), params)
+        for item in data.get('query', {}).get('backlinks', []) or []:
+            t = normalize_title(item.get('title', ''))
+            if not t:
+                continue
+            backlinks.append(t)
+            if len(backlinks) >= limit:
+                truncated = True
+                break
+        if truncated or 'continue' not in data:
+            break
+        params.update(data['continue'])
+
+    log_usage(ctx, "get_article_backlinks",
+              {"title": title, "wiki": wiki, "namespace": namespace,
+               "filter_redirects": filter_redirects, "limit": limit},
+              f"{len(backlinks)} backlinks{' (truncated)' if truncated else ''}",
+              start_time=_start, note=note)
+    return json.dumps({
+        'wiki': wiki,
+        'title': title,
+        'namespace': namespace,
+        'filter_redirects': filter_redirects,
+        'count': len(backlinks),
+        'truncated': truncated,
+        'backlinks': backlinks,
+        'note': (
+            'Backlinks are returned in page-id order; older / more central '
+            'articles appear first. Review and filter; commit via '
+            f'add_articles(titles=[...], source="article_backlinks:{title}"). '
+            'On prominent topics the long tail is mostly trivial mentions — '
+            'consider sampling rather than exhaustive review.'
+        ),
+    }, indent=2, ensure_ascii=False)
+
+
+@mcp.tool()
+def get_article_categories(title: str, wiki: str | None = None,
+                           include_hidden: bool = False,
+                           note: str = "",
+                           topic: str | None = None,
+                           ctx: Context = None) -> str:
+    """Return the categories the given article belongs to.
+
+    Seed-anchored gather: the canonical article's category list reveals
+    the structural primitives Wikipedia uses to organize the topic.
+    Each category is a candidate for descent via `get_category_articles`,
+    or for cross-reference against the topic's own categories. A topic
+    article like "Apollo 11" typically belongs to ~10-15 visible
+    categories — the program category, the year category, named-after
+    categories, classification categories.
+
+    Free read-only tool. Does not modify the working list. Use the
+    returned category names as inputs to `survey_categories` /
+    `get_category_articles` if you want to descend any of them.
+
+    Args:
+        title: Article title (e.g., "Apollo 11").
+        wiki: Wikipedia language code. Default: topic's wiki, or 'en'.
+        include_hidden: If True, also return hidden categories (mostly
+                        maintenance / tracking categories — usually noise
+                        for topic-discovery purposes). Default False.
+        topic: Optional topic name for stateless clients.
+    """
+    _start = _start_call()
+    if wiki is None:
+        wiki = _default_wiki(ctx, topic)
+
+    params = {
+        'action': 'query',
+        'titles': title,
+        'prop': 'categories',
+        'cllimit': 'max',
+        'redirects': '1',
+        'format': 'json',
+        'formatversion': '2',
+    }
+    if not include_hidden:
+        params['clshow'] = '!hidden'
+
+    categories: list[str] = []
+    while True:
+        data = api_get(wiki_api_url(wiki), params)
+        for page in data.get('query', {}).get('pages', []) or []:
+            for c in page.get('categories', []) or []:
+                t = normalize_title(c.get('title', ''))
+                # Strip "Category:" prefix to keep the names usable in
+                # downstream get_category_articles calls.
+                if ':' in t:
+                    _, bare = t.split(':', 1)
+                    if bare:
+                        categories.append(bare)
+        if 'continue' not in data:
+            break
+        params.update(data['continue'])
+
+    log_usage(ctx, "get_article_categories",
+              {"title": title, "wiki": wiki,
+               "include_hidden": include_hidden},
+              f"{len(categories)} categories",
+              start_time=_start, note=note)
+    return json.dumps({
+        'wiki': wiki,
+        'title': title,
+        'include_hidden': include_hidden,
+        'count': len(categories),
+        'categories': categories,
+        'note': (
+            'Each category is a descent candidate. Use survey_categories '
+            'to size before pulling, or get_category_articles to commit. '
+            'The topic-named category (e.g. "Apollo 11") is usually the '
+            'topic-definitional core; sibling categories ("1969 in '
+            'spaceflight", "Crewed missions to the Moon") expand the '
+            'periphery axis-by-axis.'
+        ),
+    }, indent=2, ensure_ascii=False)
+
+
+@mcp.tool()
+def get_article_templates(title: str, wiki: str | None = None,
+                          filter: str | None = None,
+                          limit: int = 500,
+                          note: str = "",
+                          topic: str | None = None,
+                          ctx: Context = None) -> str:
+    """Return the templates used on the given article (or its talk page,
+    for the wikiproject filter).
+
+    Seed-anchored gather: an article's template list enumerates the
+    navboxes and infoboxes it uses — each navbox is a `harvest_navbox`
+    target. The talk-page template list reveals which WikiProjects
+    claim the article. Both signals are otherwise hard to discover.
+
+    Free read-only tool. Does not modify the working list.
+
+    Args:
+        title: Article title (e.g., "Apollo 11"). For
+               `filter='wikiproject'`, the talk page is queried instead.
+        wiki: Wikipedia language code. Default: topic's wiki, or 'en'.
+        filter: Filter mode:
+            None (default) — return all templates (navboxes, infoboxes,
+                              citations, hatnotes, maintenance, etc.).
+            'navbox' — heuristic filter to navbox-shaped templates
+                       (names containing common navbox suffixes /
+                       prefixes). Imperfect but usually right.
+            'infobox' — heuristic filter to infobox-shaped templates.
+            'wikiproject' — query the article's TALK page and filter to
+                            WikiProject:* templates. WikiProject claims
+                            live on talk, not the article itself.
+        limit: Max templates to return (default 500, hard-capped at 5000).
+        topic: Optional topic name for stateless clients.
+    """
+    _start = _start_call()
+    if wiki is None:
+        wiki = _default_wiki(ctx, topic)
+    limit = max(1, min(int(limit), 5000))
+    valid_filters = (None, 'navbox', 'infobox', 'wikiproject')
+    if filter not in valid_filters:
+        return json.dumps({
+            'error': f"filter must be one of {valid_filters} (got {filter!r})"
+        }, indent=2, ensure_ascii=False)
+
+    # WikiProject claims live on the talk page.
+    query_title = f"Talk:{title}" if filter == 'wikiproject' else title
+
+    params = {
+        'action': 'query',
+        'titles': query_title,
+        'prop': 'templates',
+        'tlnamespace': '10',  # Template: namespace
+        'tllimit': 'max',
+        'redirects': '1',
+        'format': 'json',
+        'formatversion': '2',
+    }
+    raw_templates: list[str] = []
+    truncated = False
+    while True:
+        data = api_get(wiki_api_url(wiki), params)
+        for page in data.get('query', {}).get('pages', []) or []:
+            for tpl in page.get('templates', []) or []:
+                t = normalize_title(tpl.get('title', ''))
+                if ':' in t:
+                    _, bare = t.split(':', 1)
+                    if bare:
+                        raw_templates.append(bare)
+                        if len(raw_templates) >= limit:
+                            truncated = True
+                            break
+            if truncated:
+                break
+        if truncated or 'continue' not in data:
+            break
+        params.update(data['continue'])
+
+    # Apply heuristic filters in Python.
+    def is_navbox(name: str) -> bool:
+        n = name.lower()
+        return any(s in n for s in (
+            'navbox', 'sidebar')) or n.startswith((
+            'list of ',))
+
+    def is_infobox(name: str) -> bool:
+        n = name.lower()
+        return n.startswith('infobox')
+
+    if filter == 'navbox':
+        templates = [t for t in raw_templates if is_navbox(t)]
+        filter_note = "heuristic: name contains 'navbox' or 'sidebar'"
+    elif filter == 'infobox':
+        templates = [t for t in raw_templates if is_infobox(t)]
+        filter_note = "heuristic: name starts with 'Infobox'"
+    elif filter == 'wikiproject':
+        templates = [t for t in raw_templates
+                     if t.lower().startswith('wikiproject')]
+        filter_note = "queried Talk: page; filtered to WikiProject:*"
+    else:
+        templates = raw_templates
+        filter_note = "all templates (no filter)"
+
+    log_usage(ctx, "get_article_templates",
+              {"title": title, "query_title": query_title, "wiki": wiki,
+               "filter": filter, "limit": limit},
+              f"{len(templates)} templates "
+              f"(filtered from {len(raw_templates)})"
+              f"{' (truncated)' if truncated else ''}",
+              start_time=_start, note=note)
+    return json.dumps({
+        'wiki': wiki,
+        'title': title,
+        'query_title': query_title,
+        'filter': filter,
+        'filter_note': filter_note,
+        'count': len(templates),
+        'raw_count': len(raw_templates),
+        'truncated': truncated,
+        'templates': templates,
+        'note': (
+            'For navboxes: feed each name into harvest_navbox(template) '
+            'to enumerate the navbox\'s curated articles. For '
+            'wikiprojects: feed each into check_wikiproject / '
+            'get_wikiproject_articles. Infoboxes are not directly '
+            'harvestable but reveal the topic\'s structured-data shape '
+            '(useful when planning Wikidata property probes).'
+        ),
+    }, indent=2, ensure_ascii=False)
+
+
+@mcp.tool()
+def wikidata_get_entity(qid: str, properties: list[str] | None = None,
+                        languages: list[str] | None = None,
+                        note: str = "",
+                        topic: str | None = None,
+                        ctx: Context = None) -> str:
+    """Return the Wikidata entity's full property dump and sitelinks.
+
+    Seed-anchored gather: every property+value claim on the topic's
+    QID points at related entities. Use this BEFORE
+    `wikidata_entities_by_property` to discover which properties are
+    even populated for the topic — saves blind probing of irrelevant
+    properties (e.g., for a 1969 historical event, P138 has 4 entries
+    while P361 has dozens — knowing this in advance avoids the failed
+    probes).
+
+    Free read-only tool. One Wikidata API call.
+
+    Args:
+        qid: Wikidata Q-id (e.g., "Q43653" for Apollo 11).
+        properties: Optional list of P-ids to filter to. Default: all
+                    properties present on the entity. Pass to keep
+                    response size down on entities with hundreds of
+                    properties.
+        languages: Languages to return labels in. Default ['en'].
+        topic: Optional topic name for stateless clients.
+    """
+    _start = _start_call()
+    qid = qid.strip()
+    if not qid or not qid.startswith(('Q', 'P')):
+        return json.dumps({
+            'error': f"Expected a QID like 'Q43653' or PID like 'P31'; "
+                     f"got {qid!r}",
+        }, indent=2, ensure_ascii=False)
+    langs = languages or ['en']
+
+    params = {
+        'action': 'wbgetentities',
+        'ids': qid,
+        'format': 'json',
+        'formatversion': '2',
+        'languages': '|'.join(langs),
+        'props': 'labels|descriptions|claims|sitelinks/urls',
+    }
+    if properties:
+        params['props'] = 'labels|descriptions|claims|sitelinks/urls'
+    data = api_get(_WIKIDATA_API, params)
+    entity = (data or {}).get('entities', {}).get(qid)
+    if not entity or entity.get('missing'):
+        return json.dumps({
+            'error': f"Entity {qid!r} not found on Wikidata",
+        }, indent=2, ensure_ascii=False)
+
+    # Project claims to a compact form: {P-id: [{value_qid, value_label,
+    #                                             value_type}]}.
+    claims_raw = entity.get('claims', {}) or {}
+    claims = {}
+    for pid, statements in claims_raw.items():
+        if properties and pid not in properties:
+            continue
+        rows = []
+        for st in statements:
+            mainsnak = st.get('mainsnak', {})
+            datavalue = mainsnak.get('datavalue', {})
+            value = datavalue.get('value')
+            value_type = datavalue.get('type', 'unknown')
+            if value_type == 'wikibase-entityid' and isinstance(value, dict):
+                rows.append({'value_qid': value.get('id'),
+                             'value_type': 'wikibase-item'})
+            elif value_type == 'string':
+                rows.append({'value': value, 'value_type': 'string'})
+            elif value_type == 'time' and isinstance(value, dict):
+                rows.append({'value': value.get('time'), 'value_type': 'time'})
+            elif value_type == 'monolingualtext' and isinstance(value, dict):
+                rows.append({'value': value.get('text'),
+                             'language': value.get('language'),
+                             'value_type': 'monolingualtext'})
+            else:
+                rows.append({'value': str(value)[:200], 'value_type': value_type})
+        if rows:
+            claims[pid] = rows
+
+    label = (entity.get('labels', {}) or {}).get(langs[0], {}).get('value', '')
+    description = (entity.get('descriptions', {}) or {}).get(langs[0], {}).get('value', '')
+
+    sitelinks_raw = entity.get('sitelinks', {}) or {}
+    # Project to a compact {wiki: title} dict.
+    sitelinks = {}
+    for site, sl in sitelinks_raw.items():
+        if site.endswith('wiki'):
+            wiki_code = site[:-len('wiki')]
+            sitelinks[wiki_code] = sl.get('title', '')
+
+    log_usage(ctx, "wikidata_get_entity",
+              {"qid": qid, "properties": properties, "languages": langs},
+              f"{len(claims)} property classes, {len(sitelinks)} sitelinks",
+              start_time=_start, note=note)
+    return json.dumps({
+        'qid': qid,
+        'label': label,
+        'description': description,
+        'property_classes': len(claims),
+        'claims': claims,
+        'sitelinks': sitelinks,
+        'note': (
+            'Each property class is a probe candidate: pass the P-id + a '
+            'value-QID to wikidata_entities_by_property. Properties with '
+            'many values may be productive bulk probes; properties with '
+            '1-2 values usually aren\'t worth a separate call. Sitelinks '
+            'reveal which language-wikis cover the topic — useful for '
+            'cross-language sweeps.'
+        ),
+    }, indent=2, ensure_ascii=False)
+
+
+@mcp.tool()
+def get_article_content(title: str, wiki: str | None = None,
+                        max_chars: int = 30000,
+                        note: str = "",
+                        topic: str | None = None,
+                        ctx: Context = None) -> str:
+    """Return the canonical article's plain-text content (no markup,
+    no infoboxes, no references) — the RTFA move.
+
+    Reading the canonical article gives the AI domain context that
+    pure structural signals (categories, navboxes, Wikidata) don't
+    carry: section structure, prose mentions of named items not
+    necessarily linked, the article's own framing of what's in scope
+    vs. peripheral, terminology and vocabulary the article uses.
+    Useful as a planning input before drawing the rubric, and as a
+    cross-check during cleanup ("the article describes X as central
+    — why isn't it in my corpus?").
+
+    Pair with the other seed-mining tools (`get_article_links`,
+    `get_article_categories`, `get_article_templates`) for a full
+    seed-anchored sweep. Or use standalone before scoping to inform
+    the rubric.
+
+    Free read-only tool. One MediaWiki API call.
+
+    Args:
+        title: Canonical article title.
+        wiki: Wikipedia language code. Default: topic's wiki, or 'en'.
+        max_chars: Truncate plain text at this many characters
+                   (default 30000). Apollo 11's full extract is ~25K
+                   chars; Climate change ~80K. Truncation cuts at the
+                   nearest paragraph boundary.
+        topic: Optional topic name for stateless clients.
+    """
+    _start = _start_call()
+    if wiki is None:
+        wiki = _default_wiki(ctx, topic)
+    max_chars = max(500, min(int(max_chars), 200000))
+
+    params = {
+        'action': 'query',
+        'titles': title,
+        'prop': 'extracts',
+        'explaintext': '1',
+        'exsectionformat': 'plain',
+        'exlimit': '1',
+        'redirects': '1',
+        'format': 'json',
+        'formatversion': '2',
+    }
+    data = api_get(wiki_api_url(wiki), params)
+    pages = data.get('query', {}).get('pages', []) or []
+    if not pages or pages[0].get('missing'):
+        return json.dumps({
+            'wiki': wiki,
+            'title': title,
+            'error': 'Article not found.',
+        }, indent=2, ensure_ascii=False)
+
+    page = pages[0]
+    canonical_title = page.get('title', title)
+    extract = page.get('extract', '') or ''
+    full_len = len(extract)
+
+    truncated = False
+    if full_len > max_chars:
+        # Cut at the nearest paragraph break before max_chars; fall back
+        # to a hard cut if no break is found in the trailing window.
+        cut = extract.rfind('\n\n', 0, max_chars)
+        if cut < int(max_chars * 0.7):
+            cut = max_chars
+        extract = extract[:cut].rstrip() + '\n\n[…truncated]'
+        truncated = True
+
+    log_usage(ctx, "get_article_content",
+              {"title": title, "wiki": wiki, "max_chars": max_chars},
+              f"{full_len} chars{' (truncated)' if truncated else ''}",
+              start_time=_start, note=note)
+    return json.dumps({
+        'wiki': wiki,
+        'title': canonical_title,
+        'requested_title': title,
+        'full_chars': full_len,
+        'returned_chars': len(extract),
+        'truncated': truncated,
+        'content': extract,
+        'note': (
+            'Plain-text extract (no markup, no refs, no infoboxes). '
+            'Use as planning context: identify named items the article '
+            'treats as central, terminology to feed into search probes, '
+            'sections that suggest distinct rubric layers. If truncated, '
+            'increase max_chars or pair with get_article_links to get '
+            'the full link graph.'
+        ),
+    }, indent=2, ensure_ascii=False)
 
 
 # ── Wikidata ──────────────────────────────────────────────────────────────

@@ -125,6 +125,64 @@ rescue:        if no clear QID, skip Wikidata moves; the topic may
                  entities (e.g., "the language" + "the speakers")
 ```
 
+## seed-anchored-mining-from-canonical-article
+
+```
+preconditions: topic has a single canonical article that represents
+                 it (named historical event, named work, named
+                 building, named person, single named theory).
+                 Especially valuable for sparse-resource topics
+                 where category / navbox / Wikidata routes alone
+                 give thin recall — Apollo 11 (no dedicated navbox,
+                 thin P138), single Olympics editions, named
+                 expeditions, single political events.
+sequence:      identify the canonical article (e.g. "Apollo 11") →
+               get_article_content(title) — RTFA. Read the article
+                 to surface domain context: section structure, named
+                 items the article treats as central, terminology.
+                 Informs rubric authoring before commit. →
+               get_article_categories(title) — list the categories
+                 the article belongs to. Each is a descent candidate
+                 for survey_categories / get_category_articles. →
+               get_article_templates(title, filter="navbox") — the
+                 navboxes used on the article. Each is a
+                 harvest_navbox target. →
+               get_article_templates(title, filter="wikiproject") —
+                 WikiProjects claiming the article (queried from the
+                 talk page). Cross-reference with check_wikiproject /
+                 get_wikiproject_articles. →
+               wikidata_get_entity(qid) — full property dump on the
+                 topic's QID. Reveals which properties are populated
+                 (e.g., P361 dense, P138 sparse for 1969 events).
+                 Targeted property probes follow. →
+               get_article_links(title) — outgoing first-degree
+                 neighborhood, ~80-400 candidates. Review and add. →
+               get_article_backlinks(title, limit=500,
+                                     filter_redirects="nonredirects")
+                 — incoming tail. Prominent topics have 10K+
+                 backlinks; cap aggressively, sample if needed.
+expected:      surfaces the topic's first-degree neighborhood
+                 comprehensively from a single anchor. Yields:
+                 categories ~95% on-topic, navboxes ~80-90%,
+                 outgoing links 70-90%, backlinks 40-70%
+                 (filter-heavy). The strategy's value is breadth
+                 across signal types, not any single signal.
+WARNING:       backlinks tail is enormous on prominent topics.
+                 Don't try to review all of them; use limit=500
+                 (default) and consider sampling. The first 100-200
+                 backlinks are usually highest-signal because
+                 MediaWiki returns them in page-id order
+                 (older / more central articles first).
+rescue:        if the canonical article isn't a single page (the
+                 topic spans multiple peer articles — "WW2" /
+                 "Climate change"), apply this to each anchor in
+                 turn or fall back to category-led sweep.
+                 If the article is too short / too narrow (a stub
+                 or a redirect-target meta-article), fall back to
+                 standard structural sweep — seed-anchored mining
+                 needs a substantive article to anchor on.
+```
+
 ## concentric-rubric-for-named-event
 
 ```

@@ -119,6 +119,12 @@ closest current primitive.
 | "compound category query" / "intersection of categories" | *`petscan_*` not yet built — closest current: two `get_category_articles` calls plus `get_articles(sources_all=...)` for intersection* |
 | "cross-wiki comparison" / "what's on zhwiki but not enwiki" | *`cross_wiki_diff` not yet built — manual flow: parallel topic on the other wiki + per-article `preview_search` walk-back* |
 | "is this topic complete?" | *`completeness_check` not yet built — closest: spot check + `browse_edges` from edge seeds* |
+| "what does the canonical article actually say?" / "RTFA" | `get_article_content(title, max_chars=30000)` — plain-text extract of the article. Use as planning context before drawing the rubric, or as a cross-check during cleanup. |
+| "every article linked from the topic article" / "first-degree neighborhood" | `get_article_links(title)` — outgoing links. Pair with `get_article_categories`, `get_article_templates`, `get_article_backlinks` for a full seed-anchored sweep. See move: `seed-anchored-mining-from-canonical-article`. |
+| "everything that links TO this article" / "what links here" | `get_article_backlinks(title, limit=500, filter_redirects="nonredirects")` — incoming links. Cap aggressively; prominent topics have 10K+ backlinks. |
+| "what categories is this article in" | `get_article_categories(title)` — feed each into `survey_categories` / `get_category_articles` to descend. |
+| "what navboxes / infoboxes does this article use" | `get_article_templates(title, filter="navbox")` — feed each into `harvest_navbox`. `filter="wikiproject"` queries the article's talk page for WP claims. |
+| "every property on this Wikidata entity" | `wikidata_get_entity(qid)` — full property dump + sitelinks. Use BEFORE `wikidata_entities_by_property` to discover which properties are even populated. |
 
 ## SHAPE → STRATEGY MOVES — pointer
 
