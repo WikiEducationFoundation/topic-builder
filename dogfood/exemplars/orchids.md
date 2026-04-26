@@ -40,11 +40,10 @@ Wikipedia's structural primitives for orchids are mixed: a clean
 canonical category (`Category:Orchids`) of decent depth, no
 dedicated WikiProject (just the broader WikiProject Plants), no
 family-level navbox (`Template:Orchidaceae` and `Template:Orchids`
-both don't exist on enwiki — there's no equivalent to
-`Template:Apollo program` for the family — and even there the
-parent-program navbox cascades with ~75% noise, see the apollo-11
-exemplar's anti-patterns), but rich Wikidata: P171 (parent taxon)
-is densely populated for orchid taxa.
+both don't exist on enwiki — orchids has no equivalent of the
+parent-class template that other taxonomic-or-event topics
+sometimes use), but rich Wikidata: P171 (parent taxon) is densely
+populated for orchid taxa.
 
 **Summary.** A complete build needs three layers: a category-tree
 mass pull for taxa (precision-safe because the topic-named category
@@ -264,12 +263,10 @@ two-phase):
 
 - **Probing for `Template:Orchidaceae` or `Template:Orchids`.**
   Neither exists on enwiki. There is no family-level navbox for
-  orchids. The parent-program navbox-cascade move applied
-  elsewhere — Apollo program for Apollo 11, with substantial
-  cleanup — has nothing to anchor here. If you need a navbox-type
-  signal, use `get_article_templates(title="Orchid",
-  filter="navbox")` to enumerate what's actually used on the
-  canonical article.
+  orchids — orchids does not fit the parent-class navbox-cascade
+  shape. If you need a navbox-type signal, use
+  `get_article_templates(title="Orchid", filter="navbox")` to
+  enumerate what's actually used on the canonical article.
 
 - **Probing for `WikiProject Orchids`.** It does not exist on
   enwiki. The nearest project is WikiProject Plants (broader,

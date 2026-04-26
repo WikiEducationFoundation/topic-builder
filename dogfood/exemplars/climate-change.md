@@ -330,9 +330,8 @@ that the original build didn't have access to.
    exercised in the baseline run. Estimated 5-10% reach
    improvement available via cross-wiki sitelink walks for non-
    Anglosphere climate scientists, regional movements, country-
-   scale climate ministries. Same lesson the orchids exemplar
-   surfaces — for any topic with international depth, cross-wiki
-   isn't optional.
+   scale climate ministries. General principle: for any topic with
+   international depth, cross-wiki isn't optional.
 
 10. **PetScan-style category ∩ template intersection** would
     surface mitigation-tech articles with explicit climate
@@ -375,14 +374,18 @@ missing, the strategy needs different anchors:
   multi-source articles.
 - **No dense category tree.** Lean on `morelike:` chains from
   named anchors and `intitle:` searches with topic-specific
-  vocabulary. The CRISPR exemplar has more on this.
+  vocabulary. Recent technical-discipline shapes (where the
+  category tree is thin because the topic post-dates dense
+  categorization) have their own playbook in the move catalog.
 - **No curated index page.** Skip the `find_list_pages` step;
   fall back to `find_list_pages` with broader subjects and
   filter manually. Or build the index yourself from a navbox
   via `harvest_navbox`.
 - **No international / non-Anglosphere depth.** Skip the
-  cross-wiki sweep; it won't pay off the way it does on orchids
-  or (presumed) on language-family or religious-tradition topics.
+  cross-wiki sweep; it won't pay off the way it does on topics
+  whose substrate is genuinely multilingual (large taxonomies,
+  language families, religious traditions, international
+  movements).
 
 The shape that makes the climate-change recipe transfer cleanly
 is: **multi-axis public-policy + science + movement subjects

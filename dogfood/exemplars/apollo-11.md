@@ -32,8 +32,8 @@ last_validated_against: 2026-04-26
 institution to stitch outward to; OR the flagship category already
 covers ~all the reach (no concentric layers); OR the topic has
 abundant structural primitives (dedicated navbox + dense WikiProject
-+ rich Wikidata properties — climate change is closer to that
-shape).
++ rich Wikidata properties — a richer-resource shape than this
+exemplar models).
 
 **Shape (prose).** A well-known historical event with a small
 flagship core and significant peripheral reach via the parent
@@ -345,6 +345,7 @@ For an analogous shape (other concentric named events with parent
 programs — Olympic Games editions, single Tour de France years,
 World Cups, named expeditions), expect the concentric-three-ring
 rubric to transfer cleanly, but verify each structural primitive
-before assuming it works. Climate change is a richer-resource
-shape (dedicated WP, dense category, abundant Wikidata) and is not
-a better model for sparse-resource events.
+before assuming it works. Don't apply this exemplar to
+richer-resource shapes (topics with dedicated WP + dense category +
+abundant Wikidata properties) — those have different ceilings and
+different leverage points.

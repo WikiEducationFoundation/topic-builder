@@ -212,32 +212,46 @@ exemplars are still useful — the menu card teaches shape-matching
 even when the case study isn't fleshed out yet. A future build can
 upgrade the stub by replacing it with a real-run-grounded version.
 
-### Cross-exemplar references must carry the caveats
+### Don't name other exemplar topics in your exemplar
 
-The AI reads many exemplars in a single session — own-topic gated
-to phase 2, others freely accessible in phase 1. If your exemplar
-references another topic ("the navbox cascade pattern that works
-for Apollo 11"), the AI may act on that reference WITHOUT reading
-the source exemplar. The reference becomes a load-bearing claim.
+The own-topic exemplar gate (phase-2-only via `allow_own=True`) is a
+**measurement-integrity invariant**: an apollo-11 run must not see
+apollo-specific lessons during phase 1. Other exemplars are freely
+accessible in phase 1 — so any topic-specific fact about Apollo 11
+inside the orchids exemplar bypasses the gate entirely.
 
-Two safe patterns:
+**The rule:** an exemplar may reference shape categories
+("named-historical-event", "large taxonomy", "intersectional
+biography") but must not name another exemplar topic verbatim,
+either as endorsement ("works for Apollo 11"), comparison
+("Climate change is a richer-resource shape"), or contrast
+("doesn't apply here, unlike orchids").
 
-1. **Make the reference self-contained**, with the relevant caveat
-   inline:
-   > "the parent-program navbox cascade — Apollo 11's
-   > `Template:Apollo program` works with ~75% noise, see
-   > apollo-11 exemplar's anti-patterns — has nothing to anchor
-   > here"
-2. **Explicitly tell the AI to consult the source**:
-   > "...see apollo-11 exemplar before treating this as a clean
-   > recipe."
+**Replace** topic-specific cross-references with shape-general
+phrasings:
 
-Avoid bare contrastive references like "X works for Apollo 11" —
-that reads as an endorsement and the AI will skip the source. The
-2026-04-26 orchids run cited the orchids exemplar's "navbox-
-cascade works for Apollo 11" framing as justification for
-`harvest_navbox("Apollo11series")` as the first metered move,
-without consulting the apollo-11 exemplar's noise-rate caveat.
+- "works for Apollo 11" → "works for named-event-with-parent-program
+  shapes"
+- "Climate change is a richer-resource shape" → "richer-resource
+  shapes — dedicated WP + dense category + abundant Wikidata —
+  have different leverage points"
+- "the orchids exemplar surfaces this lesson" → "for any topic
+  with international depth, cross-wiki isn't optional"
+
+If you genuinely want the AI to consult another exemplar, point at
+the **shape** the AI should look for in the menu rather than
+naming the slug:
+
+> "If your topic is a large taxonomic family with cultural
+> periphery, look for that shape in `list_exemplars`."
+
+**Worked failure case:** the 2026-04-26 apollo-11-thin run cited
+the orchids exemplar's "navbox-cascade works for Apollo 11" framing
+as justification for `harvest_navbox("Apollo11series")` as the
+first metered move. The apollo-11 exemplar (gated from phase 1
+during apollo runs) carried the noise-rate caveat; the orchids
+exemplar leaked the bare endorsement. Net effect: a mild
+phase-1 contamination that the gate was supposed to prevent.
 
 ## Path B: exemplar + dogfood task brief
 
