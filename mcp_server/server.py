@@ -1729,8 +1729,10 @@ def find_wikiprojects(keywords: list[str], limit: int = 20,
     """Discover enwiki WikiProjects whose names contain any of the given
     keywords. Use this BEFORE `check_wikiproject` when you're not sure of
     the exact project name — avoids the "I tried WikiProject Plants, it
-    was too broad, so I skipped WikiProjects" failure mode (observed in
-    orchids, which has a dedicated WikiProject Orchids).
+    was too broad, so I skipped WikiProjects" failure mode. (Some topics
+    have a dedicated WikiProject — climate change has WikiProject Climate
+    change, for example. Many don't: orchids has no dedicated project,
+    only the broader WikiProject Plants and WikiProject Tree of Life.)
 
     Enwiki-only by design. WikiProjects are a Wikipedia-English convention
     and rarely exist on other wikis — on non-en topics, skip this tool
@@ -1739,8 +1741,9 @@ def find_wikiprojects(keywords: list[str], limit: int = 20,
     Args:
         keywords: List of keyword strings. For each, the tool prefix-
                   searches the Wikipedia: namespace for "WikiProject <kw>"
-                  (e.g. ["Orchid", "Plants", "Botany"] → finds WikiProject
-                  Orchids, WikiProject Plants, WikiProject Botany).
+                  (e.g. ["Climate", "Energy", "Environment"] → finds
+                  WikiProject Climate change, WikiProject Energy,
+                  WikiProject Environment).
         limit: Max results per keyword (default 20, hard-capped at 50).
         note: Optional free-text observation for this call's log entry.
               Use for mid-flow reflection; empty by default.
@@ -5430,7 +5433,7 @@ def get_articles(min_score: int | None = None, max_score: int | None = None,
                 "search:incategory:Orchid genera".
         sources_all: Filter to articles that have ALL of these sources
                 (intersection / AND semantics). Use for confidence
-                cuts like `sources_all=["category:Orchidaceae", "wikiproject:Orchids"]`
+                cuts like `sources_all=["category:Orchids", "wikiproject:Plants"]`
                 — the articles found by BOTH a category and a WikiProject
                 are the highest-confidence core of the topic. Combines
                 with `source`: the final filter is (has source OR no
