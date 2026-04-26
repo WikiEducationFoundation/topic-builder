@@ -5575,6 +5575,23 @@ _MENU_HEADER = "# Menu card"
 _CASE_HEADER = "# Full case study"
 
 
+def _topic_matches_exemplar(topic_slug, exemplar_slug):
+    """True if a topic's slug indicates a run on the same benchmark as
+    this exemplar. Handles exact match plus the variant/timestamp suffix
+    shapes produced by `fetch_task_brief` templates (e.g.
+    'apollo-11-thin_20260426t0123' or 'apollo-11_20260426t0123' both
+    match exemplar slug 'apollo-11'). _slugify doesn't fold hyphens, so
+    exact-match alone leaks the gate for any templated run-topic name."""
+    if not topic_slug or not exemplar_slug:
+        return False
+    if topic_slug == exemplar_slug:
+        return True
+    for sep in ('-', '_'):
+        if topic_slug.startswith(exemplar_slug + sep):
+            return True
+    return False
+
+
 def _split_exemplar_body(body: str):
     """Split exemplar body into (menu_card, full_case_study) sections by
     looking for the canonical headers. Returns (whole-body, '') if the
@@ -5613,7 +5630,9 @@ def list_exemplars(topic: str, ctx: Context = None) -> str:
     exemplars = db.list_dogfood_exemplars(exclude_slug=None)
     out = []
     for ex in exemplars:
-        if own_slug and (ex['slug'] == own_slug or db._slugify(ex['slug']) == own_slug):
+        if _topic_matches_exemplar(own_slug, ex['slug']):
+            continue
+        if _topic_matches_exemplar(own_slug, db._slugify(ex['slug'])):
             continue
         menu, _ = _split_exemplar_body(ex['body_markdown'])
         out.append({
@@ -5673,7 +5692,7 @@ def get_exemplar(slug: str, topic: str,
             'available_slugs': available,
             'hint': 'Call list_exemplars(topic=...) to see what is available.',
         }, indent=2, ensure_ascii=False)
-    same_as_own = (ex['slug'] == own_slug)
+    same_as_own = _topic_matches_exemplar(own_slug, ex['slug'])
     if same_as_own and not allow_own:
         return json.dumps({
             'error': (
