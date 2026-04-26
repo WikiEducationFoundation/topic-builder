@@ -125,6 +125,39 @@ rescue:        if no clear QID, skip Wikidata moves; the topic may
                  entities (e.g., "the language" + "the speakers")
 ```
 
+## concentric-rubric-for-named-event
+
+```
+preconditions: shape includes named-historical-event with bounded
+                 timeframe; the topic sits inside a parent program
+                 (Apollo 11 in Apollo program; Chernobyl in Soviet
+                 nuclear program; a single Tour de France inside the
+                 ongoing race).
+sequence:      at scoping time, before set_topic_rubric, draft the
+                 rubric in three explicit rings:
+                 CENTRAL  — the event itself, its participants, its
+                            outputs, items named after it.
+                 PERIPHERAL — direct-flanking events the topic-event
+                            causally depends on or leads to (immediate
+                            predecessors / successors); facilities
+                            operationally used during the event;
+                            people with event-specific roles even if
+                            their broader employer is generic.
+                 OUT      — non-flanking events under the same parent
+                            program; generic parent-org articles;
+                            unrelated facilities of the same operator.
+               sanity-check by asking "if I ran the parent program's
+                 navbox harvest, which of these would I keep?" — the
+                 YES set is PERIPHERAL, not OUT.
+expected:      keeps the program-tail axis open without bloating
+                 CENTRAL; prevents over-pruning during cleanup.
+rescue:        if the rubric already overshot OUT (silent recall loss
+                 on flanking events / used facilities), run
+                 unreject_articles on the direct-flanking +
+                 operationally-used set before final cleanup. See
+                 failure-mode: rubric-too-narrow-for-bounded-event.
+```
+
 ---
 
 # Bulk gather

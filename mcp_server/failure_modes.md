@@ -257,6 +257,45 @@ evidence:   2026-04-24 thin-variant cycle — 3 of 5 topics named this
               (AA-STEM, HL-STEM, orchids regional lists)
 ```
 
+## popular-culture-list-page-overlinking
+
+```
+symptom:    harvest_list_page on a "<topic> in popular culture"
+              article adds many tangential entities (broadcasters
+              that aired the event, countries that observed it,
+              eponymous works using the topic's catchphrases,
+              generic concepts referenced once) — not items
+              culturally derived from the topic.
+detection:  source_label list_page:<topic> in popular culture
+              shows a high contribution count where a sample of
+              titles is dominated by network / country / concept
+              articles rather than works or named-after items.
+              Hallmark surface vocabulary in the sample: TV
+              networks, country names, words like "Public domain",
+              "Voice-over", generic professions.
+rescue:     pre-call: use preview_harvest_list_page first; eyeball
+              a 30-title sample. If the sample is dominated by
+              tangential entities, skip the bulk harvest. Reach
+              for compound intitle: probes on the topic's named
+              catchphrases instead — those return eponymous
+              candidates that need filtering, but at lower bulk
+              noise.
+            post-call (if you already harvested): describe the
+              source label and apply remove_by_pattern with a
+              network/country regex; or filter by description-
+              type to drop generic-concept articles.
+            general rule: any "<topic> in popular culture" or "List
+              of cultural references to <topic>" candidate gets a
+              preview, not a commit. Same shape applies to "List of
+              <topic>-themed works" pages.
+evidence:   2026-04-26 apollo-11 phase-2 — harvest_list_page on
+              "Apollo 11 in popular culture" added 148 articles;
+              the audit then judged ~95% of the new titles OUT
+              (broadcasters, countries, eponymous works that aren't
+              about A11). Drove the run's precision from 0.55 to
+              0.30 in one call.
+```
+
 ---
 
 # Identity / collision failures
@@ -496,6 +535,35 @@ rescue:     decomposed calibration (Ship 3) — replace the single
               confidence rationale.
 evidence:   2026-04-24 thin-variant cycle (rating 7 / conf ~0.7
               across recall 33%–85%)
+```
+
+## rubric-too-narrow-for-bounded-event
+
+```
+symptom:    rubric for a named-historical-event topic puts direct-
+              flanking events and operationally-used facilities in
+              OUT, when concentric-reach scoping treats them as
+              PERIPHERAL. Result: silent recall loss on the
+              program-tail axis even though precision looks clean.
+detection:  rubric scope_text says "Other <adjacent events> are OUT"
+              or "generic <parent-org / facility> articles are OUT"
+              without distinguishing direct-flanking from non-
+              flanking; mid-run spot check finds direct
+              predecessors / successors / used-facilities absent
+              from the corpus.
+rescue:     redraft using the three-ring pattern in move:
+              concentric-rubric-for-named-event. Direct-flanking
+              and operationally-used belong in PERIPHERAL, not OUT.
+            If the rubric already shipped and the run already
+              over-pruned: unreject_articles on the flanking +
+              used-facilities set before final cleanup.
+evidence:   2026-04-26 apollo-11 thin run wrote "Other Apollo
+              missions (1, 7-10, 12-17): OUT" — gold has Apollo
+              8/10/12 (direct flanking) as IN. Same rubric put
+              Kennedy Space Center, Mission Control Center, and
+              Manned Space Flight Network as OUT — gold has them
+              as PERIPHERAL. Phase-2 reach-extension recovered some
+              but not all.
 ```
 
 ---
