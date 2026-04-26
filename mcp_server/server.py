@@ -2331,11 +2331,52 @@ def get_article_templates(title: str, wiki: str | None = None,
         params.update(data['continue'])
 
     # Apply heuristic filters in Python.
+    #
+    # Navbox detection on Wikipedia is awkward: most navboxes are named
+    # after their topic (Template:Apollo program, Template:NATO) rather
+    # than carrying "navbox" in the name. The reliable signal is
+    # "{{Navbox}}" in the template's wikitext, but fetching every
+    # template's body is too expensive. So we use a negative-filter
+    # heuristic: include everything that ISN'T obviously an infobox /
+    # citation / maintenance / micro-template. False-positive rate ~10%
+    # (some thematic small templates aren't navboxes); the AI eyeballs
+    # the list before harvest_navbox commits.
+    _NON_NAVBOX_PREFIXES = (
+        'infobox', 'cite ', 'citation', 'cs1 ', 'cs2 ',
+        'authority control', 'commons', 'wikidata',
+        'short description', 'use ', 'pp-', 'pp ',
+        'good article', 'featured article', 'former good',
+        'main', 'see also', 'further', 'hatnote',
+        'lang-', 'lang ', 'ill ', 'transl',
+        'isbn', 'doi', 'pmid', 'oclc',
+        'cleanup', 'citation needed', 'broken anchor', 'dead link',
+        'reflist', 'refbegin', 'refend', 'notelist',
+        'colbegin', 'colend', 'columns-list', 'div col',
+        'flatlist', 'plainlist', 'unbulleted list',
+        'as of', 'when ', 'who ', 'why ', 'where ',
+        'r from', 'r to', 'r with',  # redirect templates
+        'efn', 'sfn', 'rp', 'ndash', 'nbsp', 'nowrap',
+        'mw-', 'category handler',
+    )
+    _NAVBOX_HINTS = ('navbox', 'sidebar', 'navigation')
+
     def is_navbox(name: str) -> bool:
-        n = name.lower()
-        return any(s in n for s in (
-            'navbox', 'sidebar')) or n.startswith((
-            'list of ',))
+        n = name.lower().strip()
+        # Subtemplates (Template:Foo/bar/styles.css) are infrastructure
+        # for parent templates, never navboxes themselves.
+        if '/' in n:
+            return False
+        if n.endswith(('.css', '.js')):
+            return False
+        if any(h in n for h in _NAVBOX_HINTS):
+            return True
+        if any(n.startswith(p) for p in _NON_NAVBOX_PREFIXES):
+            return False
+        # Single-word + short templates are usually inline helpers, not
+        # navboxes; navboxes have descriptive multi-word names.
+        if len(n) < 5 or (' ' not in n and len(n) < 12):
+            return False
+        return True
 
     def is_infobox(name: str) -> bool:
         n = name.lower()
@@ -2373,8 +2414,13 @@ def get_article_templates(title: str, wiki: str | None = None,
         'truncated': truncated,
         'templates': templates,
         'note': (
-            'For navboxes: feed each name into harvest_navbox(template) '
-            'to enumerate the navbox\'s curated articles. For '
+            'For navboxes: heuristic filter is imperfect — the result '
+            'set typically mixes real navboxes (program / facility / '
+            'institution names) with small utility templates. Scan for '
+            'thematic / topic-named entries (e.g., "Apollo program", '
+            '"Lunar landers", "Project Apollo") and feed those into '
+            'harvest_navbox(template); skip obvious utilities ("End date '
+            'text", "Annotated link", "Italics correction"). For '
             'wikiprojects: feed each into check_wikiproject / '
             'get_wikiproject_articles. Infoboxes are not directly '
             'harvestable but reveal the topic\'s structured-data shape '
