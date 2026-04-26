@@ -26,6 +26,16 @@ Add new items here as signals come in; promote items to
 
 ## Tier 1 — small, high-leverage
 
+### ☐ Exemplar integrity gate leaks via slug normalization `[NEW — 2026-04-26]`
+
+**What.** `list_exemplars` / `get_exemplar` normalize the requested slug (e.g. lower-casing, hyphen folding) before lookup, but the integrity gate that hides an exemplar when the active topic matches its benchmark slug compares against the *raw* (un-normalized) slug. Result: an exemplar for benchmark `apollo-11` remains visible in the menu and fetchable while a run on the same benchmark is in progress, defeating the gate.
+
+**Why.** Discovered mid-run during the 2026-04-26 composable-strategy dogfood (apollo-11 thin variant). The AI noticed `apollo-11` in the `list_exemplars` menu while running the apollo-11 benchmark, recognized it as a measurement-integrity leak, and deliberately avoided `get_exemplar(slug="apollo-11")` to preserve the run. The gate is supposed to prevent exactly this scenario without requiring AI judgment.
+
+**Shape.** Normalize both sides of the comparison in the gate (run-topic-slug → benchmark-slug match) using the same canonicalization the lookup uses. Audit `list_exemplars` filter logic and `get_exemplar` permission check together — they need to agree on the normalized form.
+
+**Sequencing.** Small, independent. Ship before the next ratchet cycle so future runs aren't dependent on AI noticing the leak.
+
 ### ☐ Capture agent / model / effort on `submit_feedback` `[NEW — 2026-04-25]`
 
 **What.** Add an optional `runtime` dict to `submit_feedback`:
