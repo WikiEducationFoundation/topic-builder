@@ -212,6 +212,27 @@ exemplars are still useful — the menu card teaches shape-matching
 even when the case study isn't fleshed out yet. A future build can
 upgrade the stub by replacing it with a real-run-grounded version.
 
+### Synthesize, don't speculate
+
+Every entry in the strategy substrate — exemplar, strategy move,
+failure mode, shape axis value — must map to at least one observed
+case in dogfood notes, exemplars, or session feedback. The catalogs
+grew out of synthesis on existing evidence, not invention. When
+adding or revising:
+
+- Cite at least one session, exemplar, or run on the entry's
+  `evidence:` line.
+- If you can't cite, the entry isn't ready — it's speculation
+  dressed as substrate. Wait for a real signal.
+- When you revise an entry (e.g., the rescue path generalizes
+  after a second observation), append the new session to the
+  evidence trail.
+
+Same authoring discipline applies to `mcp_server/strategy_moves.md`,
+`mcp_server/failure_modes.md`, `mcp_server/shape_axes.md`, and
+exemplars under `dogfood/exemplars/`. The four sources reinforce
+each other.
+
 ### Don't name other exemplar topics in your exemplar
 
 The own-topic exemplar gate (phase-2-only via `allow_own=True`) is a
