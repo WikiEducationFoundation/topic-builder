@@ -126,6 +126,75 @@ The project has no automated test suite. Verification is via:
 - **Tool schema check on the server:** write a smoke as `/tmp/check_<whatever>.py` that imports from `server` and prints what you want to inspect, then run it on the host via `bash scripts/smoke.sh /tmp/check_<whatever>.py`. The wrapper reads `.env` internally, scp's the script to `/tmp/` on the host, and runs it through `/opt/topic-builder/venv/bin/python`. Don't hand-roll `source .env && scp ... && ssh ...` — it triggers permission prompts the wrapper was built to avoid. See `docs/operations.md` for additional admin one-liners.
 - **Live dogfood.** Build a small topic end-to-end in Claude and ChatGPT after a deploy. The Seattle / educational psychology topics are useful known shapes.
 
+## Benchmark gold maintenance
+
+Gold-set audits use a two-layer model: a per-topic keyword classifier
+(`benchmarks/<slug>/audit.py`, gitignored — pairs names with judgments)
+plus a shared ground-truth validator
+(`benchmarks/audit_lib.py`, tracked — generic plumbing). Every
+`audit.py`'s `main()` ends with `validate_gold_titles(GOLD_PATH,
+wiki="en")` so existence facts trump pattern-derived verdicts on each
+run. The full pattern + drop-in snippets live in `benchmarks/README.md`.
+
+Running an audit:
+
+```
+python3 benchmarks/<slug>/audit.py
+```
+
+…is enough. It rewrites `gold.csv`, regenerates `audit_summary.md`,
+and then validates redlinks/redirects against MediaWiki. ~10–30 sec
+for small benchmarks, ~10 min for orchids' 18K rows on the validate
+pass.
+
+**Two safety nets** are load-bearing — verify both are present in any
+`audit.py` you write or inherit:
+
+1. **Preserve hand-classifications** when the keyword classifier
+   returns `uncertain` but `gold.csv` has a non-uncertain prior. Set:
+   `PRESERVE_FROM_FILE = {"in", "peripheral", "out", "redirect", "redlink"}`.
+   Without this, a re-run silently flattens any verdict that doesn't
+   have a matching rule. The 2026-04-26 apollo-11 incident is the
+   motivating case.
+2. **Validate against Wikipedia ground truth** via `validate_gold_titles`
+   at the end of `main()`. Without this, the keyword classifier can
+   label thousands of orchid-pattern-matching titles `in` even when
+   the articles don't exist (the same 2026-04-26 incident wiped the
+   ~10,763 redlink classifications on orchids gold; recovery required
+   a full API sweep).
+
+**Reach-audit + baseline-refresh flow** for ratcheting (this is what
+you do after a thin run lands):
+
+1. **Pull corpus from server** via a `/tmp/dump_<slug>_corpus.py`
+   smoke (see `dogfood/sessions/2026-04-26/` for templates).
+2. **Append reach to `gold.csv`** with `on_topic=pending_audit` and
+   the run's name as `source_run`.
+3. **Run `python3 benchmarks/<slug>/audit.py`** — classifier picks up
+   the new rows; validate_gold_titles finalizes redlinks/redirects.
+4. **Refresh `baseline.json`** if gold grew significantly: a fresh
+   baseline corpus is the original bootstrap rows (rows where
+   `source_run` is empty), and its precision/recall is what the gate
+   compares against. Use a one-shot `/tmp/fill_<slug>_baseline.py`
+   that reads the partitioned gold and computes baseline corpus ∩
+   grown gold (climate-change has the worked example).
+5. **Re-run `scripts/benchmark_score.py --task <slug>-thin`** to
+   confirm the gate verdict against the grown gold.
+
+**What NOT to do:**
+
+- Never re-run `audit.py` on a benchmark whose `audit.py` lacks both
+  safety nets. Check first; add them if missing (see
+  `benchmarks/README.md`).
+- Never edit `gold.csv` directly without expecting `audit.py` to
+  preserve your edit only when its classifier returns `uncertain` for
+  that row. If you want a verdict to stick across re-runs, add it as
+  an explicit rule in `audit.py`.
+- Don't trust scoreboard recall numbers when `gold_redlink_count`
+  drops to 0 between runs of the same gold.csv — that signals
+  redlink classifications got flattened and the denominator is
+  bogus.
+
 ## Pointers for future work
 
 - `docs/ratchet-plan.md` — how to use the 5-benchmark ratchet for proving tool improvements; prioritized open shortlist.
