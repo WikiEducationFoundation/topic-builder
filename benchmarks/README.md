@@ -104,6 +104,40 @@ This rewrites `gold.csv`'s `on_topic` column and regenerates
 `audit_summary.md`. It does NOT touch `audit_notes.md` (human-written)
 or `apply_webfetch_resolutions.py`-style overlay scripts.
 
+**Safety net for hand-classifications.** `audit.py` is the canonical
+classifier, but operators sometimes hand-edit `gold.csv` directly
+(e.g. one-off "Sage's call" rulings on edge cases). To prevent re-runs
+from silently clobbering those decisions, every `audit.py`'s `main()`
+loop preserves a row's prior `on_topic` whenever the classifier
+returns `uncertain`. Rules win when they speak; the file wins when
+rules are silent. The pattern (drop-in for any new benchmark's
+`audit.py`):
+
+```python
+PRESERVE_FROM_FILE = {"in", "peripheral", "out", "redirect"}
+preserved = []
+for row in body:
+    title, prior, sources, score, desc, _notes = row
+    cls, why = classify(title, desc, sources)
+    if cls == "uncertain" and prior in PRESERVE_FROM_FILE:
+        cls = prior
+        why = f"Preserved prior verdict {prior!r} from gold.csv (no audit.py rule)"
+        preserved.append((title, prior))
+    # ... existing classification + counts ...
+if preserved:
+    print(f"Preserved {len(preserved)} hand-classifications from gold.csv (no audit.py rule).")
+```
+
+When the preserved-count is non-zero, codify durable verdicts as
+`audit.py` rules so the safety net stays a backstop, not a load-
+bearing surface. The 2026-04-26 apollo-11 incident is the
+motivating case: re-running `audit.py` flattened 32 hand-classified
+rows + 3 redirect markers back to `uncertain`, which precision then
+read as false-positive churn. `audit.py` is gitignored (it pairs
+names with judgments), so the safety net lives in each operator's
+local copy — but the pattern is documented here so new benchmarks
+inherit it.
+
 **Apply overlays** (if any — e.g. AA STEM has 20 WebFetch-resolved
 cases):
 
