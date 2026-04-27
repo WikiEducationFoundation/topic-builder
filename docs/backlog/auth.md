@@ -196,10 +196,16 @@ single port — nginx already routes `/` (landing), `/exports/*`,
   Easy to grep, easy to recognize, doesn't look like anything else.
 - DB stores SHA-256 hash, not plaintext. A leaked DB doesn't yield
   active tokens.
-- `expires_at`: 30 days from issue. Auto-renewed on
-  successful `authenticate()` call (sliding TTL). Hard expiry can be
-  configured later if we want; 30-day-sliding is the lowest-friction
-  default for ongoing dogfood.
+- `expires_at`: 30 days from issue, slid forward to "now + 30 days"
+  on every successful `lookup_auth_token` (i.e. every authenticated
+  tool call, not just `authenticate()`). Active users never re-auth;
+  abandoned tokens die naturally. Rationale: our tokens only
+  authenticate against this server (no Wikimedia-side privileges), so
+  the security property expiry buys us is leak hygiene against
+  abandoned-but-leaked tokens — sliding TTL gives that for free
+  without periodic friction. A hard cap (e.g. "no more than 1 year
+  from issue regardless of activity") could be layered on later if
+  the threat model tightens.
 - Revocation: setting `revoked_at` invalidates a token; any cached
   session loses access on the next non-cached check.
 

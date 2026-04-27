@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import os
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -27,6 +28,7 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, RedirectResponse, Response
 
 import db
+from wikipedia_api import USER_AGENT
 
 
 # Wikimedia OAuth 2.0 endpoints (Meta-Wiki). These are the public,
@@ -95,14 +97,14 @@ a.btn:hover{background:#2a52a3}
 code{background:#f4f4f4;padding:.1rem .3rem;border-radius:.2rem}
 </style>
 </head><body>
-<h1>Sign in with your Wikipedia account</h1>
-<p>Topic Builder uses your Wikipedia username to scope your topics
+<h1>Sign in with your Wikimedia account</h1>
+<p>Topic Builder uses your Wikimedia username to scope your topics
 privately to you. After you sign in, you'll get a token to paste into
 the chat — the AI uses it to authenticate your tools.</p>
-<p><a class="btn" href="/oauth/start">Sign in with Wikipedia &rarr;</a></p>
+<p><a class="btn" href="/oauth/start">Sign in with Wikimedia &rarr;</a></p>
 <p style="margin-top:2rem;color:#666;font-size:.9em">We only request
 identity (your username). We do not request edit rights and cannot
-edit Wikipedia on your behalf.</p>
+edit any Wikimedia project on your behalf.</p>
 </body></html>
 """
     return HTMLResponse(body)
@@ -202,7 +204,7 @@ def _token_display_page(username: str, raw_token: str, expires_at: str) -> HTMLR
     # looks more like a chat instruction than a credential, so a
     # paranoid client (e.g. a future ChatGPT version that sniffs
     # secrets) is less likely to redact it.
-    paste_line = f'My Topic Builder token is "{raw_token}" — please call authenticate with it.'
+    paste_line = f'My Topic Builder token is "{raw_token}" — please use it to authenticate me for this session.'
     body = f"""<!doctype html>
 <html><head><title>Signed in as {username}</title>
 <style>
@@ -250,8 +252,19 @@ async def _exchange_code(code: str) -> str:
     }).encode("utf-8")
     req = urllib.request.Request(TOKEN_URL, data=data, method="POST")
     req.add_header("Content-Type", "application/x-www-form-urlencoded")
-    with urllib.request.urlopen(req, timeout=20) as r:
-        body = json.loads(r.read().decode("utf-8"))
+    req.add_header("User-Agent", USER_AGENT)
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            body = json.loads(r.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        # urllib's str(HTTPError) is just "HTTP NNN reason"; the OAuth 2.0
+        # error code (invalid_client, unauthorized_client, …) lives in the
+        # response body. Surface it so failures are diagnosable.
+        try:
+            err_body = e.read().decode("utf-8", errors="replace")[:500]
+        except Exception:
+            err_body = ""
+        raise ValueError(f"HTTP {e.code} {e.reason} — {err_body}") from e
     token = body.get("access_token")
     if not token:
         raise ValueError(f"no access_token in response: {body!r}")
@@ -262,6 +275,7 @@ async def _fetch_username(access_token: str) -> str:
     """Call the profile endpoint and pull the `username` field."""
     req = urllib.request.Request(PROFILE_URL)
     req.add_header("Authorization", f"Bearer {access_token}")
+    req.add_header("User-Agent", USER_AGENT)
     with urllib.request.urlopen(req, timeout=20) as r:
         body = json.loads(r.read().decode("utf-8"))
     name = body.get("username") or body.get("name")

@@ -960,9 +960,9 @@ def create_auth_token(wikipedia_username, ttl_days=30):
 def lookup_auth_token(raw_token):
     """Resolve a raw bearer token to its user. Returns dict with
     {username, expires_at, revoked_at, last_used_at} or None if not
-    found / expired / revoked. On a successful lookup, bumps
-    `last_used_at` to now (sliding TTL is intentionally NOT applied here
-    — explicit refresh flow if we want it later)."""
+    found / expired / revoked. On a successful lookup, slides the
+    expiry forward (30-day sliding TTL): active users never re-auth,
+    abandoned tokens die naturally."""
     if not raw_token or not raw_token.startswith("tb_"):
         return None
     h = hash_token(raw_token)
@@ -983,15 +983,19 @@ def lookup_auth_token(raw_token):
     if not fresh or not fresh['ok']:
         conn.close()
         return None
-    conn.execute("UPDATE auth_tokens SET last_used_at = datetime('now') "
-                 "WHERE id = ?", (row['id'],))
+    updated = conn.execute(
+        "UPDATE auth_tokens "
+        "SET last_used_at = datetime('now'), "
+        "    expires_at   = datetime('now', '+30 days') "
+        "WHERE id = ? "
+        "RETURNING expires_at, last_used_at", (row['id'],)).fetchone()
     conn.commit()
     conn.close()
     return {
         'username': row['wikipedia_username'],
-        'expires_at': row['expires_at'],
+        'expires_at': updated['expires_at'] if updated else row['expires_at'],
         'revoked_at': row['revoked_at'],
-        'last_used_at': row['last_used_at'],
+        'last_used_at': updated['last_used_at'] if updated else row['last_used_at'],
     }
 
 

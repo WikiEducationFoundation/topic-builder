@@ -359,7 +359,7 @@
                 <span class="url-pill">https://topic-builder.wikiedu.org/mcp</span>
             </div>
             <p class="hero-meta">
-                Works with any <a href="https://modelcontextprotocol.io">MCP</a>-compatible client &mdash; <strong>Claude</strong>, <strong>ChatGPT</strong>, and others. No authentication required.
+                Works with any <a href="https://modelcontextprotocol.io">MCP</a>-compatible client &mdash; <strong>Claude</strong>, <strong>ChatGPT</strong>, and others. Sign in with your Wikimedia account to build.
             </p>
         </div>
     </section>
@@ -368,15 +368,39 @@
 
         <section>
             <h2>How it works</h2>
-            <p>You describe a topic; the AI runs the workflow and checks in with you along the way. Topics are saved automatically &mdash; you can leave a conversation and pick it back up later.</p>
+            <p>Topic Builder lets you use AI to collect a set of Wikipedia articles about any topic. You explain what the topic is, and what sorts of articles should be central to it, peripheral but still relevant, or outside the scope of your topic. The AI gets a menu of common exploration strategies, and handles the mechanical work &mdash; running searches, traversing categories, fetching descriptions.</p>
             <div class="workflow">
-                <div class="workflow-step"><div class="num">1</div><div><strong>Scope</strong><span>Agree on how broadly to define the topic.</span></div></div>
+                <div class="workflow-step"><div class="num">1</div><div><strong>Scope</strong><span>Agree on what counts as "in" &mdash; biographies, lists, popular-culture spinoffs, sister-language articles.</span></div></div>
                 <div class="workflow-step"><div class="num">2</div><div><strong>Reconnaissance</strong><span>Survey categories, WikiProjects, index pages, and Wikidata classes.</span></div></div>
                 <div class="workflow-step"><div class="num">3</div><div><strong>Gather</strong><span>Collect candidate articles from multiple strategies, with preview variants for risky pulls.</span></div></div>
                 <div class="workflow-step"><div class="num">4</div><div><strong>Review &amp; score</strong><span>Fetch short descriptions; optionally score articles 1&ndash;10 for topic centrality (core vs periphery).</span></div></div>
-                <div class="workflow-step"><div class="num">5</div><div><strong>Edge browse</strong><span>Surface articles that structured strategies missed.</span></div></div>
+                <div class="workflow-step"><div class="num">5</div><div><strong>Edge browse</strong><span>Find articles structured strategies missed &mdash; and the ones you specifically expect to see.</span></div></div>
                 <div class="workflow-step"><div class="num">6</div><div><strong>Export</strong><span>Download the final CSV for the Impact Visualizer.</span></div></div>
             </div>
+        </section>
+
+        <section>
+            <h2>Getting a more complete topic</h2>
+            <p>The AI will produce a serviceable topic on its own, but it tends to stop where stopping is easy: round-number article counts, the obvious core, the first strategies it tried. The difference between a "fine" topic and a great one is mostly how involved you are at five high-leverage moments.</p>
+            <ol class="advice">
+                <li><strong>Push back during scoping.</strong> The AI will propose a default scope. State explicitly what's in and what's out &mdash; biographies of key people, sub-events, geographic or sister-language variants, "in popular culture" articles, lists. Ambiguity in scope becomes ambiguity in the corpus.</li>
+                <li><strong>Don't accept the first "looks done."</strong> LLMs gravitate to round-number stopping points and pattern-complete to "this seems comprehensive." Ask "what kinds of articles haven't we tried to find yet?" &mdash; the AI usually has more strategies left when prompted.</li>
+                <li><strong>Run complementary strategies and compare.</strong> If you've harvested via WikiProject, also try a category-tree or list-page pull. The diff between two strategies surfaces both noise (articles only one picked up) and gaps (articles the other found that the first missed).</li>
+                <li><strong>Spot-check before exporting.</strong> Name 3&ndash;5 articles you'd expect to see &mdash; ideally obscure ones, not the obvious core. If any are missing, ask the AI to investigate; one missed article often reveals a strategy gap affecting dozens of similar ones.</li>
+                <li><strong>Bring your domain expertise to edge calls.</strong> For ambiguous articles, your judgment about whether something is "really" the topic is what the AI doesn't have. Don't outsource these calls &mdash; your time on edges is the highest-leverage time you'll spend.</li>
+            </ol>
+            <p style="margin-top:1rem">The five recommendations above are the patterns we already know help. The built-in strategies &mdash; categories, WikiProjects, list pages, Wikidata, search &mdash; cover a lot, but they aren't the whole space. If you (or the AI) have other ideas for where articles might live &mdash; an authoritative reference list, a SPARQL query, the references section of a few key articles, a topic-specific infobox template &mdash; say so. The tools are general-purpose enough that most approaches can be worked in, and a domain expert's instincts often beat the standard menu.</p>
+        </section>
+
+        <section>
+            <h2>Sign in</h2>
+            <p>Topic Builder uses your Wikimedia account to scope topics to you. Sign in once per device, paste the resulting token to your AI, and the rest of the conversation is yours.</p>
+            <div class="workflow">
+                <div class="workflow-step"><div class="num">1</div><div><strong>Sign in</strong><span>Visit <a href="/oauth/login">/oauth/login</a> and approve the Wikimedia consumer.</span></div></div>
+                <div class="workflow-step"><div class="num">2</div><div><strong>Copy the token line</strong><span>You'll get a one-line message starting with <em>"My Topic Builder token is&hellip;"</em> &mdash; copy the whole line.</span></div></div>
+                <div class="workflow-step"><div class="num">3</div><div><strong>Paste it into the chat</strong><span>The AI will call <code>authenticate</code> to bind your identity to the session, and may offer to remember the token for future chats.</span></div></div>
+            </div>
+            <p style="margin-top:1rem">Topics are <strong>private by default</strong> &mdash; only you can see or modify them. To share, ask the AI to set the topic's visibility to <code>public_read</code> (anyone reads, only you edit) or <code>public_edit</code> (any signed-in user reads + edits). If a token is ever leaked, ask the AI to call <code>revoke_my_token</code> and get a fresh one at <a href="/oauth/login">/oauth/login</a>.</p>
         </section>
 
         <section>
@@ -400,7 +424,7 @@
                                 <strong>Add the integration</strong>
                                 Go to the <strong>Integrations</strong> tab. Click <strong>Add More</strong>, then <strong>Add custom integration</strong>. Enter this URL:
                                 <div><span class="url-pill">https://topic-builder.wikiedu.org/mcp</span></div>
-                                Name it <strong>Wikipedia Topic Builder</strong>. Set authentication to <strong>None</strong>.
+                                Name it <strong>Wikipedia Topic Builder</strong>. Set authentication to <strong>None</strong> &mdash; the sign-in happens in chat (see <em>Sign in</em> above), not in the connector.
                             </div>
                         </div>
                         <div class="step">
@@ -431,7 +455,7 @@
                                 <strong>Add a connector</strong>
                                 Find the <strong>Connectors</strong> section. Click <strong>Add Connector</strong>. Enter:
                                 <div><span class="url-pill">https://topic-builder.wikiedu.org/mcp</span></div>
-                                Name it <strong>Wikipedia Topic Builder</strong>. Set authentication to <strong>None</strong>.
+                                Name it <strong>Wikipedia Topic Builder</strong>. Set authentication to <strong>None</strong> &mdash; each member signs in separately in chat (see <em>Sign in</em> above), not via the connector.
                             </div>
                         </div>
                         <div class="step">
@@ -496,7 +520,7 @@
                                 <strong>Add a custom connector</strong>
                                 Click <strong>Add custom connector</strong> (or <strong>Create</strong>). Enter:
                                 <div><span class="url-pill">https://topic-builder.wikiedu.org/mcp</span></div>
-                                Name it <strong>Wikipedia Topic Builder</strong>. Set authentication to <strong>No authentication</strong>. Save.
+                                Name it <strong>Wikipedia Topic Builder</strong>. Set authentication to <strong>No authentication</strong> &mdash; the sign-in happens in chat (see <em>Sign in</em> above), not in the connector. Save.
                             </div>
                         </div>
                         <div class="step">
@@ -515,7 +539,7 @@
 
         <section>
             <h2>Other MCP clients</h2>
-            <p>Any MCP-capable client (Cursor, Zed, Continue, custom agents built on the protocol) can connect to the URL above. Consult your client's documentation for how to add a remote MCP server with no authentication.</p>
+            <p>Any MCP-capable client (Cursor, Zed, Continue, custom agents built on the protocol) can connect to the URL above. Consult your client's documentation for how to add a remote MCP server with <strong>no connector-level authentication</strong> &mdash; user sign-in happens in chat via the steps under <em>Sign in</em> above.</p>
         </section>
 
         <section>
@@ -582,6 +606,11 @@
                 <div class="tool"><span class="tool-name">list_tasks</span><span class="tool-desc">List available benchmark / dogfood task briefs (for research runs).</span></div>
                 <div class="tool"><span class="tool-name">list_exemplars</span><span class="tool-desc">Free / preparatory: menu of authored worked-example exemplars from analogous benchmark topics (shape axes, summary, headline numbers, high-leverage moves). Call after rubric is set, before any metered tool call.</span></div>
                 <div class="tool"><span class="tool-name">get_exemplar</span><span class="tool-desc">Free / preparatory: full case study for one exemplar by slug — tool sequence, lessons, anti-patterns. Pair with list_exemplars to pick which to read.</span></div>
+                <div class="tool"><span class="tool-name">authenticate</span><span class="tool-desc">Bind a Wikimedia OAuth token (from /oauth/login) to the session. AI offers to remember the token for future chats; sliding 30-day TTL means active users rarely re-paste.</span></div>
+                <div class="tool"><span class="tool-name">whoami</span><span class="tool-desc">Show the authenticated Wikimedia username for the current session, or "anonymous" if no token is bound.</span></div>
+                <div class="tool"><span class="tool-name">revoke_my_token</span><span class="tool-desc">Self-revoke a Topic Builder token. Use if a token was leaked or pasted somewhere it shouldn't be; get a fresh one at /oauth/login.</span></div>
+                <div class="tool"><span class="tool-name">get_topic_visibility</span><span class="tool-desc">Show the current topic's owner and visibility tier (private / public_read / public_edit).</span></div>
+                <div class="tool"><span class="tool-name">set_topic_visibility</span><span class="tool-desc">Change the current topic's visibility. Owner only. private = solo; public_read = anyone reads; public_edit = any signed-in user reads + edits.</span></div>
             </div>
         </section>
 

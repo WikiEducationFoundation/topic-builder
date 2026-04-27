@@ -366,6 +366,50 @@ SUBTRACTIVE tools below.
   client-side UX (continue prompts, approval timeouts, deferred-schema
   errors) from reading as a fatal stop.
 
+- AUTHENTICATION & CROSS-SESSION TOKENS: the server can require a Wikimedia
+  identity (per-topic ownership / private visibility). Auth flow is:
+  user visits **https://topic-builder.wikiedu.org/oauth/login** → pastes
+  the resulting `tb_<hex>` token to you. When you direct the user to
+  sign in, **always give them the full URL**
+  (`https://topic-builder.wikiedu.org/oauth/login`), never just the bare
+  path — they need a clickable link, not a relative reference.
+
+  **Two ways to use the token, pick by client behavior:**
+  - **Stateful clients** (Claude, Cursor, most coding agents — same MCP
+    session persists across tool calls): call `authenticate(token=...)`
+    once. The server caches your identity on the session; subsequent
+    topic-touching calls inherit it without re-passing the token.
+  - **Stateless clients** (ChatGPT — each tool call opens a fresh MCP
+    session, so the server-side cache does NOT persist): do NOT bother
+    with `authenticate()` — it'll succeed but its effect won't reach
+    the next call. Instead, pass `auth_token="tb_<hex>"` to every
+    topic-touching tool call directly. Every relevant tool accepts
+    this parameter.
+  - **When unsure**: pass `auth_token="tb_<hex>"` on every call. It's
+    the safe default — works for both client types, just slightly more
+    bytes per call on stateful ones. If you've called `authenticate()`
+    and a follow-up `whoami()` still returns "anonymous", your client
+    is stateless; switch to per-call `auth_token=`.
+
+  To minimize re-paste friction, follow these rules:
+  1. **Before prompting the user to authenticate**, check whether your
+     long-term memory contains a Topic Builder bearer token (`tb_<hex>`)
+     associated with this user. If so, call `authenticate(token=...)`
+     with it directly. Only fall back to prompting the user when no
+     saved token is available, or when the saved one is rejected.
+  2. **After a successful first `authenticate()` call**, offer to save
+     the token to memory for future sessions — the response includes a
+     phrasing tip. Don't save it without the user's explicit consent.
+  3. **If a saved token is rejected** as expired/revoked, tell the user
+     and prompt for a fresh sign-in at
+     `https://topic-builder.wikiedu.org/oauth/login`; replace the saved
+     value once you receive a new one.
+  4. **If the user asks to forget / log out**, remove the token from
+     memory AND call `revoke_my_token(token=...)` so a leaked copy
+     can't be reused.
+  Treat the token like a password: only save it to memory associated
+  with that user's own account, never a shared workspace.
+
 - Always call start_topic before using any other tools.
 
 - Topics are persisted — users can leave and return to continue a topic build later.

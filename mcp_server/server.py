@@ -345,7 +345,7 @@ def _can_write(owner: str | None, visibility: str, caller: str | None) -> bool:
 def _auth_required_error(reason: str = "") -> str:
     base = ("Authentication required. Visit "
             "https://topic-builder.wikiedu.org/oauth/login to sign in with "
-            "your Wikipedia account; copy the token shown and paste it to "
+            "your Wikimedia account; copy the token shown and paste it to "
             "me, then I'll call authenticate(token=...) to bind it to this "
             "session. Stateless clients (ChatGPT) should pass "
             "auth_token=tb_... on every subsequent call.")
@@ -847,7 +847,8 @@ def list_topics(auth_token: str | None = None,
 @mcp.tool()
 def authenticate(token: str, ctx: Context = None) -> str:
     """Bind a Wikimedia OAuth token to this MCP session. Call this once
-    after the user pastes a token from /oauth/login; subsequent
+    after the user pastes a token from
+    https://topic-builder.wikiedu.org/oauth/login; subsequent
     topic-touching tools will treat you as that user (when auth
     enforcement is enabled). For stateless clients (ChatGPT) you can
     skip this and pass `auth_token=tb_...` on every call instead.
@@ -879,6 +880,60 @@ def authenticate(token: str, ctx: Context = None) -> str:
         "expires_at": info['expires_at'],
         "note": ("Token bound to this MCP session. Subsequent tools will "
                  "act as this user when permission enforcement is on."),
+        "cross_session_persistence_tip": (
+            "If your AI client supports long-term memory (Claude Code, "
+            "Claude.ai, ChatGPT), you can offer to save this token to "
+            "memory so future chats can authenticate without re-pasting. "
+            "Treat the token like a password — only save it to memory "
+            "associated with this user's own account, never a shared "
+            "workspace. The token slides 30 days forward on each use, "
+            "so an active user rarely needs to re-issue. If the user "
+            "ever needs to invalidate a saved token, call "
+            "revoke_my_token(token=…)."),
+    }, indent=2, ensure_ascii=False)
+
+
+@mcp.tool()
+def revoke_my_token(token: str, ctx: Context = None) -> str:
+    """Revoke a Topic Builder bearer token (`tb_<hex>`).
+
+    Use this if a token was leaked, pasted somewhere it shouldn't be
+    (a shared chat, a public log, a saved memory in the wrong account,
+    etc.), or simply when the user wants to retire it. Self-service —
+    no other auth required beyond knowing the token, since the token
+    itself is the credential being revoked.
+
+    After revocation, any session bound to this token will lose access
+    on its next non-cached check (within ~5 minutes). The user can
+    issue a fresh token any time at
+    https://topic-builder.wikiedu.org/oauth/login.
+
+    Args:
+        token: The `tb_<hex>` token to revoke.
+
+    Returns: {"revoked": true} on success, {"revoked": false, ...} if
+    the token wasn't found or was already revoked.
+    """
+    _start = _start_call()
+    if not token or not isinstance(token, str):
+        return json.dumps({
+            "revoked": False,
+            "error": "Pass a non-empty token string.",
+        }, indent=2, ensure_ascii=False)
+    ok = db.revoke_auth_token(token.strip())
+    log_usage(ctx, "revoke_my_token", {},
+              f"revoked={ok}", start_time=_start)
+    if ok:
+        return json.dumps({
+            "revoked": True,
+            "note": ("Token revoked. Any session using it will lose "
+                     "access on the next non-cached auth check. Get a "
+                     "fresh token at "
+                     "https://topic-builder.wikiedu.org/oauth/login."),
+        }, indent=2, ensure_ascii=False)
+    return json.dumps({
+        "revoked": False,
+        "note": ("Token not found or already revoked. No action taken."),
     }, indent=2, ensure_ascii=False)
 
 
