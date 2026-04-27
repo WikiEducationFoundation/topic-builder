@@ -331,6 +331,96 @@ The project's origin topic — climate change was the test subject for the 2026-
 
 - **Ratchet inclusion:** deferred. Adds a "well-organized academic + movement" shape the existing five don't cover, but the per-cycle cost is meaningful (~2,500 API calls). Decision lives in operator hands per the rubric in `docs/adding-exemplars.md`.
 
+## Three follow-ups from the 2026-04-27 ChatGPT apollo-11 dogfood (2026-04-27)
+
+Three items derived from analyzing the autonomous ChatGPT run on
+apollo-11-thin (32 tool calls, 255-article corpus, ratings 7/8) — see
+the dogfood synthesis in conversation logs around 2026-04-27.
+
+### `audit_progress` strategy detection: per-call navbox attribution
+
+The Apollo 11 run called `harvest_navbox` four times — `Apollo11series`,
+`Apollo program`, `Lunar landers`, `Moon spacecraft` — and the AI
+correctly executed both founder-cascade AND parent-program-navbox
+moves. But `_TOOL_TO_MOVE` mapped `harvest_navbox` to a single
+strategy (`founder-navbox-cascade`), so `audit_progress` 11 minutes
+later listed `parent-program-navbox` as unused-but-applicable, when
+it had actually been done.
+
+Fix: `_TOOL_TO_MOVE` now accepts callable values
+`(entry, topic_name) → list[str]`. `harvest_navbox` uses a callable
+that picks `founder-navbox-cascade` when the template name contains
+the topic stem (Apollo11series → "apollo" + "11" both present),
+`parent-program-navbox` otherwise (Apollo program, Lunar landers).
+The variant-tail tokens (`-thin`, `-informed`, `-efficiency`) are
+stripped from the stem so benchmark templates don't carry the variant
+into the match. Loop in `_topic_strategy_summary` updated to handle
+both string and callable values.
+
+### `topic_diff(topic_a, topic_b)` — same-wiki two-topic comparison
+
+Multi-session evidence (4 sessions across AA-STEM, orchids,
+climate-change, and the apollo-11 ChatGPT run, all asking for some
+form of cross-topic comparison primitive). Ships the corpus-diff
+variant: partition the union of two ingested topics' titles into
+`only_a` / `only_b` / `both`, with counts + alphabetical samples per
+bucket. `by_source=True` adds an `only_a_by_source` map showing which
+sources contributed each title that's in A but not B — useful for
+ratchet "where did the extra 200 titles come from?" diagnostics.
+
+Read-only DB query (set partition on `articles.title`); ACL-aware via
+`_require_topic(mode='read')` for both topics. Same-wiki not
+enforced — AI is responsible for not diffing across wikis (a cross-
+wiki diff would treat translated titles as different).
+
+The at-pull-time intersection variant (cat × WikiProject without
+ingesting all of WP) — what the apollo-11 run actually wanted — is
+NOT shipped here; tracked as a sub-item in the same backlog entry.
+
+### `submit_feedback` confabulation crosscheck against `usage.jsonl`
+
+Measurement-integrity item. The Apollo 11 ChatGPT feedback claimed
+`wikidata_property` as a strategy used in BOTH phases,
+`strategy_execution.moves_succeeded` listed `wikidata-property-probe-
+additive`, `sharp_edges_hit` included `wikidata_filtered_entity_call_
+blocked` and `filter_articles_refusal`, and an `add_articles` note
+described "committing enwiki sitelinks from phase-2 Wikidata
+P361=Q43653…" — but the usage log shows zero `wikidata_*` calls and
+the one `filter_articles` call succeeded. The AI fabricated the
+sitelinks from internal knowledge and reported them as if a tool call
+had happened. Same run also fabricated a "Developer-directed" framing
+in 19 of 32 call notes — it was a fully-autonomous run with zero
+operator direction.
+
+Implementation:
+- New mapping tables: `_STRATEGY_FAMILY_EVIDENCE`
+  (`{family_tag: [tool_names]}`) and `_SHARP_EDGE_EVIDENCE`
+  (`{edge_name: {tools, result_pattern}}`). Conservative coverage —
+  judgment-shaped sharp-edges (`shortdesc_misleading`, `list_page_noise`)
+  are intentionally NOT mapped, so they're never flagged.
+- New helper `_observed_signals_from_log(topic_name)` returns
+  `{tool_call_counts, tool_call_results}` for the topic.
+- `_compute_confabulation_flags(strategies_used, sharp_edges_hit,
+  prep_calls_made, observed)` returns structured flag dicts
+  `{field, claim, expected_evidence, observed}`.
+- `submit_feedback` runs the crosscheck after entry construction;
+  persists `confabulation_flags` on the record (when non-empty);
+  surfaces a "⚠ Cross-checks against usage.jsonl flagged N self-report
+  mismatches" block in the response with the first 6 flags as
+  bullets.
+- Mental ops on `prep_calls_made` (`rubric_reread`, `strategy_sketch`,
+  `scope_review`, `rubric_redraft`) are unverifiable and never flagged.
+
+Verified by replaying the apollo-11 ChatGPT confabulation: produces
+exactly the 8 expected flags (3 strategies, 2 edges, 3 prep calls);
+no false positives on corroborated strategies (`navbox`,
+`category_crawl`, `list_harvest`, etc.) or judgment edges
+(`broad_navbox_overpull`, `list_page_noise`, `shortdesc_misleading`).
+
+`tool_friction` not yet crosschecked — value strings are too
+unstructured for a clean predicate table; deferred as a Tier 2
+follow-up.
+
 ## Pagination for `get_article_links` / `get_article_backlinks` (2026-04-26)
 
 Tier 1 backlog item. Both seed-mining tools previously stopped at

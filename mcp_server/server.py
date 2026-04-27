@@ -1079,10 +1079,46 @@ def resume_topic(name: str,
 
 
 # Tool-name → strategy-move-name mapping for shape_strategies_attempted
-# derivation. Some tools support multiple moves; we use the most common
-# interpretation. Entries set to None are support tools (fetch_descriptions,
-# resolve_qids, get_articles*) that don't represent a strategy move on
-# their own.
+# derivation. Values can be:
+#   - a string move name (single move credited per call)
+#   - a callable (entry, topic_name) -> list[str] (zero or more moves
+#     credited based on per-call params)
+# Callables let one tool credit different moves depending on how it was
+# called (e.g., harvest_navbox on the topic's own template = founder-
+# cascade; on a parent-program's template = parent-program-navbox).
+# Entries left out entirely are support tools (fetch_descriptions,
+# resolve_qids, get_articles*) that don't represent a strategy move.
+
+
+def _harvest_navbox_moves(entry: dict, topic_name: str) -> list[str]:
+    """A `harvest_navbox` call credits founder-navbox-cascade when the
+    template name contains the topic stem (the topic's own template),
+    or parent-program-navbox when it doesn't (a parent / sibling /
+    related-program template). Apollo 11 example: harvest_navbox on
+    `Apollo11series` → founder-cascade; harvest_navbox on
+    `Apollo program` → parent-program-navbox.
+    """
+    template = ((entry.get('params') or {}).get('template') or '').lower()
+    if not template:
+        return ['founder-navbox-cascade']
+    # Topic stem: drop the timestamp/variant suffix that templated runs
+    # add (e.g., "apollo-11-thin 20260427T0024" → "apollo-11-thin"),
+    # then split on non-alphanumerics.
+    stem = (topic_name or '').split()[0].lower() if topic_name else ''
+    stem_words = [w for w in re.split(r'[^a-z0-9]+', stem) if w]
+    # Drop the variant tail ("-thin", "-informed", "-efficiency") so a
+    # benchmark topic's stem doesn't carry the variant token into the
+    # template-match check.
+    if stem_words and stem_words[-1] in ('thin', 'informed', 'efficiency'):
+        stem_words = stem_words[:-1]
+    if not stem_words:
+        return ['founder-navbox-cascade']
+    template_norm = re.sub(r'[^a-z0-9]+', ' ', template)
+    if all(w in template_norm for w in stem_words):
+        return ['founder-navbox-cascade']
+    return ['parent-program-navbox']
+
+
 _TOOL_TO_MOVE = {
     "survey_categories": "category-shape-survey-with-branch-identification",
     "preview_category_pull": "category-shape-survey-with-branch-identification",
@@ -1092,7 +1128,7 @@ _TOOL_TO_MOVE = {
     "find_list_pages": "list-page-discovery-and-triage",
     "wikidata_search_entity": "topic-qid-resolution",
     "get_category_articles": "branch-excluded-category-sweep",
-    "harvest_navbox": "founder-navbox-cascade",
+    "harvest_navbox": _harvest_navbox_moves,
     "harvest_list_page": "main-article-as-list-page",
     "preview_harvest_list_page": "main-article-as-list-page",
     "search_articles": "targeted-search-anchored-by-vocabulary",
@@ -1112,6 +1148,221 @@ _TOOL_TO_MOVE = {
     # require external SPARQL or cross-wiki workflow not detectable from a
     # single tool-call signature. Not auto-detected.
 }
+
+
+# ── Confabulation crosscheck against usage log ────────────────────────
+#
+# Maps reflective fields on submit_feedback (strategies_used,
+# sharp_edges_hit) to the tool-call shapes that would corroborate them.
+# An AI-claimed strategy/edge with no matching tool call in the topic's
+# usage log produces a confabulation_flag, surfaced in the feedback
+# response and persisted on the feedback record. Flags are signal, not
+# refusal — feedback always records.
+#
+# Conservative principle: only flag claims that are clearly tool-call-
+# shaped. Content-judgment claims (e.g., "shortdesc_misleading",
+# "popular-culture-list-page-overlinking") aren't crosscheckable and are
+# left unflagged.
+
+_STRATEGY_FAMILY_EVIDENCE: dict[str, list[str]] = {
+    # tag (as the AI populates it on strategies_used) → list of tool
+    # names whose presence in the usage log corroborates the claim.
+    "navbox":             ["harvest_navbox"],
+    "category_crawl":     ["get_category_articles", "survey_categories",
+                           "preview_category_pull"],
+    "list_harvest":       ["harvest_list_page", "preview_harvest_list_page"],
+    "wikidata_property":  ["wikidata_get_entity",
+                           "wikidata_entities_by_property",
+                           "wikidata_query"],
+    "search":             ["search_articles", "preview_search"],
+    "similarity":         ["search_similar", "preview_similar"],
+    "article_links":      ["get_article_links", "get_article_backlinks",
+                           "get_article_categories", "get_article_templates",
+                           "get_article_content"],
+    "wikiproject_recon":  ["find_wikiprojects", "check_wikiproject",
+                           "get_wikiproject_articles"],
+    "edge_browse":        ["browse_edges"],
+    "fetch_leads":        ["fetch_article_leads"],
+    "fetch_descriptions": ["fetch_descriptions"],
+    "description_fetch":  ["fetch_descriptions"],   # alias seen in logs
+    "redirect_resolution": ["resolve_redirects"],
+    "source_pruning":     ["remove_by_source", "get_articles_by_source"],
+    "manual_reinclusion": ["add_articles"],
+    "get_exemplar":       ["get_exemplar", "list_exemplars"],
+}
+
+# sharp_edges_hit values that are tool-shaped and crosscheckable. Each
+# entry is {"tools": [...], "result_pattern": <regex or None>}. If the
+# AI claims one of these but no matching call exists (or matching calls
+# don't have the expected result shape), flag it. Edges NOT listed here
+# are judgment-shaped (e.g., "shortdesc_misleading") and never flagged.
+_SHARP_EDGE_EVIDENCE: dict[str, dict] = {
+    "filter_articles_refusal": {
+        "tools": ["filter_articles"],
+        "result_pattern": r"refus|safety threshold|blocked",
+    },
+    "wikidata_filtered_entity_call_blocked": {
+        "tools": ["wikidata_get_entity", "wikidata_entities_by_property",
+                  "wikidata_query"],
+        "result_pattern": r"refus|block|safety|forbid",
+    },
+    "auto_score_by_description_proper_noun_collision": {
+        "tools": ["auto_score_by_description"],
+        "result_pattern": None,  # any call to the tool is enough
+    },
+    "harvest_navbox_empty": {
+        "tools": ["harvest_navbox"],
+        "result_pattern": r"\b0 (links|new)\b|empty",
+    },
+    "fetch_descriptions_timeout": {
+        "tools": ["fetch_descriptions"],
+        "result_pattern": r"timed?[_ -]?out|budget exhausted",
+    },
+}
+
+
+def _observed_signals_from_log(topic_name: str,
+                               max_lines: int = 20000) -> dict:
+    """Return the tool-call evidence for a topic, used by the
+    confabulation crosscheck. Returns:
+      {
+        "tool_call_counts": {tool_name: int},
+        "tool_call_results": {tool_name: [result_string, ...]},
+      }
+    Empty if the log isn't present or the topic has no entries."""
+    log_path = os.path.join(LOG_DIR, 'usage.jsonl')
+    counts: collections.Counter[str] = collections.Counter()
+    results: dict[str, list[str]] = collections.defaultdict(list)
+    if not os.path.exists(log_path):
+        return {"tool_call_counts": {}, "tool_call_results": {}}
+    try:
+        with open(log_path, 'r') as f:
+            lines = f.readlines()
+    except Exception:
+        return {"tool_call_counts": {}, "tool_call_results": {}}
+    for line in lines[-max_lines:]:
+        try:
+            entry = json.loads(line)
+        except Exception:
+            continue
+        if entry.get('topic') != topic_name:
+            continue
+        tool = entry.get('tool')
+        if not tool:
+            continue
+        counts[tool] += 1
+        result = entry.get('result') or ''
+        if result:
+            results[tool].append(result)
+    return {
+        "tool_call_counts": dict(counts),
+        "tool_call_results": dict(results),
+    }
+
+
+def _compute_confabulation_flags(strategies_used: list | None,
+                                 sharp_edges_hit: list | None,
+                                 prep_calls_made: list | None,
+                                 observed: dict) -> list[dict]:
+    """Crosscheck AI-claimed reflective fields against tool-call evidence
+    from `observed` (output of _observed_signals_from_log). Returns a
+    list of structured flag dicts, each {field, claim,
+    expected_evidence, observed}. Empty list when nothing's flagged."""
+    flags: list[dict] = []
+    counts = observed.get("tool_call_counts", {}) or {}
+    results = observed.get("tool_call_results", {}) or {}
+
+    # 1. strategies_used — every claimed family with no corroborating call.
+    for tag in (strategies_used or []):
+        if not isinstance(tag, str):
+            continue
+        if tag not in _STRATEGY_FAMILY_EVIDENCE:
+            flags.append({
+                "field": "strategies_used",
+                "claim": tag,
+                "expected_evidence": "(unmapped family — add to "
+                                     "_STRATEGY_FAMILY_EVIDENCE if this is "
+                                     "a real category)",
+                "observed": "no mapping registered",
+            })
+            continue
+        evidence_tools = _STRATEGY_FAMILY_EVIDENCE[tag]
+        if not any(counts.get(t, 0) > 0 for t in evidence_tools):
+            flags.append({
+                "field": "strategies_used",
+                "claim": tag,
+                "expected_evidence": f"≥1 call to one of: {evidence_tools}",
+                "observed": "no matching tool calls in this topic's log",
+            })
+
+    # 2. sharp_edges_hit — only flag known tool-shaped edges with missing
+    #    evidence. Unknown edges (judgment-shaped or new) don't flag.
+    for edge in (sharp_edges_hit or []):
+        if not isinstance(edge, str) or edge not in _SHARP_EDGE_EVIDENCE:
+            continue  # judgment-shaped or new; can't crosscheck
+        spec = _SHARP_EDGE_EVIDENCE[edge]
+        candidate_tools = spec.get("tools", [])
+        pattern = spec.get("result_pattern")
+        if not any(counts.get(t, 0) > 0 for t in candidate_tools):
+            flags.append({
+                "field": "sharp_edges_hit",
+                "claim": edge,
+                "expected_evidence":
+                    f"≥1 call to one of: {candidate_tools}",
+                "observed": "tool was never called",
+            })
+            continue
+        if pattern is not None:
+            # Tool was called; check that at least one result matches.
+            matched = False
+            for t in candidate_tools:
+                for res in results.get(t, []):
+                    if re.search(pattern, res, re.IGNORECASE):
+                        matched = True
+                        break
+                if matched:
+                    break
+            if not matched:
+                examples = []
+                for t in candidate_tools:
+                    examples.extend(results.get(t, []))
+                examples = examples[:2]
+                flags.append({
+                    "field": "sharp_edges_hit",
+                    "claim": edge,
+                    "expected_evidence":
+                        f"call result matching /{pattern}/i",
+                    "observed":
+                        f"{candidate_tools} called but results don't "
+                        f"match (e.g., {examples})",
+                })
+
+    # 3. prep_calls_made — claimed prep ops that look tool-shaped and
+    #    aren't in the log. We support two shapes the briefs use:
+    #    - bare tool names ("list_exemplars")
+    #    - "<tool>:<arg>" shorthand ("get_exemplar:climate-change")
+    #    Mental ops (rubric_reread, strategy_sketch) are unverifiable
+    #    and never flagged.
+    _MENTAL_OPS = {"rubric_reread", "strategy_sketch", "scope_review",
+                   "rubric_redraft"}
+    for op in (prep_calls_made or []):
+        if not isinstance(op, str) or op in _MENTAL_OPS:
+            continue
+        tool_name = op.split(":", 1)[0]
+        # Only crosscheck if it looks like a known MCP tool.
+        if tool_name in counts:
+            continue
+        if tool_name in _STRATEGY_FAMILY_EVIDENCE or \
+                tool_name in (n for tools in _STRATEGY_FAMILY_EVIDENCE.values()
+                              for n in tools):
+            flags.append({
+                "field": "prep_calls_made",
+                "claim": op,
+                "expected_evidence": f"≥1 call to {tool_name}",
+                "observed": "no matching tool calls in this topic's log",
+            })
+
+    return flags
 
 
 def _classify_yield_trend(yields: list[int]) -> str:
@@ -1170,10 +1421,19 @@ def _topic_strategy_summary(topic_name: str,
             continue
         tool = entry.get('tool')
         if tool in _TOOL_TO_MOVE:
-            move = _TOOL_TO_MOVE[tool]
-            if move and move not in moves_seen:
-                moves.append(move)
-                moves_seen.add(move)
+            derived = _TOOL_TO_MOVE[tool]
+            if callable(derived):
+                new_moves = derived(entry, topic_name) or []
+            elif isinstance(derived, str):
+                new_moves = [derived]
+            elif isinstance(derived, (list, tuple)):
+                new_moves = list(derived)
+            else:
+                new_moves = []
+            for move in new_moves:
+                if move and move not in moves_seen:
+                    moves.append(move)
+                    moves_seen.add(move)
         # Track corpus-affecting yield (delta in articles_count).
         articles_count = entry.get('articles_count')
         if articles_count is not None:
@@ -1896,6 +2156,117 @@ def audit_progress(note: str = "",
               {"profile_committed": profile is not None},
               f"{total} articles, {len(failure_modes)} failure modes, "
               f"{len(unused_moves)} unused moves",
+              start_time=_start, note=note)
+    return json.dumps(response, indent=2, ensure_ascii=False)
+
+
+@mcp.tool()
+def topic_diff(topic_a: str, topic_b: str,
+               sample_size: int = 20,
+               by_source: bool = False,
+               note: str = "",
+               auth_token: str | None = None,
+               ctx: Context = None) -> str:
+    """Partition the union of two topics' articles into three buckets:
+    `only_a`, `only_b`, `both`. Read-only; doesn't mutate either topic.
+
+    Use cases:
+    - **Ratchet diagnostic**: diff a fresh ratchet run against the
+      frozen baseline corpus to see exactly which titles the run added
+      or dropped. More auditable than a precision/recall percentage.
+    - **Blocklist / negative-set comparison**: diff a topic against a
+      hand-curated noise list (e.g., `african-american-stem` against an
+      `AA STEM medicine blocklist` topic) to surface likely false
+      positives.
+    - **Source-of-truth reconciliation**: diff a category-led pull
+      against a Wikidata-led pull on the same topic to surface
+      structural-vs-curatorial gaps.
+
+    Both topics must be on the same wiki for the diff to be
+    meaningful — this tool doesn't enforce that, but a cross-wiki diff
+    will treat translated titles as different. For cross-wiki, see the
+    Tier 2 `cross_wiki_diff` plan in `docs/backlog/README.md`.
+
+    Args:
+        topic_a: First topic name. Required.
+        topic_b: Second topic name. Required.
+        sample_size: Per-bucket sample size in the response (default
+            20). Counts are always exact; samples are first-N
+            alphabetical. Set 0 to suppress samples.
+        by_source: If True, include `only_a_by_source`, a
+            `{source_label: count}` map showing which sources
+            contributed each title in only_a. Useful for
+            "where did the extra 200 titles come from?" diagnostics.
+        note: Optional free-text observation for this call's log entry.
+        auth_token: Optional Wikimedia OAuth bearer token for stateless
+            clients.
+
+    Returns:
+        {
+          "topic_a": "...",
+          "topic_b": "...",
+          "only_a": {"count": N, "samples": [...]},
+          "only_b": {"count": N, "samples": [...]},
+          "both":   {"count": N, "samples": [...]},
+          "only_a_by_source": {...}  # only when by_source=True
+        }
+
+    Sister-tool note: at-pull-time intersection (e.g., articles in
+    `category:Apollo 11` AND tagged by `wikiproject:Spaceflight`
+    without ingesting all of Spaceflight first) is a separate primitive
+    not built yet — track in backlog. For now, ingest both as topics
+    and use this tool, OR use `get_articles(sources_all=[...])` if both
+    have already been pulled into the same topic.
+    """
+    _start = _start_call()
+    if not topic_a or not topic_b:
+        return json.dumps({
+            "error": "Both topic_a and topic_b are required (non-empty).",
+        }, indent=2, ensure_ascii=False)
+
+    a_id, _, a_canonical = db.get_topic_by_name(topic_a)
+    if a_id is None:
+        return json.dumps({
+            "error": f"Topic A not found: {topic_a!r}. Use list_topics to "
+                     "see what's available.",
+        }, indent=2, ensure_ascii=False)
+    b_id, _, b_canonical = db.get_topic_by_name(topic_b)
+    if b_id is None:
+        return json.dumps({
+            "error": f"Topic B not found: {topic_b!r}. Use list_topics to "
+                     "see what's available.",
+        }, indent=2, ensure_ascii=False)
+
+    # ACL: under enforcement, the caller must be able to read BOTH
+    # topics. Use _require_topic with mode='read' for each — passing
+    # the topic name binds the session to it as a side effect, but
+    # that's harmless for an explicit two-topic comparison.
+    _, _, err_a = _require_topic(ctx, topic_a, mode='read',
+                                 auth_token=auth_token)
+    if err_a:
+        return err_a
+    _, _, err_b = _require_topic(ctx, topic_b, mode='read',
+                                 auth_token=auth_token)
+    if err_b:
+        return err_b
+
+    diff = db.topic_diff(a_id, b_id, sample_size=sample_size)
+    response = {
+        "topic_a": topic_a,
+        "topic_b": topic_b,
+        "only_a": diff["only_a"],
+        "only_b": diff["only_b"],
+        "both":   diff["both"],
+    }
+    if by_source and diff["only_a"]["count"] > 0:
+        response["only_a_by_source"] = db.topic_diff_by_source(a_id, b_id)
+
+    log_usage(ctx, "topic_diff",
+              {"topic_a": topic_a, "topic_b": topic_b,
+               "by_source": by_source},
+              f"only_a={diff['only_a']['count']} "
+              f"only_b={diff['only_b']['count']} "
+              f"both={diff['both']['count']}",
               start_time=_start, note=note)
     return json.dumps(response, indent=2, ensure_ascii=False)
 
@@ -7106,6 +7477,24 @@ def submit_feedback(summary: str, what_worked: str = "", what_didnt: str = "",
         except Exception:
             pass
 
+    # Confabulation crosscheck: compare AI-claimed reflective fields
+    # against tool-call evidence from this topic's usage log. Persist
+    # any flags on the feedback record (so scoring scripts can filter)
+    # and surface in the response (mild calibration pressure on the AI).
+    confabulation_flags: list[dict] = []
+    try:
+        observed = _observed_signals_from_log(resolved_topic)
+        confabulation_flags = _compute_confabulation_flags(
+            strategies_used=strategies_used,
+            sharp_edges_hit=sharp_edges_hit,
+            prep_calls_made=prep_calls_made,
+            observed=observed,
+        )
+    except Exception:
+        confabulation_flags = []
+    if confabulation_flags:
+        entry["confabulation_flags"] = confabulation_flags
+
     db.append_feedback(entry)
     log_params = {"topic": resolved_topic, "rating": rating}
     # Old-shape fallback: AI may pass legacy {"confidence": ...}
@@ -7150,6 +7539,24 @@ def submit_feedback(summary: str, what_worked: str = "", what_didnt: str = "",
                 response_lines.append(
                     f"AI override recorded: {ai_override}."
                 )
+    if confabulation_flags:
+        response_lines.append(
+            f"⚠ Cross-checks against usage.jsonl flagged "
+            f"{len(confabulation_flags)} self-report mismatch"
+            f"{'es' if len(confabulation_flags) != 1 else ''}:")
+        for flag in confabulation_flags[:6]:  # cap visible list
+            response_lines.append(
+                f"  - {flag['field']} claims "
+                f"{flag['claim']!r} but {flag['observed']}.")
+        if len(confabulation_flags) > 6:
+            response_lines.append(
+                f"  - (and {len(confabulation_flags) - 6} more — see "
+                "feedback record).")
+        response_lines.append(
+            "The feedback was still recorded; flags are saved on the "
+            "record for scoring. If a flagged claim was correct and the "
+            "tool call really happened, mention it to the user — the "
+            "log may be incomplete.")
     response_lines.append(
         "Tell the user their feedback was submitted.")
     return " ".join(response_lines)

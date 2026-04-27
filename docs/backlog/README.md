@@ -87,19 +87,70 @@ Same shape complaint, orthogonal directions (biography lists leaking non-bios, t
 
 ---
 
-### ☐ Same-wiki topic diff / intersection primitive `[NEW — 2026-04-24 multi-session: AA-STEM + orchids]`
+### ◐ Same-wiki topic diff / intersection primitive `[NEW — 2026-04-24, expanded + corpus-diff variant shipped 2026-04-27]`
+
+**Status.** Corpus-diff variant `topic_diff(topic_a, topic_b, sample_size, by_source)` shipped 2026-04-27 — covers AA-STEM blocklist comparison and orchids ratchet-vs-baseline diagnostic. **At-pull-time intersection** (cat × WikiProject without ingesting all of WP first — what Apollo 11 ChatGPT wanted) NOT yet built; remains open as the next sub-item below.
 
 **What.** A `topic_diff(topic_a, topic_b)` or `topic_intersect(topic_a, topic_b)` tool for same-wiki topic comparison, returning set partitions (`only_a` / `only_b` / `both`). Distinct from the Tier 2 `cross_wiki_diff` (different wikis).
 
-**Why.** Two multi-session wishes:
+**Why.** Multi-session wishes — now four sessions across three topic shapes:
 - AA-STEM (2026-04-23): "I felt the absence of an easy cross-topic intersect/diff against the AA medicine blocklist and the frozen baseline; that would have made cleanup and audit faster and more defensible." — wanting to compare `african-american-stem` against `AA STEM medicine blocklist` to surface likely-clinical-physician false positives.
 - Orchids (2026-04-24): "A corpus-diff tool against another topic/source set (for example baseline topic vs current topic, or category/list harvest vs Wikidata sitelinks) would also make gap and noise review much faster." — wanting to compare ratchet-run corpus against the frozen baseline corpus to surface exactly the additions and removals.
+- Climate-change (2026-04-26): WikiProject ∩ category-tree intersection was an explicit unmet need flagged in feedback.
+- **Apollo 11 ChatGPT autonomous (2026-04-27):** highest-recommended phase-2 move per the AI was "WikiProject Spaceflight × Category:Apollo 11 intersection," and the AI flagged its absence as the #1 missed strategy: *"A true WikiProject intersection tool would help: WikiProject Moon or Spaceflight intersected with Category:Apollo 11 or Apollo11series would likely improve triangulation without broad overpull."*
 
 Second use case is especially useful as a ratchet diagnostic: the scoring script shows metrics, but a human-readable "here are the 456 titles this run added that baseline didn't have" is more auditable than a percentage.
 
 **Shape.** Read-only SQL over `articles` table scoped to two topic IDs. Partition into three buckets. Return counts + optional per-bucket sample. May want a `by_source=True` mode that surfaces which sources contribute to each bucket.
 
-**Sequencing note.** Simpler than `cross_wiki_diff` (no langlinks / Wikidata roundtrips needed). Could ship standalone. If it proves useful, the cross-wiki case could become a wrapper that normalizes topics-on-different-wikis to QIDs first and then calls this.
+For the Apollo-shape WikiProject-intersection case specifically, the AI's mental model is "category narrows, WikiProject corroborates" — the answer it wanted is `category:Apollo 11 ∩ wikiproject:Spaceflight` returning the high-confidence core. That's already expressible via `get_articles(sources_all=["category:Apollo 11", "wikiproject:Spaceflight"])` IF both have been pulled — but the AI didn't pull WikiProject Spaceflight because it was scared of overpull. A primitive that performs the intersection AT PULL TIME (i.e., "give me articles in category X that are also tagged by WikiProject Y, without first ingesting all of Y") would be the actual unlock — closer to PetScan than to a corpus diff. Worth distinguishing the two shapes when sequencing:
+- **`topic_diff` over already-ingested topics** — what AA-STEM and orchids wanted. Cheap.
+- **At-pull-time intersection** (cat × WikiProject, cat × cat) — what Apollo 11 wanted. Adjacent to the deferred PetScan-style item but narrower (just two-set cases).
+
+**Sequencing note.** Promote to active build slot. The corpus-diff variant is simpler than `cross_wiki_diff` (no langlinks / Wikidata roundtrips needed); ship that first. The at-pull-time intersection can either share the tool surface or land as a sibling — design call when implementation starts.
+
+### ☑ `audit_progress` strategy-detection: navbox harvests not credited as `parent-program-navbox` `[shipped 2026-04-27]`
+
+`_TOOL_TO_MOVE` now supports callable values (entry, topic_name → list[str]). `harvest_navbox` uses a callable that picks `founder-navbox-cascade` when the template name contains the topic stem (e.g., `Apollo11series` for an `apollo-11-thin` topic) and `parent-program-navbox` otherwise (e.g., `Apollo program`, `Lunar landers`). Verified with offline replay of the apollo-11 ChatGPT run: both moves now correctly credited from the same session's harvest_navbox calls. Shape-derivation table (the *applicable* moves logic in `_applicable_moves_for_profile`) was already correct; this fix is to the *attempted* moves derivation.
+
+### ☑ `submit_feedback` confabulation crosscheck against `usage.jsonl` `[shipped 2026-04-27]`
+
+V1 shipped: `_STRATEGY_FAMILY_EVIDENCE` + `_SHARP_EDGE_EVIDENCE` mapping tables + `_observed_signals_from_log` helper + `_compute_confabulation_flags`. `submit_feedback` now persists a `confabulation_flags` list on the feedback record (when non-empty) and surfaces a "⚠ Cross-checks against usage.jsonl flagged N self-report mismatches" block in the response. Crosscheck covers `strategies_used` (against tool-call presence), `sharp_edges_hit` (only the tool-shaped edges with explicit predicates; judgment-shaped edges left unflagged), and `prep_calls_made` (tool-call entries; mental ops like `rubric_reread` left unflagged). Verified by replaying the apollo-11 ChatGPT confabulation: produces exactly the 8 expected flags (`wikidata_property`, `article_links`, `wikiproject_recon` strategies; `filter_articles_refusal`, `wikidata_filtered_entity_call_blocked` edges; 3 prep calls), no false positives on corroborated claims, no false positives on judgment edges. `tool_friction` not yet crosschecked (Tier 2 follow-up — value strings are too unstructured for a clean predicate table).
+
+**Original spec preserved below for context.**
+
+**What.** Cross-validate the AI-self-reported fields on `submit_feedback` (`strategies_used`, `sharp_edges_hit`, `tool_friction`, plus `prep_calls_made` / `prep_calls_skipped`) against actual tool calls observed in `usage.jsonl` for this topic. When a self-reported strategy/sharp-edge has no corresponding tool-call evidence, surface a structured warning in the `submit_feedback` response AND tag the feedback record with `confabulation_flags: [...]` so downstream scoring can discount or filter.
+
+The existing `strategy_execution.moves_observed_from_log` field already does exactly this for `strategy_execution.moves_attempted` (added in Ship 1, 2026-04-26). This item generalizes the same pattern across the other AI-self-reported lists.
+
+**Why.** Apollo 11 ChatGPT autonomous run 2026-04-27 produced a stark example. Feedback claimed:
+- `strategies_used` included `wikidata_property` in BOTH phases.
+- `strategy_execution.moves_succeeded` included `wikidata-property-probe-additive`.
+- `sharp_edges_hit` included `wikidata_filtered_entity_call_blocked` and `filter_articles_refusal`.
+- An add_articles `note` claimed verbatim: "Committing enwiki sitelinks from phase-2 Wikidata P361=Q43653…"
+
+The usage log shows **zero `wikidata_*` calls** on this topic across both phases. The single `filter_articles` call succeeded (226→221, no refusal). The AI fabricated the wikidata sitelinks from internal knowledge and reported them as if a tool call had happened. Same run also fabricated a `Developer-directed` / `Developer-requested` framing in 19 of 32 call notes — but the operator confirmed afterward this was a fully-autonomous run with zero direction beyond the standard kickoff prompt. So the confabulation isn't isolated to one field; the AI is constructing a backstory of context (operator direction, tool calls, strategies) to make its output read as more deliberate / corroborated than it actually is.
+
+This directly threatens ratchet measurement integrity. If `strategies_used` and `sharp_edges_hit` are used as longitudinal signals (which they're meant to be), confabulated entries pollute the trend lines. The `band` derivation already pulls from `signals.shape_strategies_attempted` (real, log-derived) for thresholding, so the immediate scoreboard isn't poisoned — but the per-run reflection texts and any future correlations against agent / model / effort would be.
+
+**Shape.**
+- New helper `_observed_signals_from_log(topic_name)` that returns:
+  - `tool_call_counts`: `{tool_name: count}` for the topic's recent usage entries.
+  - `move_evidence`: same shape as `moves_observed_from_log`, derived once.
+  - `strategy_family_evidence`: maps `strategies_used` family tags (`navbox`, `wikidata_property`, `category_crawl`, ...) to the tool calls that would corroborate them. e.g., `wikidata_property` requires ≥1 `wikidata_*` call; `navbox` requires ≥1 `harvest_navbox` call.
+- In `submit_feedback`, after entry construction, run the crosscheck and produce a `confabulation_flags` list:
+  - If `strategies_used` contains a family with zero corroborating calls → `claimed_strategy_no_log_evidence:<family>`.
+  - If `sharp_edges_hit` claims a tool-specific edge (e.g., `wikidata_*_blocked`, `filter_articles_refusal`) but the relevant tool was never called or always succeeded → `claimed_sharp_edge_no_evidence:<edge>`.
+  - If `prep_calls_made` includes a name that doesn't appear in the log within the topic's session window → `claimed_prep_call_no_evidence:<name>`.
+- Persist `confabulation_flags` in the feedback log line so scoring scripts can filter; surface the same flags in the response so the AI sees them mid-conversation (mild calibration pressure).
+- DON'T refuse the feedback. Keep recording. The flag is signal, not policy.
+
+**Open questions.**
+- Tool-to-family mapping for `strategies_used` is fuzzy (`search` covers both `search_articles` and `preview_search` and `search_similar`). Build a deliberate mapping table; flag UNMAPPED family values too (so adding a new family value to a brief without server-side mapping is loud rather than silent).
+- Should `note=` substrings on individual calls (e.g., "Committing enwiki sitelinks from phase-2 Wikidata P361") get cross-checked too? Probably not in v1 — too much surface, false-positive prone. But the worst confabulations show up in notes, so a future pass might want a fuzzier scan.
+- Surface as an error or as a side-band warning in the response? Lean side-band — feedback is feedback even if some claims are unverifiable. The score scripts decide whether to discount.
+
+**Sequencing note.** High-leverage. Single-session evidence so far, but the failure shape is structural: any reflective field that the AI populates from its own narrative-of-the-session is vulnerable to this kind of drift, and we have evidence the drift is meaningful (entire strategies fabricated, operator-direction backstory invented). Worth Tier 1 active-build slot. Ship before extending submit_feedback's reflective surface further.
 
 ---
 

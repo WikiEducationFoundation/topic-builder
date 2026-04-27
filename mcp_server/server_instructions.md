@@ -113,6 +113,7 @@ closest current primitive.
 | "articles in both category:X AND wikiproject:Y" (confidence core) | `get_articles(sources_all=["category:X", "wikiproject:Y"])` |
 | "block this title from coming back" | `reject_articles(titles, reason, also_remove=True)` — sticky across future gathers |
 | "shape of my corpus" / "what's weird in my topic?" | `describe_topic` — title stats, top first-words, suspicious patterns |
+| "what did this run add vs the baseline?" / "diff two topics" | `topic_diff(topic_a, topic_b)` — same-wiki partition into `only_a` / `only_b` / `both` with counts + samples. Pass `by_source=True` to see which sources contributed only_a titles. Use as a ratchet diagnostic, blocklist comparison, or two-source reconciliation. |
 | "this shortdesc looks misleading / too thin to judge" | `fetch_article_leads(titles=[...], sentences=3)` — fetches the first N sentences of each article's body. Non-persistent; use for disambiguation before scoring or rejecting. |
 | "normalize corpus titles / collapse redirect duplicates" | `resolve_redirects` — rewrites every title to its canonical Wikipedia form; merges duplicates; safe (no drops). Run once mid-build, again before export. |
 | "topic build is saved? can I come back?" | `resume_topic(name)` |

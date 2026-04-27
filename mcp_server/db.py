@@ -1101,6 +1101,61 @@ def set_topic_visibility(topic_id, visibility):
     conn.close()
 
 
+def topic_diff(topic_a_id, topic_b_id, sample_size=20):
+    """Partition the union of two topics' titles into only_a / only_b /
+    both. Returns counts + per-bucket samples. Read-only; doesn't
+    mutate either topic. Topics must be on the same wiki for the diff
+    to be meaningful — caller is responsible for checking that."""
+    conn = _connect()
+    a_titles = {r['title'] for r in conn.execute(
+        "SELECT title FROM articles WHERE topic_id = ?",
+        (topic_a_id,))}
+    b_titles = {r['title'] for r in conn.execute(
+        "SELECT title FROM articles WHERE topic_id = ?",
+        (topic_b_id,))}
+    conn.close()
+
+    only_a = sorted(a_titles - b_titles)
+    only_b = sorted(b_titles - a_titles)
+    both = sorted(a_titles & b_titles)
+
+    s = max(0, int(sample_size))
+    return {
+        "only_a": {"count": len(only_a), "samples": only_a[:s]},
+        "only_b": {"count": len(only_b), "samples": only_b[:s]},
+        "both":   {"count": len(both),   "samples": both[:s]},
+    }
+
+
+def topic_diff_by_source(topic_a_id, topic_b_id):
+    """Per-source breakdown of which sources contribute to the only_a
+    bucket (titles present in A but not in B). Useful for
+    'why did this baseline-vs-current diff get 200 extra titles? which
+    sources contributed them?' Returns
+    {source_label: count_in_only_a}.
+    """
+    conn = _connect()
+    a_rows = conn.execute(
+        "SELECT title, sources FROM articles WHERE topic_id = ?",
+        (topic_a_id,)).fetchall()
+    b_titles = {r['title'] for r in conn.execute(
+        "SELECT title FROM articles WHERE topic_id = ?",
+        (topic_b_id,))}
+    conn.close()
+
+    counts: dict[str, int] = {}
+    for row in a_rows:
+        if row['title'] in b_titles:
+            continue
+        try:
+            srcs = json.loads(row['sources'] or '[]')
+        except Exception:
+            srcs = []
+        for s in srcs:
+            counts[s] = counts.get(s, 0) + 1
+    return counts
+
+
 def list_topics_for(caller_username):
     """List topics visible to the given caller. Returns the same shape as
     list_topics() with extra owner / visibility / mine fields. If
