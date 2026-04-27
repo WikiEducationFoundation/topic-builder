@@ -25,31 +25,11 @@ Add new items here as signals come in; promote items to
 
 ## Tier 1 — small, high-leverage
 
-### ☐ Pagination for `get_article_links` and `get_article_backlinks` `[NEW — 2026-04-26]`
+### ☑ Pagination for `get_article_links` and `get_article_backlinks` `[shipped 2026-04-26]`
 
-**What.** Both seed-mining tools currently accept `limit=` (default 500, hard-cap 5000) and return `truncated=True` when the result set is larger, with no way to fetch the next page. Add a `continue_token` to the response and accept it as an input arg so the caller can paginate.
+**What.** Both seed-mining tools accepted `limit=` (default 500, hard-cap 5000) and returned `truncated=True` with no way to fetch the next page. Added a `continue_token` to the response and as an input arg so the caller can paginate.
 
-**Why.** Hit immediately on the 2026-04-26 apollo-11-thin run — phase-1 feedback flagged: *"get_article_links truncated at 500 with no continuation token; main A11 article links to ~1000+ items per article body but I could only see the first 500 — likely undercounts neighborhood probes."* The hard 5000-cap matters more for `get_article_backlinks`: prominent articles have 10K+ backlinks (Apollo 11 has ~15K), and the seed-mining strategy explicitly wants to walk the long tail at low signal density. Without pagination, the AI is stuck with whatever's in the first window.
-
-**Shape.** MediaWiki's API already supports continuation natively — `plcontinue` for `prop=links`, `blcontinue` for `list=backlinks`. The current code-paths break out of the loop when `len() >= limit`; instead, the loop should capture the API's continue cursor at the truncation boundary and return it. New input arg `continue_token: str | None = None` is forwarded into the params on the next call.
-
-```python
-# response shape:
-{
-    "title": "Apollo 11",
-    "count": 500,
-    "truncated": true,
-    "continue_token": "links|123|Foo",   # opaque to the AI; passes back as-is
-    "links": [...],
-}
-```
-
-**Open questions.**
-- Same pagination shape for both tools, or unify under a shared helper? Lean unified — both use `_paginate_query(prop_or_list, ...)`.
-- Cap `limit` lower by default (200?) since pagination makes higher caps less load-bearing, or keep at 500? Lean keep at 500 — most cases are satisfied in one call; pagination is for the long-tail outliers.
-- For `get_article_backlinks` specifically: should we offer a "first-N-then-stop" cursor by signal density (e.g., stop when the title prefix changes, or when description doesn't mention the topic)? Probably not in v1 — let the AI manage cursor traversal.
-
-**Sequencing.** Tier 1 — small change, immediate user (the next apollo run will use the new toolkit). No schema change to anything persisted.
+**Shape shipped.** Each tool now caps `pllimit`/`bllimit` per API page at `min(limit, 500)` so it stops on a clean page boundary. At truncation, `data['continue']` (a dict like `{plcontinue: "...", continue: "||"}`) is JSON-encoded and returned as `continue_token`; passing it back unchanged on a subsequent call decodes and merges it into the next request. Both docstring and `server_instructions.md` COMMON TASK → TOOL row updated so ChatGPT (cached-schema client) learns about the new param via session-init instructions.
 
 ### ☑ Exemplar integrity gate leaks via slug normalization `[shipped 2026-04-26]`
 
@@ -77,54 +57,15 @@ A titles-only mode lets the AI page through the full result set (use the title l
 
 **Sequencing note.** Single-session evidence (climate-change 2026-04-26), but the failure shape (token-cap collision on a heavily-curated property) will recur on any large biography-axis Wikidata probe (P101 / P106 on big fields). Worth Tier 1 if a second session hits it.
 
-### ☐ Capture agent / model / effort on `submit_feedback` `[NEW — 2026-04-25]`
+### ☑ Capture agent / model / effort on `submit_feedback` `[shipped 2026-04-25]`
 
-**What.** Add an optional `runtime` dict to `submit_feedback`:
+Optional `runtime: dict | None = None` field on `submit_feedback`, serialized verbatim into the feedback JSON line and unpacked into per-key log params (`runtime_agent`, `runtime_model`, `runtime_effort`). Briefs ask the AI to populate from self-knowledge. Lets us trend results across claude-code-opus-4.7 / codex-gpt-5 / different effort levels — was filename-only before. See `shipped.md` 2026-04-25 (Ship 2 entry).
 
-```python
-runtime: dict | None = None
-# {"agent": "claude-code" | "codex" | "chatgpt" | ...,
-#  "model": "opus-4.7" | "sonnet-4.6" | "gpt-5" | ...,
-#  "effort": "low" | "medium" | "high"}
-```
+### ☑ Argumentless `fetch_task_brief` with auto-dispatch `[shipped 2026-04-25]`
 
-Free-form-ish — don't enumerate every variant. AI populates from self-knowledge on phase-1 feedback; the brief tells it to.
+`fetch_task_brief()` (no `task_id`, default `variant="thin"`) atomically picks the staleest matching task — smallest `last_dispatched_at`, NULLs winning, ties broken by `task_id` — bumps `last_dispatched_at` to now under `BEGIN IMMEDIATE`, and serves the brief. Simultaneous parallel callers within seconds get DIFFERENT tasks (round-robin coverage). Direct mode (explicit `task_id`) preserved for back-compat. See `shipped.md` 2026-04-25 entry "Tier 1: argumentless `fetch_task_brief` with auto-dispatch."
 
-**Why.** Today this metadata lives only in session-notes filenames (e.g. `session-2026-04-24-thin-claude-code-medium.md`), so it's never joined to the run's actual metrics in the feedback log. Capturing it structurally lets us trend results by agent/model/effort over time, compare claude-code-opus-4.7 vs codex-gpt-5, see whether effort=high actually buys precision, etc. We already have `client_id` from `ctx.client_id` (rough Claude-vs-ChatGPT signal) but not model or effort.
-
-**Shape.** One `runtime` field on `submit_feedback`; serialized verbatim into the JSON line. Update the 5 thin briefs to ask the AI to populate it on phase-1 (the AI usually knows its model accurately; effort is what the operator set, AI can self-report or leave null). Reseed.
-
-**Sequencing note.** Land as a small follow-up after the in-flight apollo-11 dogfood lands so we don't change the schema mid-run.
-
-### ☐ Argumentless `fetch_task_brief` with auto-dispatch `[NEW — 2026-04-24]`
-
-**What.** `fetch_task_brief()` with no `task_id` auto-picks the task whose previous run is oldest and returns that one's brief. The operator's kickoff collapses from per-task `fetch_task_brief(task_id="apollo-11-thin")` to a single universal line:
-
-```
-Call fetch_task_brief(), then follow its instructions.
-```
-
-Simultaneous sessions (multiple agents calling within seconds) get DIFFERENT tasks — each call updates `last_dispatched_at` atomically on the selected task, so the next caller sees a different "oldest" and picks the next one in the round-robin.
-
-**Why.** Operator ergonomics + parallelism scale-up. Firing 5 Codex sessions in quick succession should cover all 5 benchmarks with zero configuration; today the operator has to hand each session a distinct task_id. Also: auto-dispatch biases the ratchet toward covering under-exercised benchmarks over time (natural round-robin), which is what you want when the benchmarks should all be kept roughly fresh.
-
-**Shape.**
-- Schema: add `last_dispatched_at` column on `dogfood_tasks` (nullable; NULL = never dispatched).
-- Optional follow-up: add `last_completed_at` column, populated when a `submit_feedback` matches a task's template. MVP can rely on `last_dispatched_at` alone (atomic-on-fetch is sufficient for race resistance and round-robin ordering; completed-vs-abandoned distinction is rare enough to defer).
-- Tool change:
-  - `fetch_task_brief(task_id: str | None = None, variant: str = "thin", ...)` — if `task_id` is None, pick the task with the smallest `last_dispatched_at` (NULL sorts first → never-dispatched tasks win). Filter by `variant` (default `thin` so the standard measurement mode is what auto-dispatch produces).
-  - Selection + update must be atomic (single `UPDATE ... WHERE id = (SELECT id FROM ... ORDER BY last_dispatched_at LIMIT 1) RETURNING *` or equivalent transactional SELECT-then-UPDATE under SQLite's default locking).
-  - Log the dispatch with task_id + staleness (`hours_since_last_dispatch`) so we can see in `usage.jsonl` whether round-robin is working.
-- Ties (multiple never-dispatched tasks): break by `task_id` alphabetical for determinism.
-- Edge cases:
-  - No tasks seeded → error with setup hint.
-  - All tasks filtered out by variant → error with list of available variants.
-  - Existing `task_id` arg still honored (back-compat; direct mode stays).
-
-**Open questions.**
-- `variant` default: `thin` (ratchet-standard) vs. fully auto (pick any). Lean `thin` — the operator usually wants the measurement variant; `informed` is a deliberate choice.
-- `last_completed_at` scoreboard wiring: nice-to-have. If included, completion recomputes run-topic match against the task's template regex, sets `last_completed_at = now` on match. Could live in a sibling `mark_completion` helper or get wired into `submit_feedback` when the topic name matches a known template. Defer; MVP uses dispatched-only.
-- Capacity to fire >5 parallel sessions with 5 tasks: 6th call would get the first task re-dispatched with a <1-minute gap. Fine — tasks can be re-run that quickly with the `{ts}` templates producing unique topic names. If we want stricter "no duplicate active runs" we'd need a concept of live sessions, which is overkill for now.
+### ☐ Type-hinted harvest annotation on `harvest_list_page` `[NEW — 2026-04-23/24 multi-session: AA-STEM + orchids]`
 
 **What.** Annotate harvested titles with a Wikidata-inferred type tag without filtering anything out by default. `harvest_list_page` (and `preview_harvest_list_page`) grow an optional `annotate_types=True` flag that, post-harvest, resolves P31 on each title via `fetch_wikidata_qids` + lookup, and returns `{title, inferred_type, confidence}` tuples. `inferred_type ∈ {person, plant, place, concept, ..., unknown}`; `unknown` is the explicit bucket for "no Wikidata P31 set" OR "Wikidata item doesn't exist" — never silently conflated with a positive type.
 

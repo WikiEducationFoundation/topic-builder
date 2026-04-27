@@ -2003,6 +2003,7 @@ def _default_wiki(ctx, topic):
 @mcp.tool()
 def get_article_links(title: str, wiki: str | None = None,
                       limit: int = 500, namespace: int = 0,
+                      continue_token: str | None = None,
                       note: str = "",
                       topic: str | None = None,
                       ctx: Context = None) -> str:
@@ -2020,31 +2021,57 @@ def get_article_links(title: str, wiki: str | None = None,
     selected links, follow up with `add_articles(titles=[...],
     source="article_links:<title>")`.
 
+    **Pagination.** When the result set exceeds `limit`, the response
+    has `truncated: true` and a `continue_token`. To fetch the next
+    batch, call again with `continue_token=<token>` and the same
+    `title` / `namespace` (other args may stay default). The token is
+    opaque — pass it back unchanged. Some canonical topic articles
+    link to 1000+ items; pagination lets you walk the full
+    neighborhood without raising `limit`.
+
     Args:
         title: Canonical article title (e.g., "Apollo 11").
         wiki: Wikipedia language code. Default: topic's wiki, or 'en'.
-        limit: Max links to return (default 500, hard-capped at 5000).
+        limit: Max links to return per call (default 500, hard-capped
+            at 5000). Use the default + `continue_token` to walk a
+            long tail rather than raising this.
         namespace: MediaWiki namespace ID (default 0 = mainspace).
+        continue_token: Opaque cursor returned from a prior call when
+            `truncated=True`. Pass back unchanged to resume.
         topic: Optional topic name for stateless clients.
     """
     _start = _start_call()
     if wiki is None:
         wiki = _default_wiki(ctx, topic)
     limit = max(1, min(int(limit), 5000))
+    per_page = min(limit, 500)
 
     params = {
         'action': 'query',
         'titles': title,
         'prop': 'links',
         'plnamespace': str(int(namespace)),
-        'pllimit': 'max',
+        'pllimit': str(per_page),
         'redirects': '1',
         'format': 'json',
         'formatversion': '2',
     }
+    if continue_token:
+        try:
+            cont = json.loads(continue_token)
+            if not isinstance(cont, dict):
+                raise ValueError('continue_token must decode to a dict')
+            params.update(cont)
+        except (ValueError, TypeError) as e:
+            return json.dumps({
+                'error': f'invalid continue_token: {e}',
+                'hint': ('Pass back the continue_token from a prior '
+                         'response unchanged, or omit it to start fresh.'),
+            }, indent=2, ensure_ascii=False)
+
     links: list[str] = []
     seen: set[str] = set()
-    truncated = False
+    next_cursor: dict | None = None
     while True:
         data = api_get(wiki_api_url(wiki), params)
         for page in data.get('query', {}).get('pages', []) or []:
@@ -2054,31 +2081,39 @@ def get_article_links(title: str, wiki: str | None = None,
                     continue
                 seen.add(t)
                 links.append(t)
-                if len(links) >= limit:
-                    truncated = True
-                    break
-            if truncated:
-                break
-        if truncated or 'continue' not in data:
+        if len(links) >= limit:
+            next_cursor = data.get('continue')
+            break
+        if 'continue' not in data:
             break
         params.update(data['continue'])
 
+    truncated = next_cursor is not None
+    cont_out = json.dumps(next_cursor) if truncated else None
+
     log_usage(ctx, "get_article_links",
               {"title": title, "wiki": wiki, "namespace": namespace,
-               "limit": limit},
+               "limit": limit, "paged": continue_token is not None},
               f"{len(links)} links{' (truncated)' if truncated else ''}",
               start_time=_start, note=note)
+    note_out = (
+        'Review the titles, then commit the relevant ones via '
+        f'add_articles(titles=[...], source="article_links:{title}").'
+    )
+    if truncated:
+        note_out += (
+            ' Result truncated; call again with continue_token=<the '
+            'returned token> to fetch the next batch.'
+        )
     return json.dumps({
         'wiki': wiki,
         'title': title,
         'namespace': namespace,
         'count': len(links),
         'truncated': truncated,
+        'continue_token': cont_out,
         'links': links,
-        'note': (
-            'Review the titles, then commit the relevant ones via '
-            f'add_articles(titles=[...], source="article_links:{title}").'
-        ),
+        'note': note_out,
     }, indent=2, ensure_ascii=False)
 
 
@@ -2086,6 +2121,7 @@ def get_article_links(title: str, wiki: str | None = None,
 def get_article_backlinks(title: str, wiki: str | None = None,
                           limit: int = 500, namespace: int = 0,
                           filter_redirects: str = "all",
+                          continue_token: str | None = None,
                           note: str = "",
                           topic: str | None = None,
                           ctx: Context = None) -> str:
@@ -2104,15 +2140,28 @@ def get_article_backlinks(title: str, wiki: str | None = None,
     selected items, follow up with `add_articles(titles=[...],
     source="article_backlinks:<title>")`.
 
+    **Pagination.** When the result set exceeds `limit`, the response
+    has `truncated: true` and a `continue_token`. To fetch the next
+    batch, call again with `continue_token=<token>` and the same
+    `title` / `namespace` / `filter_redirects`. The token is opaque
+    — pass it back unchanged. Pagination is what unlocks walking past
+    the first 500 backlinks on prominent topics (Apollo 11 has ~15K);
+    use it deliberately, since the long tail is dominated by trivial
+    mentions.
+
     Args:
         title: Article that backlinks point at (e.g., "Apollo 11").
         wiki: Wikipedia language code. Default: topic's wiki, or 'en'.
-        limit: Max backlinks to return (default 500, hard-capped at 5000).
+        limit: Max backlinks to return per call (default 500,
+            hard-capped at 5000). Use the default + `continue_token`
+            to walk a long tail rather than raising this.
         namespace: MediaWiki namespace ID (default 0 = mainspace).
         filter_redirects: 'all' (default), 'redirects', 'nonredirects'.
                           Usually 'nonredirects' is what you want — a
                           redirect's backlinks are almost always
                           duplicates of the canonical article's.
+        continue_token: Opaque cursor returned from a prior call when
+            `truncated=True`. Pass back unchanged to resume.
         topic: Optional topic name for stateless clients.
     """
     _start = _start_call()
@@ -2124,19 +2173,33 @@ def get_article_backlinks(title: str, wiki: str | None = None,
             'error': f"filter_redirects must be 'all', 'redirects', or "
                      f"'nonredirects' (got {filter_redirects!r})"
         }, indent=2, ensure_ascii=False)
+    per_page = min(limit, 500)
 
     params = {
         'action': 'query',
         'list': 'backlinks',
         'bltitle': title,
         'blnamespace': str(int(namespace)),
-        'bllimit': 'max',
+        'bllimit': str(per_page),
         'blfilterredir': filter_redirects,
         'format': 'json',
         'formatversion': '2',
     }
+    if continue_token:
+        try:
+            cont = json.loads(continue_token)
+            if not isinstance(cont, dict):
+                raise ValueError('continue_token must decode to a dict')
+            params.update(cont)
+        except (ValueError, TypeError) as e:
+            return json.dumps({
+                'error': f'invalid continue_token: {e}',
+                'hint': ('Pass back the continue_token from a prior '
+                         'response unchanged, or omit it to start fresh.'),
+            }, indent=2, ensure_ascii=False)
+
     backlinks: list[str] = []
-    truncated = False
+    next_cursor: dict | None = None
     while True:
         data = api_get(wiki_api_url(wiki), params)
         for item in data.get('query', {}).get('backlinks', []) or []:
@@ -2144,18 +2207,34 @@ def get_article_backlinks(title: str, wiki: str | None = None,
             if not t:
                 continue
             backlinks.append(t)
-            if len(backlinks) >= limit:
-                truncated = True
-                break
-        if truncated or 'continue' not in data:
+        if len(backlinks) >= limit:
+            next_cursor = data.get('continue')
+            break
+        if 'continue' not in data:
             break
         params.update(data['continue'])
 
+    truncated = next_cursor is not None
+    cont_out = json.dumps(next_cursor) if truncated else None
+
     log_usage(ctx, "get_article_backlinks",
               {"title": title, "wiki": wiki, "namespace": namespace,
-               "filter_redirects": filter_redirects, "limit": limit},
+               "filter_redirects": filter_redirects, "limit": limit,
+               "paged": continue_token is not None},
               f"{len(backlinks)} backlinks{' (truncated)' if truncated else ''}",
               start_time=_start, note=note)
+    note_out = (
+        'Backlinks are returned in page-id order; older / more central '
+        'articles appear first. Review and filter; commit via '
+        f'add_articles(titles=[...], source="article_backlinks:{title}"). '
+        'On prominent topics the long tail is mostly trivial mentions — '
+        'consider sampling rather than exhaustive review.'
+    )
+    if truncated:
+        note_out += (
+            ' Result truncated; call again with continue_token=<the '
+            'returned token> to walk further down the tail.'
+        )
     return json.dumps({
         'wiki': wiki,
         'title': title,
@@ -2163,14 +2242,9 @@ def get_article_backlinks(title: str, wiki: str | None = None,
         'filter_redirects': filter_redirects,
         'count': len(backlinks),
         'truncated': truncated,
+        'continue_token': cont_out,
         'backlinks': backlinks,
-        'note': (
-            'Backlinks are returned in page-id order; older / more central '
-            'articles appear first. Review and filter; commit via '
-            f'add_articles(titles=[...], source="article_backlinks:{title}"). '
-            'On prominent topics the long tail is mostly trivial mentions — '
-            'consider sampling rather than exhaustive review.'
-        ),
+        'note': note_out,
     }, indent=2, ensure_ascii=False)
 
 

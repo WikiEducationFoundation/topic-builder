@@ -331,6 +331,21 @@ The project's origin topic — climate change was the test subject for the 2026-
 
 - **Ratchet inclusion:** deferred. Adds a "well-organized academic + movement" shape the existing five don't cover, but the per-cycle cost is meaningful (~2,500 API calls). Decision lives in operator hands per the rubric in `docs/adding-exemplars.md`.
 
+## Pagination for `get_article_links` / `get_article_backlinks` (2026-04-26)
+
+Tier 1 backlog item. Both seed-mining tools previously stopped at
+`limit` items and dropped a one-shot `truncated` flag; on prominent
+articles (Apollo 11 has 1000+ links and ~15K backlinks) there was no
+way to walk past the first window. Fix: added an opaque
+`continue_token` round-trip. The tool now caps `pllimit` / `bllimit`
+per API page at `min(limit, 500)` so it stops on a clean page
+boundary, captures `data['continue']` at the truncation point,
+JSON-encodes it as the response's `continue_token`, and accepts that
+token back as a parameter to resume on the next call. Updated tool
+docstrings (FastMCP schema) AND the COMMON TASK → TOOL row in
+`server_instructions.md` so ChatGPT clients with cached schemas
+still learn about the new param via session-init instructions.
+
 ## Exemplar integrity gate fix — slug-normalization leak (2026-04-26)
 
 Surfaced mid-run in the 2026-04-26 apollo-11 dogfood: the AI saw an
