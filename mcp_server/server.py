@@ -54,7 +54,24 @@ _session_topics: dict[int, tuple[int, str, str]] = {}
 # to emit a one-shot nudge on the second such call (see 2.1 manual:<label>
 # convention). Labeled `manual:<context>` calls don't count here.
 _session_bare_manual_counts: dict[int, int] = collections.defaultdict(int)
+# Per-session authenticated user. Populated by the `authenticate` tool (via
+# token paste) or by `_resolve_caller` when an `auth_token=` arg arrives on a
+# tool call. Value is (username, cached_at_monotonic). TTL 5 min before we
+# re-validate against the DB; lets us avoid a DB hit on every call without
+# letting a revoked token stay live for too long.
+_session_users: dict[int, tuple[str, float]] = {}
+_AUTH_CACHE_TTL_SECONDS = 300
 _session_lock = threading.Lock()
+
+
+# Auth enforcement is gated by an env var so the auth scaffolding can be
+# deployed long before it's switched on. Values:
+#   "none"            — default; permission checks are no-ops (legacy behavior)
+#   "writes"          — write-mode tools require auth + ownership/public_edit
+#   "all"             — read-mode tools also require auth on private topics
+# Read by helpers; can change without code change. Once enforcement is
+# enabled, the `_require_topic_with_access` helper does the real checking.
+AUTH_ENFORCEMENT = os.environ.get("AUTH_ENFORCEMENT", "none").lower()
 
 
 def _session_key(ctx: Context) -> int:
@@ -185,15 +202,37 @@ mcp = FastMCP(
 # `topic-builder@<port>.service`.
 mcp.settings.port = int(os.environ.get("PORT", 8000))
 
+# Wikimedia OAuth 2.0 routes mounted on the same Starlette app the MCP
+# transport runs on. The routes live in oauth.py; they're env-gated and
+# show a "not configured" page until OAUTH_CLIENT_ID/OAUTH_CLIENT_SECRET
+# are set. Always registered so the deploy is one-shot — flipping auth
+# on at runtime is just an env-var change + restart.
+import oauth as _oauth  # noqa: E402
+_oauth.register(mcp)
 
-def _require_topic(ctx: Context, topic_name: str | None = None) -> tuple[int | None, str, str | None]:
-    """Resolve the topic for this call. Returns (topic_id, wiki, error).
 
-    If topic_name is passed explicitly (for stateless clients like ChatGPT that
-    don't persist MCP sessions), look it up by name — creating as enwiki if
-    missing — and bind it to this session. Otherwise fall back to the
-    session's current topic (set by start_topic). `wiki` defaults to 'en' if
-    no topic is active.
+def _require_topic(ctx: Context, topic_name: str | None = None, *,
+                   mode: str = 'write',
+                   auth_token: str | None = None
+                   ) -> tuple[int | None, str, str | None]:
+    """Resolve the topic for this call AND enforce ACL when
+    AUTH_ENFORCEMENT is enabled. Returns (topic_id, wiki, error).
+
+    If topic_name is passed explicitly (for stateless clients like ChatGPT
+    that don't persist MCP sessions), look it up by name — creating as
+    enwiki if missing — and bind it to this session. Otherwise fall back to
+    the session's current topic (set by start_topic). `wiki` defaults to
+    'en' if no topic is active.
+
+    Auth-mode behavior (only kicks in when AUTH_ENFORCEMENT != 'none'):
+    - mode='write' (default): caller must be the owner or the topic must
+      be visibility='public_edit'. AUTH_ENFORCEMENT in {'writes','all'}.
+    - mode='read': caller must be able to read per visibility tier.
+      AUTH_ENFORCEMENT='all' enforces; 'writes' leaves reads open.
+
+    auth_token (optional) is the ChatGPT-stateless-equivalent of a session
+    cache populated by `authenticate`. Resolved against the DB on each
+    call; resolved username is cached on this MCP session.
     """
     if topic_name:
         tid, canonical, wiki = db.get_topic_by_name(topic_name)
@@ -201,16 +240,116 @@ def _require_topic(ctx: Context, topic_name: str | None = None) -> tuple[int | N
             tid, _, _, wiki = db.create_or_get_topic(topic_name)
             canonical = topic_name
         _set_topic(ctx, tid, canonical, wiki)
+    else:
+        tid, _, wiki = _get_topic(ctx)
+        if not tid:
+            return None, "en", (
+                "No active topic. Call start_topic first, or pass topic=<name> to this tool. "
+                "If your MCP client doesn't persist sessions between tool calls (e.g. ChatGPT), "
+                "pass topic=<name> on every call."
+            )
+
+    # Best-effort caller resolution: populates the session cache so future
+    # log_usage entries can attribute the call. No enforcement when
+    # AUTH_ENFORCEMENT='none'; the cache is purely informational.
+    caller = _resolve_caller(ctx, auth_token) if ctx is not None else None
+
+    if AUTH_ENFORCEMENT == "none":
         return tid, wiki, None
 
-    tid, _, wiki = _get_topic(ctx)
-    if not tid:
-        return None, "en", (
-            "No active topic. Call start_topic first, or pass topic=<name> to this tool. "
-            "If your MCP client doesn't persist sessions between tool calls (e.g. ChatGPT), "
-            "pass topic=<name> on every call."
-        )
-    return tid, wiki, None
+    owner, visibility = db.get_topic_acl(tid)
+    if mode == 'read':
+        if AUTH_ENFORCEMENT != 'all':
+            return tid, wiki, None
+        if not _can_read(owner, visibility, caller):
+            return None, wiki, _auth_required_error("This topic is private.")
+        return tid, wiki, None
+    elif mode == 'write':
+        if not _can_write(owner, visibility, caller):
+            if caller is None:
+                return None, wiki, _auth_required_error()
+            return None, wiki, (
+                f"That topic belongs to '{owner}' and is set to "
+                f"visibility='{visibility}'. You can only modify it if "
+                f"you're the owner, or if the owner sets visibility to "
+                f"'public_edit'.")
+        return tid, wiki, None
+    else:
+        return None, wiki, f"Internal: unknown _require_topic mode {mode!r}"
+
+
+# ── Auth helpers ───────────────────────────────────────────────────────
+#
+# These are wired in but feature-flag-gated by AUTH_ENFORCEMENT. With the
+# default "none" setting, _require_topic_with_access falls through to the
+# legacy _require_topic and no permission check happens. Once an operator
+# sets AUTH_ENFORCEMENT=writes (or "all"), the same helpers start refusing
+# calls that don't meet the access rules. See docs/backlog/auth.md.
+
+
+def _set_session_user(ctx: Context, username: str) -> None:
+    with _session_lock:
+        _session_users[_session_key(ctx)] = (username, time.monotonic())
+
+
+def _get_session_user(ctx: Context) -> str | None:
+    with _session_lock:
+        cached = _session_users.get(_session_key(ctx))
+    if not cached:
+        return None
+    username, cached_at = cached
+    if time.monotonic() - cached_at > _AUTH_CACHE_TTL_SECONDS:
+        # Cache is stale; force a re-validation on the next caller resolve.
+        with _session_lock:
+            _session_users.pop(_session_key(ctx), None)
+        return None
+    return username
+
+
+def _resolve_caller(ctx: Context, auth_token: str | None = None) -> str | None:
+    """Resolve the authenticated Wikipedia username for this call, or None
+    if anonymous. Resolution order:
+      1. explicit `auth_token` arg (stateless clients, e.g. ChatGPT) — DB lookup
+      2. session cache populated by a prior `authenticate` call
+      3. None (anonymous)
+    """
+    if auth_token:
+        info = db.lookup_auth_token(auth_token)
+        if info:
+            _set_session_user(ctx, info['username'])
+            return info['username']
+        return None
+    return _get_session_user(ctx)
+
+
+def _can_read(owner: str | None, visibility: str, caller: str | None) -> bool:
+    if visibility != 'private':
+        return True
+    if owner is None or caller is None:
+        return False
+    return db.normalize_username(caller) == db.normalize_username(owner)
+
+
+def _can_write(owner: str | None, visibility: str, caller: str | None) -> bool:
+    if caller is None:
+        return False
+    if visibility == 'public_edit':
+        return True
+    if owner is None:
+        # Unclaimed legacy topic: only writable when enforcement is off
+        # (handled at the call site) or after an explicit takeover (deferred).
+        return False
+    return db.normalize_username(caller) == db.normalize_username(owner)
+
+
+def _auth_required_error(reason: str = "") -> str:
+    base = ("Authentication required. Visit "
+            "https://topic-builder.wikiedu.org/oauth/login to sign in with "
+            "your Wikipedia account; copy the token shown and paste it to "
+            "me, then I'll call authenticate(token=...) to bind it to this "
+            "session. Stateless clients (ChatGPT) should pass "
+            "auth_token=tb_... on every subsequent call.")
+    return f"{reason} {base}".strip() if reason else base
 
 
 def _resolve_wiki(ctx: Context, wiki: str | None = None, topic_name: str | None = None) -> str:
@@ -235,7 +374,9 @@ def _resolve_wiki(ctx: Context, wiki: str | None = None, topic_name: str | None 
 
 @mcp.tool()
 def start_topic(name: str, wiki: str = "en", fresh: bool = False,
-                note: str = "", ctx: Context = None) -> str:
+                note: str = "",
+                auth_token: str | None = None,
+                ctx: Context = None) -> str:
     """Start a new topic build or resume an existing one with the same name.
     Topics are persisted — if a topic with this name already exists, it will
     be resumed with all its articles intact UNLESS you pass fresh=True.
@@ -261,11 +402,42 @@ def start_topic(name: str, wiki: str = "en", fresh: bool = False,
               have something specific to capture.
     """
     _start = _start_call()
+    caller = _resolve_caller(ctx, auth_token) if ctx is not None else None
+
+    # When auth is enforced, creating a new topic requires identity. The
+    # creating user becomes the owner. With AUTH_ENFORCEMENT='none', we
+    # still record the owner if a caller is known (sets up future
+    # publish/edit semantics) but don't gate creation.
+    if AUTH_ENFORCEMENT != "none" and caller is None:
+        # Check whether the topic already exists; resuming a public topic
+        # without auth is fine (the read path handles it). But creating a
+        # new topic always requires auth.
+        existing_id, _, _ = db.get_topic_by_name(name)
+        if existing_id is None:
+            return _auth_required_error(
+                f"Creating a new topic ('{name}') requires authentication.")
+
     topic_id, is_new, article_count, canonical_wiki = db.create_or_get_topic(name, wiki=wiki)
     _set_topic(ctx, topic_id, name, canonical_wiki)
 
+    # On creation, set the owner to the authenticated caller (if any).
+    # If enforcement is on and the topic already exists, also enforce
+    # write access on the resume / fresh path (since fresh wipes data).
+    if is_new and caller is not None:
+        db.set_topic_owner(topic_id, caller)
+    elif not is_new and AUTH_ENFORCEMENT != "none":
+        owner, visibility = db.get_topic_acl(topic_id)
+        if fresh and not _can_write(owner, visibility, caller):
+            if caller is None:
+                return _auth_required_error()
+            return (f"That topic belongs to '{owner}' and is set to "
+                    f"visibility='{visibility}'. You can only fresh-wipe "
+                    f"it if you're the owner or visibility is 'public_edit'.")
+
     if is_new:
-        log_usage(ctx, "start_topic", {"name": name, "wiki": canonical_wiki, "is_new": True},
+        log_usage(ctx, "start_topic",
+                  {"name": name, "wiki": canonical_wiki, "is_new": True,
+                   "owner": caller},
                   start_time=_start, note=note)
         return (f"Started new topic build: '{name}' on {canonical_wiki}.wikipedia.org. "
                 f"Working list is empty.")
@@ -295,7 +467,7 @@ def start_topic(name: str, wiki: str = "en", fresh: bool = False,
 
 
 @mcp.tool()
-def reset_topic(note: str = "", topic: str | None = None, ctx: Context = None) -> str:
+def reset_topic(note: str = "", topic: str | None = None, auth_token: str | None = None, ctx: Context = None) -> str:
     """Clear all articles from the current topic and start over.
     The topic itself is kept (so the name is preserved), but all articles,
     scores, and sources are wiped.
@@ -308,7 +480,7 @@ def reset_topic(note: str = "", topic: str | None = None, ctx: Context = None) -
                current topic.
     """
     _start = _start_call()
-    topic_id, _wiki, err = _require_topic(ctx, topic)
+    topic_id, _wiki, err = _require_topic(ctx, topic, auth_token=auth_token)
     if err:
         return err
 
@@ -494,7 +666,7 @@ def _strategy_recommendations(profile: dict) -> dict:
 @mcp.tool()
 def set_topic_rubric(rubric: str, topic_profile: dict | None = None,
                      note: str = "",
-                     topic: str | None = None, ctx: Context = None) -> str:
+                     topic: str | None = None, auth_token: str | None = None, ctx: Context = None) -> str:
     """Persist a centrality rubric for the active topic. Call this AFTER
     confirming scope with the user, BEFORE any gather call — the rubric
     is the authoritative scope statement and frames all later review.
@@ -556,7 +728,7 @@ def set_topic_rubric(rubric: str, topic_profile: dict | None = None,
                an MCP session; otherwise uses the session's current topic.
     """
     _start = _start_call()
-    topic_id, _wiki, err = _require_topic(ctx, topic)
+    topic_id, _wiki, err = _require_topic(ctx, topic, auth_token=auth_token)
     if err:
         return err
 
@@ -601,7 +773,7 @@ def set_topic_rubric(rubric: str, topic_profile: dict | None = None,
 
 
 @mcp.tool()
-def get_topic_rubric(topic: str | None = None, ctx: Context = None) -> str:
+def get_topic_rubric(topic: str | None = None, auth_token: str | None = None, ctx: Context = None) -> str:
     """Read the centrality rubric for the active topic. Returns empty
     string if no rubric has been set yet.
 
@@ -614,7 +786,7 @@ def get_topic_rubric(topic: str | None = None, ctx: Context = None) -> str:
                an MCP session; otherwise uses the session's current topic.
     """
     _start = _start_call()
-    topic_id, _wiki, err = _require_topic(ctx, topic)
+    topic_id, _wiki, err = _require_topic(ctx, topic, mode='read', auth_token=auth_token)
     if err:
         return err
 
@@ -635,12 +807,190 @@ def get_topic_rubric(topic: str | None = None, ctx: Context = None) -> str:
 
 
 @mcp.tool()
-def list_topics() -> str:
-    """List all existing topics that can be resumed."""
-    topics = db.list_topics()
+def list_topics(auth_token: str | None = None,
+                ctx: Context = None) -> str:
+    """List existing topics that can be resumed.
+
+    Behavior depends on AUTH_ENFORCEMENT:
+    - "none" (default): returns every topic, with `owner_username` and
+      `visibility` fields included. Same shape as before plus those two
+      columns.
+    - "writes" / "all": returns the caller's own topics PLUS any topic
+      with `visibility != 'private'`. Anonymous callers see only public
+      topics. The `mine` field on each entry tells you which are yours.
+    """
+    if AUTH_ENFORCEMENT == "none":
+        topics = db.list_topics_for(None) or db.list_topics()
+        # When enforcement is off, surface every topic regardless of
+        # visibility (legacy behavior). list_topics_for(None) only returns
+        # public ones, so fall through to the unscoped helper.
+        topics = db.list_topics()
+        if not topics:
+            return "No topics found. Use start_topic to create one."
+        # Best-effort enrich with owner/visibility for forward-compat.
+        for t in topics:
+            t.setdefault('owner_username', None)
+            t.setdefault('visibility', 'private')
+        return json.dumps(topics, indent=2, default=str)
+
+    caller = _resolve_caller(ctx, auth_token) if ctx else None
+    topics = db.list_topics_for(caller)
     if not topics:
+        if caller is None:
+            return ("No public topics found. Sign in at "
+                    "https://topic-builder.wikiedu.org/oauth/login to see "
+                    "your private topics.")
         return "No topics found. Use start_topic to create one."
     return json.dumps(topics, indent=2, default=str)
+
+
+@mcp.tool()
+def authenticate(token: str, ctx: Context = None) -> str:
+    """Bind a Wikimedia OAuth token to this MCP session. Call this once
+    after the user pastes a token from /oauth/login; subsequent
+    topic-touching tools will treat you as that user (when auth
+    enforcement is enabled). For stateless clients (ChatGPT) you can
+    skip this and pass `auth_token=tb_...` on every call instead.
+
+    Args:
+        token: A `tb_<hex>` bearer token issued by /oauth/callback.
+
+    Returns: {"username": "...", "expires_at": "..."} on success, or
+    {"error": "..."} if the token is invalid / expired / revoked.
+    """
+    _start = _start_call()
+    if not token or not isinstance(token, str):
+        return json.dumps({
+            "error": "Pass a non-empty token string.",
+        }, indent=2, ensure_ascii=False)
+    info = db.lookup_auth_token(token.strip())
+    if info is None:
+        return json.dumps({
+            "error": (
+                "Token invalid, expired, or revoked. Get a fresh one at "
+                "https://topic-builder.wikiedu.org/oauth/login."
+            ),
+        }, indent=2, ensure_ascii=False)
+    _set_session_user(ctx, info['username'])
+    log_usage(ctx, "authenticate", {"username": info['username']},
+              "session bound", start_time=_start)
+    return json.dumps({
+        "username": info['username'],
+        "expires_at": info['expires_at'],
+        "note": ("Token bound to this MCP session. Subsequent tools will "
+                 "act as this user when permission enforcement is on."),
+    }, indent=2, ensure_ascii=False)
+
+
+@mcp.tool()
+def whoami(auth_token: str | None = None, ctx: Context = None) -> str:
+    """Return the authenticated Wikipedia username for this session.
+
+    Useful for confirming auth state mid-session (e.g. after a token
+    paste, or when debugging a permission error). Works with both
+    session-cached auth (Claude after `authenticate`) and per-call
+    `auth_token=` (ChatGPT).
+    """
+    caller = _resolve_caller(ctx, auth_token) if ctx else None
+    if caller:
+        return json.dumps({
+            "username": caller,
+            "auth_enforcement": AUTH_ENFORCEMENT,
+        }, indent=2, ensure_ascii=False)
+    return json.dumps({
+        "username": None,
+        "anonymous": True,
+        "auth_enforcement": AUTH_ENFORCEMENT,
+        "note": ("Anonymous. To authenticate, get a token at "
+                 "https://topic-builder.wikiedu.org/oauth/login and "
+                 "either call authenticate(token=...) or pass "
+                 "auth_token=tb_... on every call."),
+    }, indent=2, ensure_ascii=False)
+
+
+@mcp.tool()
+def get_topic_visibility(topic: str | None = None,
+                         auth_token: str | None = None,
+                         ctx: Context = None) -> str:
+    """Return the topic's owner + visibility setting.
+
+    Returns: {"owner": "<username or null>", "visibility": "private" |
+    "public_read" | "public_edit"}.
+
+    Visibility tiers:
+    - private (default): only the owner sees and edits.
+    - public_read: anyone reads; only the owner edits.
+    - public_edit: anyone reads; any authenticated user edits.
+    """
+    topic_id, _, err = _require_topic(
+        ctx, topic, mode='read', auth_token=auth_token)
+    if err:
+        return err
+    owner, visibility = db.get_topic_acl(topic_id)
+    return json.dumps({
+        "owner": owner,
+        "visibility": visibility,
+    }, indent=2, ensure_ascii=False)
+
+
+@mcp.tool()
+def set_topic_visibility(visibility: str,
+                         topic: str | None = None,
+                         auth_token: str | None = None,
+                         ctx: Context = None) -> str:
+    """Set the topic's visibility. Owner-only; refuses if you're not the
+    topic's owner.
+
+    Args:
+        visibility: One of:
+          - "private" — only you see and edit (default for new topics).
+          - "public_read" — anyone with the topic name can read; only
+            you can edit.
+          - "public_edit" — anyone can read AND any authenticated user
+            can edit. Use deliberately; treat as opting into Wikipedia-
+            style open collaboration.
+        topic: Optional topic name for stateless clients.
+    """
+    _start = _start_call()
+    if visibility not in ('private', 'public_read', 'public_edit'):
+        return json.dumps({
+            "error": ("visibility must be 'private', 'public_read', or "
+                      f"'public_edit' (got {visibility!r})."),
+        }, indent=2, ensure_ascii=False)
+    topic_id, _, err = _require_topic(
+        ctx, topic, mode='write', auth_token=auth_token)
+    if err:
+        return err
+    caller = _resolve_caller(ctx, auth_token)
+    # Owner-only override even when AUTH_ENFORCEMENT='none', since this is
+    # a publishing action with real implications. If there's no owner yet
+    # and no caller, refuse — claim the topic via authenticated start_topic
+    # first.
+    owner, _ = db.get_topic_acl(topic_id)
+    if AUTH_ENFORCEMENT == "none" and caller is None:
+        return json.dumps({
+            "error": ("Setting visibility requires authentication so we "
+                      "know who owns the topic. Sign in at "
+                      "https://topic-builder.wikiedu.org/oauth/login."),
+        }, indent=2, ensure_ascii=False)
+    if owner is not None and caller is not None and \
+       db.normalize_username(caller) != db.normalize_username(owner):
+        return json.dumps({
+            "error": (f"That topic belongs to '{owner}'; only the owner "
+                      "can change visibility."),
+        }, indent=2, ensure_ascii=False)
+    if owner is None and caller is not None:
+        # First authenticated touch claims an unowned topic.
+        db.set_topic_owner(topic_id, caller)
+    db.set_topic_visibility(topic_id, visibility)
+    log_usage(ctx, "set_topic_visibility",
+              {"visibility": visibility, "owner": caller},
+              f"visibility -> {visibility}", start_time=_start)
+    return json.dumps({
+        "ok": True,
+        "owner": caller or owner,
+        "visibility": visibility,
+    }, indent=2, ensure_ascii=False)
 
 
 def _feedback_nudge_for_resume(topic_name: str,
@@ -703,7 +1053,9 @@ def _feedback_nudge_for_resume(topic_name: str,
 
 
 @mcp.tool()
-def resume_topic(name: str, ctx: Context = None) -> str:
+def resume_topic(name: str,
+                 auth_token: str | None = None,
+                 ctx: Context = None) -> str:
     """Resume an existing topic build. If this resume follows a gap of
     more than 24 hours since the last tool call on this topic AND no
     submit_feedback was recorded in the interim AND the prior session
@@ -713,8 +1065,10 @@ def resume_topic(name: str, ctx: Context = None) -> str:
 
     Args:
         name: The topic name to resume
+        auth_token: Optional Wikimedia OAuth bearer token for stateless
+                    clients. Forwarded to start_topic.
     """
-    resumed = start_topic(name, ctx=ctx)
+    resumed = start_topic(name, auth_token=auth_token, ctx=ctx)
     nudge = _feedback_nudge_for_resume(name)
     if nudge:
         return json.dumps({
@@ -903,7 +1257,7 @@ def _topic_cost_summary(topic_name: str, max_lines: int = 20000) -> dict | None:
 
 
 @mcp.tool()
-def get_status(topic: str | None = None, ctx: Context = None) -> str:
+def get_status(topic: str | None = None, auth_token: str | None = None, ctx: Context = None) -> str:
     """Get current status of the topic build: article count, score
     distribution, source breakdown, and a per-topic cost summary
     aggregated from the usage log (lifetime Wikipedia API calls, timeouts,
@@ -914,7 +1268,7 @@ def get_status(topic: str | None = None, ctx: Context = None) -> str:
     Args:
         topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
-    topic_id, _wiki, err = _require_topic(ctx, topic)
+    topic_id, _wiki, err = _require_topic(ctx, topic, mode='read', auth_token=auth_token)
     if err:
         return err
 
@@ -931,7 +1285,7 @@ def get_status(topic: str | None = None, ctx: Context = None) -> str:
 @mcp.tool()
 def describe_topic(top_first_words_limit: int = 20,
                    note: str = "",
-                   topic: str | None = None, ctx: Context = None) -> str:
+                   topic: str | None = None, auth_token: str | None = None, ctx: Context = None) -> str:
     """Shape-of-corpus overview for the current topic. Returns title
     length distribution, most-common first words, count of articles
     without descriptions, suspicious-pattern counts (year-prefixed,
@@ -965,7 +1319,7 @@ def describe_topic(top_first_words_limit: int = 20,
                an MCP session.
     """
     _start = _start_call()
-    topic_id, _wiki, err = _require_topic(ctx, topic)
+    topic_id, _wiki, err = _require_topic(ctx, topic, mode='read', auth_token=auth_token)
     if err:
         return err
 
@@ -1427,7 +1781,7 @@ def _synthesize_audit_recommendation(corpus_size: int,
 
 @mcp.tool()
 def audit_progress(note: str = "",
-                   topic: str | None = None, ctx: Context = None) -> str:
+                   topic: str | None = None, auth_token: str | None = None, ctx: Context = None) -> str:
     """Read-only diagnostic that synthesizes corpus state + usage log
     + the move and failure-mode catalogs into a checklist of what's
     been done, what's likely missing, and what's likely going wrong.
@@ -1462,7 +1816,7 @@ def audit_progress(note: str = "",
                maintain an MCP session.
     """
     _start = _start_call()
-    topic_id, _wiki, err = _require_topic(ctx, topic)
+    topic_id, _wiki, err = _require_topic(ctx, topic, mode='read', auth_token=auth_token)
     if err:
         return err
 
@@ -1825,7 +2179,7 @@ def _extract_topic_qualifier(topic_name: str | None) -> str:
 @mcp.tool()
 def find_list_pages(subject: str, wiki: str | None = None,
                     note: str = "",
-                    topic: str | None = None, ctx: Context = None) -> str:
+                    topic: str | None = None, auth_token: str | None = None, ctx: Context = None) -> str:
     """Search for list-shaped Wikipedia pages about a subject — "List of X",
     "Index of X", "Outline of X", "Glossary of X", "Timeline of X",
     "Bibliography of X", plus suffix-shaped patterns like "X in popular
@@ -1990,7 +2344,7 @@ def find_list_pages(subject: str, wiki: str | None = None,
 def _default_wiki(ctx, topic):
     """Resolve wiki from explicit topic arg, or from session topic, or 'en'."""
     if topic:
-        topic_id, w, _ = _require_topic(ctx, topic)
+        topic_id, w, _ = _require_topic(ctx, topic, auth_token=auth_token)
         if w:
             return w
     if ctx is not None:
@@ -3005,7 +3359,7 @@ def wikidata_query(sparql: str, note: str = "",
 @mcp.tool()
 def resolve_qids(limit: int = 2000, time_budget_s: int = 60,
                  note: str = "",
-                 topic: str | None = None, ctx: Context = None) -> str:
+                 topic: str | None = None, auth_token: str | None = None, ctx: Context = None) -> str:
     """Backfill Wikidata QIDs for articles in this topic that haven't
     been resolved yet. Uses the pageprops API (1 call per 50 titles) —
     cheap and idempotent: NULL `wikidata_qid` rows get populated, rows
@@ -3031,7 +3385,7 @@ def resolve_qids(limit: int = 2000, time_budget_s: int = 60,
         topic: Optional topic name.
     """
     _start = _start_call()
-    topic_id, wiki, err = _require_topic(ctx, topic)
+    topic_id, wiki, err = _require_topic(ctx, topic, auth_token=auth_token)
     if err:
         return err
 
@@ -3082,7 +3436,7 @@ def resolve_qids(limit: int = 2000, time_budget_s: int = 60,
 @mcp.tool()
 def get_wikiproject_articles(project_name: str, max_articles: int = 50000,
                               note: str = "",
-                              topic: str | None = None, ctx: Context = None) -> str:
+                              topic: str | None = None, auth_token: str | None = None, ctx: Context = None) -> str:
     """Get all articles tagged by a WikiProject. Adds them to the working list
     with source 'wikiproject'. WikiProjects are an enwiki convention — this
     tool returns few/no articles on non-English wikis.
@@ -3095,7 +3449,7 @@ def get_wikiproject_articles(project_name: str, max_articles: int = 50000,
         topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
     _start = _start_call()
-    topic_id, wiki, err = _require_topic(ctx, topic)
+    topic_id, wiki, err = _require_topic(ctx, topic, auth_token=auth_token)
     if err:
         return err
 
@@ -3329,7 +3683,7 @@ def get_category_articles(category: str, depth: int = 3, exclude: list[str] | No
                           max_articles: int = 50000,
                           time_budget_s: int = 240,
                           note: str = "",
-                          topic: str | None = None, ctx: Context = None) -> str:
+                          topic: str | None = None, auth_token: str | None = None, ctx: Context = None) -> str:
     """Crawl a category tree and collect all articles. Adds them to the
     working list with source 'category'.
 
@@ -3357,7 +3711,7 @@ def get_category_articles(category: str, depth: int = 3, exclude: list[str] | No
         topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
     _start = _start_call()
-    topic_id, wiki, err = _require_topic(ctx, topic)
+    topic_id, wiki, err = _require_topic(ctx, topic, auth_token=auth_token)
     if err:
         return err
 
@@ -3434,6 +3788,7 @@ def preview_category_pull(category: str, depth: int = 3,
                           time_budget_s: int = 240,
                           note: str = "",
                           topic: str | None = None,
+                          auth_token: str | None = None,
                           ctx: Context = None) -> str:
     """Dry-run of get_category_articles. Walks the category tree and reports
     article / category counts + a sampled preview with descriptions WITHOUT
@@ -3461,7 +3816,7 @@ def preview_category_pull(category: str, depth: int = 3,
                an MCP session.
     """
     _start = _start_call()
-    topic_id, wiki, err = _require_topic(ctx, topic)
+    topic_id, wiki, err = _require_topic(ctx, topic, mode='read', auth_token=auth_token)
     if err:
         return err
 
@@ -3717,7 +4072,7 @@ def _fetch_list_page_links(title: str, wiki: str,
 def harvest_list_page(title: str, main_content_only: bool = True,
                       time_budget_s: int = 240,
                       note: str = "",
-                      topic: str | None = None, ctx: Context = None) -> str:
+                      topic: str | None = None, auth_token: str | None = None, ctx: Context = None) -> str:
     """Extract article links from a List/Index/Glossary page. Adds them
     to the working list with source 'list_page'.
 
@@ -3745,7 +4100,7 @@ def harvest_list_page(title: str, main_content_only: bool = True,
         topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
     _start = _start_call()
-    topic_id, wiki, err = _require_topic(ctx, topic)
+    topic_id, wiki, err = _require_topic(ctx, topic, auth_token=auth_token)
     if err:
         return err
 
@@ -3804,6 +4159,7 @@ def preview_harvest_list_page(title: str, sample_size: int = 50,
                               time_budget_s: int = 240,
                               note: str = "",
                               topic: str | None = None,
+                              auth_token: str | None = None,
                               ctx: Context = None) -> str:
     """Dry-run of harvest_list_page. Fetches the page's links but does NOT
     add anything to the working list. Returns the link count, new-vs-
@@ -3830,7 +4186,7 @@ def preview_harvest_list_page(title: str, sample_size: int = 50,
                an MCP session.
     """
     _start = _start_call()
-    topic_id, wiki, err = _require_topic(ctx, topic)
+    topic_id, wiki, err = _require_topic(ctx, topic, mode='read', auth_token=auth_token)
     if err:
         return err
 
@@ -3924,7 +4280,7 @@ class _AllMainspaceLinkExtractor(html.parser.HTMLParser):
 
 @mcp.tool()
 def harvest_navbox(template: str, note: str = "",
-                   topic: str | None = None, ctx: Context = None) -> str:
+                   topic: str | None = None, auth_token: str | None = None, ctx: Context = None) -> str:
     """Extract mainspace article links from a Wikipedia navbox template.
 
     Navboxes (the horizontal tables at the bottom of Wikipedia articles
@@ -3949,7 +4305,7 @@ def harvest_navbox(template: str, note: str = "",
                an MCP session.
     """
     _start = _start_call()
-    topic_id, wiki, err = _require_topic(ctx, topic)
+    topic_id, wiki, err = _require_topic(ctx, topic, auth_token=auth_token)
     if err:
         return err
 
@@ -4137,7 +4493,7 @@ def _run_cirrus_search(query: str, within_category: str | None,
 def search_articles(query: str, limit: int = 500,
                     within_category: str | None = None,
                     note: str = "",
-                    topic: str | None = None, ctx: Context = None) -> str:
+                    topic: str | None = None, auth_token: str | None = None, ctx: Context = None) -> str:
     """Search Wikipedia using CirrusSearch. Supports operators like intitle:,
     morelike:, hastemplate:, incategory:. Adds results to working list with source 'search'.
 
@@ -4155,7 +4511,7 @@ def search_articles(query: str, limit: int = 500,
         topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
     _start = _start_call()
-    topic_id, wiki, err = _require_topic(ctx, topic)
+    topic_id, wiki, err = _require_topic(ctx, topic, auth_token=auth_token)
     if err:
         return err
 
@@ -4193,7 +4549,9 @@ def search_articles(query: str, limit: int = 500,
 
 @mcp.tool()
 def search_similar(seed_article: str, limit: int = 50, note: str = "",
-                   topic: str | None = None, ctx: Context = None) -> str:
+                   topic: str | None = None,
+                   auth_token: str | None = None,
+                   ctx: Context = None) -> str:
     """Find articles similar to a given article using CirrusSearch morelike:.
     Great for finding thematic clusters the other strategies miss.
 
@@ -4203,16 +4561,17 @@ def search_similar(seed_article: str, limit: int = 50, note: str = "",
         note: Optional free-text observation for this call's log entry.
               Use for mid-flow reflection; empty by default.
         topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
+        auth_token: Optional Wikimedia OAuth bearer token for stateless clients.
     """
     return search_articles(f'morelike:{seed_article}', limit=limit, note=note,
-                           topic=topic, ctx=ctx)
+                           topic=topic, auth_token=auth_token, ctx=ctx)
 
 
 @mcp.tool()
 def preview_search(query: str, limit: int = 50,
                    within_category: str | None = None,
                    note: str = "",
-                   topic: str | None = None, ctx: Context = None) -> str:
+                   topic: str | None = None, auth_token: str | None = None, ctx: Context = None) -> str:
     """Run a Wikipedia search and return titles + short descriptions WITHOUT
     adding anything to the working list. Use this before committing broad
     searches (morelike:, keyword searches without a demographic anchor) — the
@@ -4235,7 +4594,7 @@ def preview_search(query: str, limit: int = 50,
                MCP session.
     """
     _start = _start_call()
-    topic_id, wiki, err = _require_topic(ctx, topic)
+    topic_id, wiki, err = _require_topic(ctx, topic, mode='read', auth_token=auth_token)
     if err:
         return err
 
@@ -4289,7 +4648,9 @@ def preview_search(query: str, limit: int = 50,
 
 @mcp.tool()
 def preview_similar(seed_article: str, limit: int = 50, note: str = "",
-                    topic: str | None = None, ctx: Context = None) -> str:
+                    topic: str | None = None,
+                    auth_token: str | None = None,
+                    ctx: Context = None) -> str:
     """Read-only preview of morelike: results for a seed article. Returns
     titles + descriptions + already_in_topic flags WITHOUT adding anything
     to the working list. Use this before `search_similar` — the AI/user can
@@ -4309,9 +4670,11 @@ def preview_similar(seed_article: str, limit: int = 50, note: str = "",
               Use for mid-flow reflection; empty by default.
         topic: Optional topic name. Pass if your client doesn't maintain
                an MCP session.
+        auth_token: Optional Wikimedia OAuth bearer token for stateless
+                    clients. Forwarded to the underlying preview_search.
     """
     return preview_search(f'morelike:{seed_article}', limit=limit, note=note,
-                          topic=topic, ctx=ctx)
+                          topic=topic, auth_token=auth_token, ctx=ctx)
 
 
 # ── Review aids ───────────────────────────────────────────────────────────
@@ -4319,7 +4682,7 @@ def preview_similar(seed_article: str, limit: int = 50, note: str = "",
 @mcp.tool()
 def fetch_descriptions(limit: int = 2000, time_budget_s: int = 60,
                        note: str = "",
-                       topic: str | None = None, ctx: Context = None) -> str:
+                       topic: str | None = None, auth_token: str | None = None, ctx: Context = None) -> str:
     """Fetch short descriptions for articles in the current topic that
     don't have one yet, and persist them. Descriptions show up in
     get_articles / get_articles_by_source output so the AI or user can judge
@@ -4354,7 +4717,7 @@ def fetch_descriptions(limit: int = 2000, time_budget_s: int = 60,
                MCP session.
     """
     _start = _start_call()
-    topic_id, wiki, err = _require_topic(ctx, topic)
+    topic_id, wiki, err = _require_topic(ctx, topic, auth_token=auth_token)
     if err:
         return err
 
@@ -4497,7 +4860,7 @@ def fetch_article_leads(titles: list[str], sentences: int = 3,
 @mcp.tool()
 def score_by_extract(titles: list[str] | None = None, unscored_batch: bool = False,
                      batch_size: int = 50, note: str = "",
-                     topic: str | None = None, ctx: Context = None) -> str:
+                     topic: str | None = None, auth_token: str | None = None, ctx: Context = None) -> str:
     """Fetch article extracts (first 5 sentences) from Wikipedia for scoring.
     Returns the extracts so you can judge relevance on a 1-10 scale.
 
@@ -4510,7 +4873,7 @@ def score_by_extract(titles: list[str] | None = None, unscored_batch: bool = Fal
         topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
     _start = _start_call()
-    topic_id, wiki, err = _require_topic(ctx, topic)
+    topic_id, wiki, err = _require_topic(ctx, topic, auth_token=auth_token)
     if err:
         return err
 
@@ -4567,7 +4930,7 @@ def score_by_extract(titles: list[str] | None = None, unscored_batch: bool = Fal
 
 @mcp.tool()
 def set_scores(scores: dict[str, int], note: str = "",
-               topic: str | None = None, ctx: Context = None) -> str:
+               topic: str | None = None, auth_token: str | None = None, ctx: Context = None) -> str:
     """Set relevance scores for articles. Scores should be 1-10.
 
     Args:
@@ -4577,7 +4940,7 @@ def set_scores(scores: dict[str, int], note: str = "",
         topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
     _start = _start_call()
-    topic_id, wiki, err = _require_topic(ctx, topic)
+    topic_id, wiki, err = _require_topic(ctx, topic, auth_token=auth_token)
     if err:
         return err
 
@@ -4592,7 +4955,7 @@ def auto_score_by_keyword(keywords: list[str], score: int = 9,
                           match_description: bool = False,
                           overwrite_scored: bool = False,
                           note: str = "",
-                          topic: str | None = None, ctx: Context = None) -> str:
+                          topic: str | None = None, auth_token: str | None = None, ctx: Context = None) -> str:
     """Fast-pass scoring for articles whose title (or description, if
     `match_description=True`) contains any of the given keywords. Case-
     insensitive substring match.
@@ -4630,7 +4993,7 @@ def auto_score_by_keyword(keywords: list[str], score: int = 9,
         topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
     _start = _start_call()
-    topic_id, wiki, err = _require_topic(ctx, topic)
+    topic_id, wiki, err = _require_topic(ctx, topic, auth_token=auth_token)
     if err:
         return err
 
@@ -4684,7 +5047,7 @@ def auto_score_by_description(
     overwrite_scored: bool = False,
     dry_run: bool = True,
     note: str = "",
-    topic: str | None = None, ctx: Context = None,
+    topic: str | None = None, auth_token: str | None = None, ctx: Context = None,
 ) -> str:
     """Reject articles whose Wikidata short description clearly disqualifies
     them from the topic. Use this after fetch_descriptions to eliminate
@@ -4764,7 +5127,7 @@ def auto_score_by_description(
     run fetch_descriptions first to include them.
     """
     _start = _start_call()
-    topic_id, wiki, err = _require_topic(ctx, topic)
+    topic_id, wiki, err = _require_topic(ctx, topic, auth_token=auth_token)
     if err:
         return err
 
@@ -4900,7 +5263,7 @@ def auto_score_by_description(
 
 @mcp.tool()
 def score_all_unscored(score: int = 8, note: str = "",
-                       topic: str | None = None, ctx: Context = None) -> str:
+                       topic: str | None = None, auth_token: str | None = None, ctx: Context = None) -> str:
     """Set a score for ALL currently unscored articles in one operation.
 
     **Prefer leaving articles unscored** under the centrality-gradient
@@ -4929,7 +5292,7 @@ def score_all_unscored(score: int = 8, note: str = "",
         topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
     _start = _start_call()
-    topic_id, wiki, err = _require_topic(ctx, topic)
+    topic_id, wiki, err = _require_topic(ctx, topic, auth_token=auth_token)
     if err:
         return err
 
@@ -4949,7 +5312,7 @@ def score_all_unscored(score: int = 8, note: str = "",
 
 @mcp.tool()
 def browse_edges(seed_titles: list[str], min_links: int = 3, note: str = "",
-                 topic: str | None = None, ctx: Context = None) -> str:
+                 topic: str | None = None, auth_token: str | None = None, ctx: Context = None) -> str:
     """Browse outgoing links from seed articles to find related articles not yet
     in the working list. Articles linked by multiple seeds are most likely relevant.
 
@@ -4961,7 +5324,7 @@ def browse_edges(seed_titles: list[str], min_links: int = 3, note: str = "",
         topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
     _start = _start_call()
-    topic_id, wiki, err = _require_topic(ctx, topic)
+    topic_id, wiki, err = _require_topic(ctx, topic, mode='read', auth_token=auth_token)
     if err:
         return err
 
@@ -5007,7 +5370,7 @@ def browse_edges(seed_titles: list[str], min_links: int = 3, note: str = "",
 # ── List management ───────────────────────────────────────────────────────
 
 @mcp.tool()
-def list_sources(note: str = "", topic: str | None = None, ctx: Context = None) -> str:
+def list_sources(note: str = "", topic: str | None = None, auth_token: str | None = None, ctx: Context = None) -> str:
     """List every source label currently attached to articles in the working list,
     with counts. Call this before remove_by_source to see exactly what labels
     you can target. Each gather tool records a specific source label:
@@ -5020,7 +5383,7 @@ def list_sources(note: str = "", topic: str | None = None, ctx: Context = None) 
         topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
     _start = _start_call()
-    topic_id, wiki, err = _require_topic(ctx, topic)
+    topic_id, wiki, err = _require_topic(ctx, topic, mode='read', auth_token=auth_token)
     if err:
         return err
 
@@ -5047,7 +5410,7 @@ def list_sources(note: str = "", topic: str | None = None, ctx: Context = None) 
 @mcp.tool()
 def add_articles(titles: list[str], source: str = "manual", score: int | None = None,
                  note: str = "",
-                 topic: str | None = None, ctx: Context = None) -> str:
+                 topic: str | None = None, auth_token: str | None = None, ctx: Context = None) -> str:
     """Add articles to the working list. Use this when you want to add articles
     you've discovered or identified yourself, outside of the other gather tools.
 
@@ -5064,7 +5427,7 @@ def add_articles(titles: list[str], source: str = "manual", score: int | None = 
         topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
     _start = _start_call()
-    topic_id, wiki, err = _require_topic(ctx, topic)
+    topic_id, wiki, err = _require_topic(ctx, topic, auth_token=auth_token)
     if err:
         return err
 
@@ -5113,7 +5476,7 @@ def add_articles(titles: list[str], source: str = "manual", score: int | None = 
 @mcp.tool()
 def get_articles_by_source(source: str, exclude_sources: list[str] | None = None,
                            limit: int = 100, offset: int = 0, note: str = "",
-                           topic: str | None = None, ctx: Context = None) -> str:
+                           topic: str | None = None, auth_token: str | None = None, ctx: Context = None) -> str:
     """Get articles that came from a specific source, optionally excluding articles
     that also came from other sources. Useful for reviewing noisy sources like list page harvests.
 
@@ -5130,7 +5493,7 @@ def get_articles_by_source(source: str, exclude_sources: list[str] | None = None
         topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
     _start = _start_call()
-    topic_id, wiki, err = _require_topic(ctx, topic)
+    topic_id, wiki, err = _require_topic(ctx, topic, mode='read', auth_token=auth_token)
     if err:
         return err
 
@@ -5166,7 +5529,7 @@ def get_articles_by_source(source: str, exclude_sources: list[str] | None = None
 @mcp.tool()
 def reject_articles(titles: list[str], reason: str = "",
                     also_remove: bool = True, note: str = "",
-                    topic: str | None = None, ctx: Context = None) -> str:
+                    topic: str | None = None, auth_token: str | None = None, ctx: Context = None) -> str:
     """Add titles to this topic's sticky rejection list. Rejected titles
     will be auto-skipped by future gather calls (`get_category_articles`,
     `harvest_list_page`, `search_articles`, `get_wikiproject_articles`,
@@ -5193,7 +5556,7 @@ def reject_articles(titles: list[str], reason: str = "",
                an MCP session.
     """
     _start = _start_call()
-    topic_id, _wiki, err = _require_topic(ctx, topic)
+    topic_id, _wiki, err = _require_topic(ctx, topic, auth_token=auth_token)
     if err:
         return err
     titles = [normalize_title(t) for t in titles]
@@ -5219,6 +5582,7 @@ def reject_articles(titles: list[str], reason: str = "",
 
 @mcp.tool()
 def list_rejections(note: str = "", topic: str | None = None,
+                    auth_token: str | None = None,
                     ctx: Context = None) -> str:
     """List this topic's sticky rejections (title, reason, rejected_at),
     most recent first.
@@ -5230,7 +5594,7 @@ def list_rejections(note: str = "", topic: str | None = None,
                an MCP session.
     """
     _start = _start_call()
-    topic_id, _wiki, err = _require_topic(ctx, topic)
+    topic_id, _wiki, err = _require_topic(ctx, topic, mode='read', auth_token=auth_token)
     if err:
         return err
     entries = db.list_rejections(topic_id)
@@ -5244,7 +5608,7 @@ def list_rejections(note: str = "", topic: str | None = None,
 
 @mcp.tool()
 def unreject_articles(titles: list[str], note: str = "",
-                      topic: str | None = None, ctx: Context = None) -> str:
+                      topic: str | None = None, auth_token: str | None = None, ctx: Context = None) -> str:
     """Remove titles from this topic's rejection list. Does NOT add them
     back to the working list — call `add_articles` separately if you want
     them back.
@@ -5257,7 +5621,7 @@ def unreject_articles(titles: list[str], note: str = "",
                an MCP session.
     """
     _start = _start_call()
-    topic_id, _wiki, err = _require_topic(ctx, topic)
+    topic_id, _wiki, err = _require_topic(ctx, topic, auth_token=auth_token)
     if err:
         return err
     titles = [normalize_title(t) for t in titles]
@@ -5273,7 +5637,7 @@ def unreject_articles(titles: list[str], note: str = "",
 
 @mcp.tool()
 def remove_articles(titles: list[str], note: str = "",
-                    topic: str | None = None, ctx: Context = None) -> str:
+                    topic: str | None = None, auth_token: str | None = None, ctx: Context = None) -> str:
     """Remove articles from the working list.
 
     Server side has no cap — the DB batches deletes in 500-title SQL
@@ -5299,7 +5663,7 @@ def remove_articles(titles: list[str], note: str = "",
         topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
     _start = _start_call()
-    topic_id, wiki, err = _require_topic(ctx, topic)
+    topic_id, wiki, err = _require_topic(ctx, topic, auth_token=auth_token)
     if err:
         return err
 
@@ -5314,7 +5678,7 @@ def remove_articles(titles: list[str], note: str = "",
 def remove_by_source(source: str, keep_if_other_sources: bool = True,
                      prefix_match: bool = False, dry_run: bool = True,
                      note: str = "",
-                     topic: str | None = None, ctx: Context = None) -> str:
+                     topic: str | None = None, auth_token: str | None = None, ctx: Context = None) -> str:
     """Remove all articles that came from a specific source. Use this to undo a bad
     category pull, noisy list harvest, or noisy search query.
 
@@ -5339,7 +5703,7 @@ def remove_by_source(source: str, keep_if_other_sources: bool = True,
         topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
     _start = _start_call()
-    topic_id, wiki, err = _require_topic(ctx, topic)
+    topic_id, wiki, err = _require_topic(ctx, topic, auth_token=auth_token)
     if err:
         return err
 
@@ -5402,7 +5766,7 @@ def remove_by_source(source: str, keep_if_other_sources: bool = True,
 def remove_by_pattern(pattern: str, below_score: int | None = None, source: str | None = None,
                       match_description: bool = False,
                       dry_run: bool = True, note: str = "",
-                      topic: str | None = None, ctx: Context = None) -> str:
+                      topic: str | None = None, auth_token: str | None = None, ctx: Context = None) -> str:
     """Remove articles matching a pattern (case-insensitive substring match).
     Matches against the title by default; set match_description=True to match
     against each article's stored short description instead (call
@@ -5421,7 +5785,7 @@ def remove_by_pattern(pattern: str, below_score: int | None = None, source: str 
         topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
     _start = _start_call()
-    topic_id, wiki, err = _require_topic(ctx, topic)
+    topic_id, wiki, err = _require_topic(ctx, topic, auth_token=auth_token)
     if err:
         return err
 
@@ -5492,7 +5856,7 @@ def get_articles(min_score: int | None = None, max_score: int | None = None,
                  unscored_only: bool = False,
                  titles_only: bool = False,
                  limit: int = 100, offset: int = 0,
-                 topic: str | None = None, ctx: Context = None) -> str:
+                 topic: str | None = None, auth_token: str | None = None, ctx: Context = None) -> str:
     """Get articles from the working list with optional filters. Each
     returned article includes its `sources` list (the source labels it was
     added under), so you can see at a glance which pulls contributed it —
@@ -5525,7 +5889,7 @@ def get_articles(min_score: int | None = None, max_score: int | None = None,
         offset: Skip this many articles (for pagination)
         topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
-    topic_id, wiki, err = _require_topic(ctx, topic)
+    topic_id, wiki, err = _require_topic(ctx, topic, mode='read', auth_token=auth_token)
     if err:
         return err
 
@@ -5562,7 +5926,7 @@ def get_articles(min_score: int | None = None, max_score: int | None = None,
 
 @mcp.tool()
 def resolve_redirects(dry_run: bool = False, note: str = "",
-                      topic: str | None = None, ctx: Context = None) -> str:
+                      topic: str | None = None, auth_token: str | None = None, ctx: Context = None) -> str:
     """Normalize every article title in the current topic to its canonical
     Wikipedia form. Follows redirects + title normalization (case, spacing).
     SAFE — no articles are dropped; titles whose MediaWiki page is missing
@@ -5596,7 +5960,7 @@ def resolve_redirects(dry_run: bool = False, note: str = "",
     }
     """
     _start = _start_call()
-    topic_id, wiki, err = _require_topic(ctx, topic)
+    topic_id, wiki, err = _require_topic(ctx, topic, auth_token=auth_token)
     if err:
         return err
 
@@ -5694,7 +6058,7 @@ def filter_articles(resolve_redirects: bool = True, remove_disambig: bool = True
                     max_drop_fraction: float = 0.1,
                     force: bool = False,
                     note: str = "",
-                    topic: str | None = None, ctx: Context = None) -> str:
+                    topic: str | None = None, auth_token: str | None = None, ctx: Context = None) -> str:
     """Clean up the working list: resolve redirects, remove disambiguation pages,
     remove list/index pages.
 
@@ -5737,7 +6101,7 @@ def filter_articles(resolve_redirects: bool = True, remove_disambig: bool = True
                an MCP session.
     """
     _start = _start_call()
-    topic_id, wiki, err = _require_topic(ctx, topic)
+    topic_id, wiki, err = _require_topic(ctx, topic, auth_token=auth_token)
     if err:
         return err
 
@@ -5949,7 +6313,7 @@ def filter_articles(resolve_redirects: bool = True, remove_disambig: bool = True
 def export_csv(min_score: int = 0, scored_only: bool = False,
                enriched: bool = False,
                note: str = "",
-               topic: str | None = None, ctx: Context = None) -> str:
+               topic: str | None = None, auth_token: str | None = None, ctx: Context = None) -> str:
     """Export the final article list as a downloadable CSV file.
 
     Returns a download link — give this URL to the user so they can download the CSV directly.
@@ -5970,7 +6334,7 @@ def export_csv(min_score: int = 0, scored_only: bool = False,
         topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
     """
     _start = _start_call()
-    topic_id, wiki, err = _require_topic(ctx, topic)
+    topic_id, wiki, err = _require_topic(ctx, topic, mode='read', auth_token=auth_token)
     if err:
         return err
 
@@ -6484,7 +6848,9 @@ def submit_feedback(summary: str, what_worked: str = "", what_didnt: str = "",
                     phase_1_confidence_recalibration: float | None = None,
                     runtime: dict | None = None,
                     strategy_execution: dict | None = None,
-                    topic: str | None = None, ctx: Context = None) -> str:
+                    topic: str | None = None,
+                    auth_token: str | None = None,
+                    ctx: Context = None) -> str:
     """Submit a brief retrospective on this topic-building session so the
     Wiki Education team can improve the tool. Offer to call this at the end
     of a session (before or after export_csv), or whenever the user signals
@@ -6627,6 +6993,15 @@ def submit_feedback(summary: str, what_worked: str = "", what_didnt: str = "",
     tid, name, _ = _get_topic(ctx)
     resolved_topic = topic or name or "(unknown)"
 
+    # Resolve caller (best-effort even with AUTH_ENFORCEMENT='none', so
+    # the feedback log gets attribution when the user has signed in). When
+    # enforcement is on, anonymous feedback is refused.
+    caller = _resolve_caller(ctx, auth_token) if ctx is not None else None
+    if AUTH_ENFORCEMENT != "none" and caller is None:
+        return _auth_required_error(
+            "Submitting feedback requires authentication so we know who "
+            "submitted it.")
+
     client_id = None
     try:
         client_id = ctx.client_id
@@ -6692,6 +7067,7 @@ def submit_feedback(summary: str, what_worked: str = "", what_didnt: str = "",
         "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "topic": resolved_topic,
         "client_id": client_id,
+        "caller": caller,
         "rating": rating,
         "summary": summary,
         "what_worked": what_worked,

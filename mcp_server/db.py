@@ -76,6 +76,25 @@ def init_db():
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
         CREATE INDEX IF NOT EXISTS idx_dogfood_exemplars_slug ON dogfood_exemplars(slug);
+        -- Auth (Wikimedia OAuth 2.0). Tokens are stored as SHA-256 hashes
+        -- so a DB compromise doesn't yield active tokens. Issued by the
+        -- /oauth/callback handler after a successful OAuth dance.
+        CREATE TABLE IF NOT EXISTS auth_tokens (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            token_hash TEXT NOT NULL UNIQUE,
+            wikipedia_username TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            expires_at TEXT NOT NULL,
+            revoked_at TEXT,
+            last_used_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_auth_tokens_user ON auth_tokens(wikipedia_username);
+        -- Short-lived CSRF state for the OAuth redirect flow. Cleaned up on a
+        -- 10-min sweep; rows older than that are stale.
+        CREATE TABLE IF NOT EXISTS oauth_states (
+            state TEXT PRIMARY KEY,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
     """)
     # Migrate existing DBs that predate the description column. NULL means
     # "not fetched yet"; empty string means "fetched, no short-desc on Wikipedia".
@@ -127,6 +146,31 @@ def init_db():
     if 'metadata_json' not in topic_cols:
         conn.execute(
             "ALTER TABLE topics ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}'")
+    # Auth: per-topic ownership and visibility. owner_username is NULL for
+    # legacy topics that predate auth; backfilled by MIGRATION_DEFAULT_OWNER
+    # below (env-gated, opt-in). visibility values: 'private' (default),
+    # 'public_read' (anyone reads, owner writes), 'public_edit' (anyone
+    # authenticated reads + writes).
+    if 'owner_username' not in topic_cols:
+        conn.execute("ALTER TABLE topics ADD COLUMN owner_username TEXT")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_topics_owner ON topics(owner_username)")
+    if 'visibility' not in topic_cols:
+        conn.execute(
+            "ALTER TABLE topics ADD COLUMN visibility TEXT NOT NULL DEFAULT 'private'")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_topics_visibility ON topics(visibility)")
+    # Optional one-shot migration: assign a default owner to any topic that
+    # still has owner_username = NULL. Operator opts in by setting
+    # MIGRATION_DEFAULT_OWNER in the environment; without it, legacy topics
+    # remain unowned (their tools still work because permission enforcement
+    # is feature-flagged off until AUTH_ENFORCEMENT is set).
+    default_owner = os.environ.get("MIGRATION_DEFAULT_OWNER")
+    if default_owner:
+        conn.execute(
+            "UPDATE topics SET owner_username = ? "
+            "WHERE owner_username IS NULL",
+            (default_owner,))
     conn.commit()
     conn.close()
 
@@ -862,6 +906,233 @@ def _row_to_task_dict(row):
         'created_at': row['created_at'],
         'updated_at': row['updated_at'],
     }
+
+
+# ── Auth: token + ACL helpers ──────────────────────────────────────────
+
+import hashlib
+import secrets
+
+
+def normalize_username(username):
+    """Normalize a Wikipedia username for stable comparison. Wikipedia
+    capitalizes the first character and uses underscores for spaces in
+    URLs, but the displayed form may use spaces. Use this whenever we
+    compare a stored owner against a caller."""
+    if not username:
+        return ""
+    s = username.strip().replace("_", " ")
+    if s:
+        s = s[0].upper() + s[1:]
+    return s
+
+
+def hash_token(raw_token):
+    """SHA-256 hash of a raw bearer token. The DB stores only the hash."""
+    return hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+
+
+def generate_token():
+    """Mint a new opaque bearer token. Format: tb_<32 hex chars>."""
+    return "tb_" + secrets.token_hex(16)
+
+
+def create_auth_token(wikipedia_username, ttl_days=30):
+    """Create + persist a new token for the given Wikipedia user. Returns
+    (raw_token, expires_at). The raw token is shown to the user once;
+    the DB only stores its hash."""
+    raw = generate_token()
+    h = hash_token(raw)
+    user = normalize_username(wikipedia_username)
+    conn = _connect()
+    conn.execute(
+        "INSERT INTO auth_tokens (token_hash, wikipedia_username, expires_at) "
+        "VALUES (?, ?, datetime('now', ?))",
+        (h, user, f"+{int(ttl_days)} days"))
+    expires_at = conn.execute(
+        "SELECT expires_at FROM auth_tokens WHERE token_hash = ?",
+        (h,)).fetchone()['expires_at']
+    conn.commit()
+    conn.close()
+    return raw, expires_at
+
+
+def lookup_auth_token(raw_token):
+    """Resolve a raw bearer token to its user. Returns dict with
+    {username, expires_at, revoked_at, last_used_at} or None if not
+    found / expired / revoked. On a successful lookup, bumps
+    `last_used_at` to now (sliding TTL is intentionally NOT applied here
+    — explicit refresh flow if we want it later)."""
+    if not raw_token or not raw_token.startswith("tb_"):
+        return None
+    h = hash_token(raw_token)
+    conn = _connect()
+    row = conn.execute(
+        "SELECT id, wikipedia_username, expires_at, revoked_at, last_used_at "
+        "FROM auth_tokens WHERE token_hash = ?", (h,)).fetchone()
+    if row is None:
+        conn.close()
+        return None
+    if row['revoked_at']:
+        conn.close()
+        return None
+    # Compare expires_at against now in SQLite to avoid TZ math in Python.
+    fresh = conn.execute(
+        "SELECT (expires_at > datetime('now')) AS ok FROM auth_tokens "
+        "WHERE id = ?", (row['id'],)).fetchone()
+    if not fresh or not fresh['ok']:
+        conn.close()
+        return None
+    conn.execute("UPDATE auth_tokens SET last_used_at = datetime('now') "
+                 "WHERE id = ?", (row['id'],))
+    conn.commit()
+    conn.close()
+    return {
+        'username': row['wikipedia_username'],
+        'expires_at': row['expires_at'],
+        'revoked_at': row['revoked_at'],
+        'last_used_at': row['last_used_at'],
+    }
+
+
+def revoke_auth_token(raw_token):
+    """Mark a token revoked. Returns True if it existed and was active."""
+    if not raw_token:
+        return False
+    h = hash_token(raw_token)
+    conn = _connect()
+    cur = conn.execute(
+        "UPDATE auth_tokens SET revoked_at = datetime('now') "
+        "WHERE token_hash = ? AND revoked_at IS NULL", (h,))
+    conn.commit()
+    rowcount = cur.rowcount
+    conn.close()
+    return rowcount > 0
+
+
+def list_active_tokens(wikipedia_username):
+    """List a user's non-revoked, unexpired tokens (without raw values).
+    Used by the token-management UI on /oauth."""
+    user = normalize_username(wikipedia_username)
+    conn = _connect()
+    rows = conn.execute(
+        "SELECT id, created_at, expires_at, last_used_at FROM auth_tokens "
+        "WHERE wikipedia_username = ? AND revoked_at IS NULL "
+        "AND expires_at > datetime('now') ORDER BY created_at DESC",
+        (user,)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def create_oauth_state():
+    """Create + persist a CSRF state nonce for the OAuth redirect dance.
+    Returns the raw state value to put in the cookie + the URL."""
+    state = secrets.token_urlsafe(24)
+    conn = _connect()
+    conn.execute("INSERT INTO oauth_states (state) VALUES (?)", (state,))
+    conn.commit()
+    conn.close()
+    return state
+
+
+def consume_oauth_state(state, max_age_seconds=600):
+    """Look up + delete a state nonce in one transaction. Returns True
+    if it existed and is fresh (created within max_age_seconds)."""
+    if not state:
+        return False
+    conn = _connect()
+    row = conn.execute(
+        "SELECT created_at, "
+        "(strftime('%s','now') - strftime('%s', created_at)) AS age "
+        "FROM oauth_states WHERE state = ?", (state,)).fetchone()
+    if row is None:
+        conn.close()
+        return False
+    age = int(row['age'] or 0)
+    conn.execute("DELETE FROM oauth_states WHERE state = ?", (state,))
+    # Best-effort sweep of stale rows on every consume.
+    conn.execute(
+        "DELETE FROM oauth_states WHERE "
+        "strftime('%s','now') - strftime('%s', created_at) > ?",
+        (int(max_age_seconds),))
+    conn.commit()
+    conn.close()
+    return age <= int(max_age_seconds)
+
+
+def get_topic_acl(topic_id):
+    """Return (owner_username, visibility) for a topic. owner is None for
+    legacy unclaimed topics. visibility is one of 'private', 'public_read',
+    'public_edit'."""
+    conn = _connect()
+    row = conn.execute(
+        "SELECT owner_username, visibility FROM topics WHERE id = ?",
+        (topic_id,)).fetchone()
+    conn.close()
+    if not row:
+        return None, 'private'
+    return row['owner_username'], (row['visibility'] or 'private')
+
+
+def set_topic_owner(topic_id, owner_username):
+    """Assign / reassign a topic's owner. Used by start_topic on creation
+    and by the (deferred) admin transfer_topic tool."""
+    user = normalize_username(owner_username) if owner_username else None
+    conn = _connect()
+    conn.execute(
+        "UPDATE topics SET owner_username = ?, updated_at = datetime('now') "
+        "WHERE id = ?", (user, topic_id))
+    conn.commit()
+    conn.close()
+
+
+def set_topic_visibility(topic_id, visibility):
+    """Set a topic's visibility. Caller is expected to have verified
+    permission (owner-only) at the tool layer."""
+    if visibility not in ('private', 'public_read', 'public_edit'):
+        raise ValueError(
+            f"visibility must be 'private', 'public_read', or 'public_edit' "
+            f"(got {visibility!r})")
+    conn = _connect()
+    conn.execute(
+        "UPDATE topics SET visibility = ?, updated_at = datetime('now') "
+        "WHERE id = ?", (visibility, topic_id))
+    conn.commit()
+    conn.close()
+
+
+def list_topics_for(caller_username):
+    """List topics visible to the given caller. Returns the same shape as
+    list_topics() with extra owner / visibility / mine fields. If
+    caller_username is None (anonymous), returns only public topics."""
+    caller = normalize_username(caller_username) if caller_username else None
+    conn = _connect()
+    if caller:
+        rows = conn.execute("""
+            SELECT t.id, t.name, t.slug, t.wiki, t.created_at, t.updated_at,
+                   t.owner_username, t.visibility,
+                   COUNT(a.id) as article_count
+            FROM topics t LEFT JOIN articles a ON t.id = a.topic_id
+            WHERE t.owner_username = ?
+               OR t.visibility != 'private'
+            GROUP BY t.id ORDER BY t.updated_at DESC
+        """, (caller,)).fetchall()
+    else:
+        rows = conn.execute("""
+            SELECT t.id, t.name, t.slug, t.wiki, t.created_at, t.updated_at,
+                   t.owner_username, t.visibility,
+                   COUNT(a.id) as article_count
+            FROM topics t LEFT JOIN articles a ON t.id = a.topic_id
+            WHERE t.visibility != 'private'
+            GROUP BY t.id ORDER BY t.updated_at DESC
+        """).fetchall()
+    conn.close()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d['mine'] = bool(caller and d.get('owner_username') == caller)
+        out.append(d)
+    return out
 
 
 # Initialize on import

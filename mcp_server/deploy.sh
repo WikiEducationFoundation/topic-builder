@@ -24,7 +24,7 @@ REMOTE_DIR="/opt/topic-builder"
 
 echo "==> Syncing mcp_server/ to $DEPLOY_HOST:$REMOTE_DIR/app/"
 $SSH_CMD "mkdir -p $REMOTE_DIR/app $REMOTE_DIR/static"
-$SCP_CMD "$SCRIPT_DIR/server.py" "$SCRIPT_DIR/wikipedia_api.py" "$SCRIPT_DIR/db.py" "$SCRIPT_DIR/server_instructions.md" "$SCRIPT_DIR/shape_axes.md" "$SCRIPT_DIR/strategy_moves.md" "$SCRIPT_DIR/failure_modes.md" "$SCRIPT_DIR/requirements.txt" "$DEPLOY_USER@$DEPLOY_HOST:$REMOTE_DIR/app/"
+$SCP_CMD "$SCRIPT_DIR/server.py" "$SCRIPT_DIR/oauth.py" "$SCRIPT_DIR/wikipedia_api.py" "$SCRIPT_DIR/db.py" "$SCRIPT_DIR/server_instructions.md" "$SCRIPT_DIR/shape_axes.md" "$SCRIPT_DIR/strategy_moves.md" "$SCRIPT_DIR/failure_modes.md" "$SCRIPT_DIR/requirements.txt" "$DEPLOY_USER@$DEPLOY_HOST:$REMOTE_DIR/app/"
 $SCP_CMD "$SCRIPT_DIR/landing.html" "$DEPLOY_USER@$DEPLOY_HOST:$REMOTE_DIR/static/index.html"
 
 echo "==> Syncing admin scripts to $REMOTE_DIR/bin/"
@@ -62,6 +62,12 @@ Restart=always
 RestartSec=5
 Environment=PYTHONUNBUFFERED=1
 Environment=PORT=%i
+# Optional auth env vars (OAUTH_CLIENT_ID, OAUTH_CLIENT_SECRET,
+# OAUTH_REDIRECT_URI, AUTH_ENFORCEMENT, MIGRATION_DEFAULT_OWNER).
+# The leading '-' makes the file optional: until the operator creates
+# it, the server boots with auth-off and OAuth-not-configured. Flipping
+# auth on at runtime is just creating/editing this file + restart.
+EnvironmentFile=-/etc/topic-builder.env
 
 [Install]
 WantedBy=multi-user.target
@@ -134,6 +140,18 @@ server {
         proxy_connect_timeout 30s;
         proxy_send_timeout 300s;
         proxy_read_timeout 300s;
+    }
+
+    # OAuth dance + token-display HTTP routes. Mounted on the same
+    # FastMCP Starlette app the /mcp transport runs on (see oauth.py).
+    # Light-weight requests; keep default timeouts.
+    location /oauth/ {
+        proxy_pass http://topic_builder_backend;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_http_version 1.1;
     }
 
     listen 443 ssl;
