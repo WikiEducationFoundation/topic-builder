@@ -42,6 +42,14 @@ patience) when the earlier steps have landed.
    candidates, then `check_wikiproject(<best-guess>)`. Do NOT skip because
    your first probe was too broad (see next bullet); try the specific
    topic project before concluding WikiProjects are unhelpful.
+   **Before pulling**, call `preview_wikiproject(<canonical>)` for the
+   project's article count + importance breakdown. It uses the
+   Wikipedia 1.0 bot's assessment table (cheap, single API call) and
+   flags huge projects (>10K) where `get_wikiproject_articles` will
+   likely time out — pull importance-filtered subsets via the bot's
+   per-importance categories instead, or use a more specific
+   sub-WikiProject. The preview also resolves plural/singular drift
+   ("Plants" → bot canonical "Plant").
 3. **Category survey** — `survey_categories(root, count_articles=True)`
    to gauge shape + size.
 4. **Category pull** — `get_category_articles` (preview via

@@ -95,6 +95,20 @@ def init_db():
             state TEXT PRIMARY KEY,
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
+        -- Cached index of WikiProjects tracked by the Wikipedia 1.0 bot
+        -- (User:WP_1.0_bot/Tables/Project/<canonical>). Used by
+        -- preview_wikiproject to resolve user-supplied project names to
+        -- the bot's canonical form (handles plural/singular drift like
+        -- "Plants" → "Plant", and surfaces "not WP1.0-tracked" cleanly).
+        -- Refreshed lazily when older than the staleness threshold; full
+        -- index is ~2.7K rows so refresh is cheap.
+        CREATE TABLE IF NOT EXISTS wp_bot_projects (
+            canonical_name TEXT PRIMARY KEY,
+            normalized_name TEXT NOT NULL,
+            fetched_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_wp_bot_normalized
+            ON wp_bot_projects(normalized_name);
     """)
     # Migrate existing DBs that predate the description column. NULL means
     # "not fetched yet"; empty string means "fetched, no short-desc on Wikipedia".
@@ -1062,6 +1076,85 @@ def consume_oauth_state(state, max_age_seconds=600):
     conn.commit()
     conn.close()
     return age <= int(max_age_seconds)
+
+
+def normalize_wp_project_name(name):
+    """Lowercase + collapse non-alphanumerics for fuzzy WikiProject lookup.
+    Handles "Climate change" / "climate_change" / "Climate-Change" all
+    mapping to "climatechange". Plural/singular drift is handled at the
+    callsite (try with and without trailing 's'), not here."""
+    if not name:
+        return ""
+    return re.sub(r"[^a-z0-9]+", "", name.lower())
+
+
+def lookup_wp_bot_project(query):
+    """Resolve a user-supplied project name to its bot-canonical form.
+    Returns canonical_name or None. Tries exact, then normalized, then
+    plural-stripped normalized."""
+    if not query:
+        return None
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT canonical_name FROM wp_bot_projects WHERE canonical_name = ?",
+            (query,)).fetchone()
+        if row:
+            return row['canonical_name']
+        norm = normalize_wp_project_name(query)
+        if not norm:
+            return None
+        row = conn.execute(
+            "SELECT canonical_name FROM wp_bot_projects WHERE normalized_name = ?",
+            (norm,)).fetchone()
+        if row:
+            return row['canonical_name']
+        # Plural fallback: "Plants" → "Plant", "Birds" → "Bird".
+        if norm.endswith("s") and len(norm) > 2:
+            row = conn.execute(
+                "SELECT canonical_name FROM wp_bot_projects WHERE normalized_name = ?",
+                (norm[:-1],)).fetchone()
+            if row:
+                return row['canonical_name']
+        return None
+    finally:
+        conn.close()
+
+
+def wp_bot_index_age_seconds():
+    """Age of the most recent wp_bot_projects row in seconds, or None
+    if the table is empty. Used to decide when to refresh."""
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT (strftime('%s','now') - strftime('%s', MAX(fetched_at))) "
+            "AS age FROM wp_bot_projects").fetchone()
+        if row is None or row['age'] is None:
+            return None
+        return int(row['age'])
+    finally:
+        conn.close()
+
+
+def replace_wp_bot_index(canonical_names):
+    """Atomically replace the wp_bot_projects index. Used by the
+    refresh path; fetches all subpages of User:WP_1.0_bot/Tables/Project/
+    in one go and rewrites the table."""
+    now_iso = None  # let SQLite default fill it
+    conn = _connect()
+    try:
+        conn.execute("BEGIN")
+        conn.execute("DELETE FROM wp_bot_projects")
+        rows = [
+            (name, normalize_wp_project_name(name))
+            for name in canonical_names if name]
+        conn.executemany(
+            "INSERT INTO wp_bot_projects (canonical_name, normalized_name) "
+            "VALUES (?, ?)", rows)
+        conn.commit()
+        return len(rows)
+    finally:
+        conn.close()
 
 
 def get_topic_acl(topic_id):

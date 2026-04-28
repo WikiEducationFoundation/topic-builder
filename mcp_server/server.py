@@ -2512,6 +2512,233 @@ def check_wikiproject(project_name: str, wiki: str | None = None,
     return json.dumps(result)
 
 
+# ── preview_wikiproject helpers ──────────────────────────────────────
+#
+# The Wikipedia 1.0 bot maintains an assessment table for each project
+# it tracks at User:WP_1.0_bot/Tables/Project/<canonical>. We cache
+# the index of canonicals (~2.7K entries) so we can cheaply resolve a
+# user-supplied name (e.g. "Plants") to the bot's canonical form
+# (e.g. "Plant"), then fetch + parse just that project's table.
+
+_WP_BOT_INDEX_PREFIX = "WP 1.0 bot/Tables/Project/"
+_WP_BOT_INDEX_REFRESH_AGE_S = 7 * 24 * 3600  # one week
+_WP_BOT_TABLE_TITLE = "User:WP 1.0 bot/Tables/Project/{}"
+
+# Total row in the bot's wikitable: the row whose first cell is
+# '''Total''', and whose subsequent cells link to wp1.openzim.org with
+# the count as the link text. The grand total is the rightmost.
+_WP_TOTAL_ROW_RE = re.compile(
+    r"\|\s*style=\"text-align: center;?\"\s*\|\s*'''Total'''(.*?)(?=\|-|\Z)",
+    re.DOTALL)
+_WP_NUM_IN_LINK_RE = re.compile(r"\b(\d{1,3}(?:,\d{3})*)\s*\]")
+
+
+def _refresh_wp_bot_index() -> int:
+    """Enumerate every subpage under User:WP_1.0_bot/Tables/Project/ via
+    the allpages API + write the canonicals to db.wp_bot_projects.
+    Returns the count written. Called lazily by preview_wikiproject when
+    the cache is empty or > _WP_BOT_INDEX_REFRESH_AGE_S old."""
+    canonicals = []
+    params = {
+        "action": "query", "list": "allpages",
+        "apnamespace": "2",  # User
+        "apprefix": _WP_BOT_INDEX_PREFIX,
+        "aplimit": "max",
+    }
+    for item in api_query_all(params, "allpages", max_items=10_000, wiki="en"):
+        title = item.get("title", "")
+        # title looks like "User:WP 1.0 bot/Tables/Project/<X>". Strip
+        # the namespace + path prefix to get the canonical project name.
+        prefix = "User:" + _WP_BOT_INDEX_PREFIX
+        if title.startswith(prefix):
+            canonicals.append(title[len(prefix):])
+    return db.replace_wp_bot_index(canonicals)
+
+
+def _parse_wp_bot_table(wikitext: str) -> dict | None:
+    """Pull the importance breakdown + grand total out of a bot
+    assessment table. Returns dict on success, None if the Total row
+    isn't where we expect."""
+    m = _WP_TOTAL_ROW_RE.search(wikitext)
+    if not m:
+        return None
+    total_row = m.group(1)
+    raw_nums = _WP_NUM_IN_LINK_RE.findall(total_row)
+    if len(raw_nums) < 1:
+        return None
+
+    def parse_int(s):
+        try:
+            return int(s.replace(",", ""))
+        except ValueError:
+            return 0
+
+    # Total row has up to 7 cells: Top / High / Mid / Low / NA /
+    # Unknown / Grand. Empty importance buckets render as blank cells
+    # (no link, no number), so the array length varies; the grand
+    # total is always the LAST number.
+    nums = [parse_int(n) for n in raw_nums]
+    grand = nums[-1]
+    importance_keys = ["Top", "High", "Mid", "Low", "NA", "Unknown"]
+    by_importance = {}
+    if len(nums) >= 2:
+        for key, val in zip(importance_keys, nums[:-1]):
+            by_importance[key] = val
+    return {"total": grand, "by_importance": by_importance}
+
+
+def _size_band(total: int) -> tuple[str, str]:
+    """Return (band, recommendation). Bands tuned from the recon range
+    (Climate change 4.8K, Sociology 47K, Plant 158K). Boundaries are a
+    starting point — adjust based on observed timeout behavior of
+    get_wikiproject_articles."""
+    if total < 500:
+        return ("tiny", "Small project — safe to pull all via "
+                "get_wikiproject_articles.")
+    if total < 2_000:
+        return ("small", "Manageable — full pull will complete quickly.")
+    if total < 10_000:
+        return ("medium", "Will take a minute or two; full pull is fine "
+                "but expect some wait.")
+    if total < 50_000:
+        return ("large", "Likely to be slow. Consider filtering by "
+                "importance category (Top/High) instead of pulling all.")
+    return ("huge",
+            "Too large to pull in full — get_wikiproject_articles will "
+            "likely time out. Pull importance-filtered subsets via the "
+            "bot's per-importance categories (e.g. "
+            "Category:Top-importance_<project>_articles) or use a more "
+            "specific sub-WikiProject.")
+
+
+@mcp.tool()
+def preview_wikiproject(project_name: str, wiki: str | None = None,
+                        note: str = "",
+                        topic: str | None = None,
+                        ctx: Context = None) -> str:
+    """Cheap metadata about a WikiProject — total article count and an
+    importance breakdown — WITHOUT enumerating its members. Use BEFORE
+    `get_wikiproject_articles` to decide whether the project is small
+    enough to pull in full or needs filtering / sampling.
+
+    Backed by the Wikipedia 1.0 bot's per-project assessment tables
+    (`User:WP_1.0_bot/Tables/Project/<canonical>`). The tool resolves
+    user-supplied names like "Plants" to the bot's canonical form
+    ("Plant") via a cached index of all ~2,700 tracked projects.
+
+    Caveats:
+    - WP1.0 bot is enwiki-only. Returns an error on other wikis.
+    - Not every WikiProject participates in WP1.0 assessments. If a
+      project isn't in the bot index, this tool can't help — use
+      `check_wikiproject` to confirm the project exists, then fall
+      back to `get_wikiproject_articles` (slower).
+
+    Args:
+        project_name: WikiProject name as you'd see it in the
+            `Wikipedia:WikiProject <X>` page title. Plurals and case
+            mismatches are tolerated ("Plants" → canonical "Plant").
+        wiki: Must be 'en' (or unset; defaults to 'en'). Other wikis
+            return an error since the bot is enwiki-only.
+        note: Optional free-text observation for the log.
+        topic: Optional topic name for log attribution.
+    """
+    _start = _start_call()
+    wiki = _resolve_wiki(ctx, wiki, topic)
+    if wiki != "en":
+        return json.dumps({
+            "error": (f"preview_wikiproject is enwiki-only "
+                      f"(WP 1.0 bot only operates on en.wikipedia.org). "
+                      f"Got wiki={wiki!r}."),
+        }, indent=2, ensure_ascii=False)
+
+    # Lazy refresh: rebuild the index if empty or > a week old.
+    age = db.wp_bot_index_age_seconds()
+    if age is None or age > _WP_BOT_INDEX_REFRESH_AGE_S:
+        try:
+            _refresh_wp_bot_index()
+        except Exception as e:
+            return json.dumps({
+                "error": f"Failed to refresh WP 1.0 bot index: {e}",
+            }, indent=2, ensure_ascii=False)
+
+    canonical = db.lookup_wp_bot_project(project_name)
+    if canonical is None:
+        log_usage(ctx, "preview_wikiproject",
+                  {"project": project_name, "wiki": wiki},
+                  "not_in_bot_index", start_time=_start, note=note)
+        return json.dumps({
+            "wiki": wiki,
+            "queried": project_name,
+            "canonical": None,
+            "found_in_bot_index": False,
+            "note": (
+                "Project not tracked by the Wikipedia 1.0 bot — either "
+                "no WikiProject by this name exists, or the project "
+                "doesn't participate in WP1.0 assessments. Use "
+                "check_wikiproject(...) to verify the name. If it "
+                "exists, get_wikiproject_articles still works but is "
+                "slow on large projects (no metadata-only path)."),
+        }, indent=2, ensure_ascii=False)
+
+    # Fetch the bot's assessment table for the resolved canonical.
+    table_title = _WP_BOT_TABLE_TITLE.format(canonical)
+    try:
+        data = api_query({
+            "action": "query", "prop": "revisions", "titles": table_title,
+            "rvprop": "content", "rvslots": "main",
+        }, wiki="en")
+    except Exception as e:
+        return json.dumps({
+            "error": f"Failed to fetch bot assessment table: {e}",
+            "canonical": canonical,
+            "stats_source_page": table_title,
+        }, indent=2, ensure_ascii=False)
+
+    pages = (data.get("query") or {}).get("pages") or []
+    if not pages or pages[0].get("missing"):
+        return json.dumps({
+            "wiki": wiki, "queried": project_name, "canonical": canonical,
+            "found_in_bot_index": True,
+            "stats_source_page": table_title,
+            "error": ("Index says this project is tracked, but the "
+                      "bot's assessment table is missing. The cached "
+                      "index may be stale; project may have been "
+                      "renamed or de-listed."),
+        }, indent=2, ensure_ascii=False)
+
+    revisions = pages[0].get("revisions") or []
+    wikitext = ((revisions[0] if revisions else {})
+                .get("slots", {}).get("main", {}).get("content", ""))
+    parsed = _parse_wp_bot_table(wikitext)
+    if parsed is None:
+        return json.dumps({
+            "wiki": wiki, "queried": project_name, "canonical": canonical,
+            "found_in_bot_index": True,
+            "stats_source_page": table_title,
+            "error": ("Couldn't parse the Total row from the bot's "
+                      "assessment table — table format may have changed. "
+                      "Falling back to get_wikiproject_articles will "
+                      "still work, just expensively."),
+        }, indent=2, ensure_ascii=False)
+
+    band, recommendation = _size_band(parsed["total"])
+    log_usage(ctx, "preview_wikiproject",
+              {"project": project_name, "canonical": canonical, "wiki": wiki},
+              f"total={parsed['total']} band={band}",
+              start_time=_start, note=note)
+    return json.dumps({
+        "wiki": wiki,
+        "queried": project_name,
+        "canonical": canonical,
+        "found_in_bot_index": True,
+        "total_articles": parsed["total"],
+        "by_importance": parsed["by_importance"],
+        "size_band": band,
+        "recommendation": recommendation,
+        "stats_source_page": table_title,
+    }, indent=2, ensure_ascii=False)
+
+
 @mcp.tool()
 def find_wikiprojects(keywords: list[str], limit: int = 20,
                       note: str = "",
