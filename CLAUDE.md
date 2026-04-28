@@ -84,6 +84,14 @@ Both read `.env` for `DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_KEY`. The deploy key 
 
 Before a full deploy, sanity check: `python3 -c "import ast; ast.parse(open('mcp_server/server.py').read())"`.
 
+### `/etc/topic-builder.env` is operator-owned — AI does not touch it
+
+`/etc/topic-builder.env` (on the production host) holds OAuth client_id + client_secret, `AUTH_ENFORCEMENT`, and `MIGRATION_DEFAULT_OWNER`. **AI never reads or edits this file.** Any command that names it is denied via `.claude/settings.json` (`Bash(*topic-builder.env*)`), and that deny pattern catches SSH-wrapped invocations too.
+
+To request changes: propose the line for the operator to add (the values themselves are non-secret instructions like `AUTH_ENFORCEMENT=writes`). The operator edits the file and restarts the service. AI verifies the running process picked up the change via runtime introspection — `/proc/<pid>/environ` (loadable through `bash scripts/smoke.sh`), or observable side effects (HTTP responses, DB state, behavior of auth-gated tools).
+
+This rule exists because the file's contents flow into transcripts when read — and a transcript is durable, indexable, and not under operator control. Verification via runtime state is just as reliable and doesn't expose secrets.
+
 ## How to add a new tool
 
 Tools follow a consistent shape so stateless clients keep working and usage is logged correctly. Copy from an existing tool as the template (`get_category_articles` is a good one).

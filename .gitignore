@@ -4,7 +4,8 @@ deploy_key.pub
 topics/
 __pycache__/
 *.pyc
-.claude/
+.claude/*
+!.claude/settings.json
 
 # Benchmark gold sets + audit data contain real people's names alongside
 # our on/off-topic judgments and free-text justifications — both of which

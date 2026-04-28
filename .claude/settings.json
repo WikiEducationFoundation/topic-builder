@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dig *)",
+      "Bash(bash scripts/smoke.sh *)",
+      "Bash(curl https://topic-builder.wikiedu.org/*)",
+      "mcp__claude_ai_Wikipedia_Topic_Builder__get_articles",
+      "mcp__claude_ai_Wikipedia_Topic_Builder__get_articles_by_source",
+      "mcp__claude_ai_Wikipedia_Topic_Builder__preview_search",
+      "mcp__claude_ai_Wikipedia_Topic_Builder__preview_similar",
+      "mcp__claude_ai_Wikipedia_Topic_Builder__survey_categories",
+      "mcp__claude_ai_Wikipedia_Topic_Builder__check_wikiproject",
+      "mcp__claude_ai_Wikipedia_Topic_Builder__find_list_pages"
+    ],
+    "deny": [
+      "Bash(python3 -c *)",
+      "Bash(python -c *)",
+      "Bash(*topic-builder.env*)"
+    ]
+  }
+}
