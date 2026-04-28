@@ -396,6 +396,31 @@ The 2026-04-23 dogfood `task.md` has already been patched to authorize the loop 
 
 **Sequencing.** No rush. Promote when broader sharing of the URL begins or when a security review pushes for it. See `docs/shipped.md` for the Phase 1+2 cutover record.
 
+### ☐ Create a testing plan `[NEW — 2026-04-27]`
+
+**What.** Author a short strategy doc (`docs/testing-plan.md`) that scopes what to test, how, and at what cadence. Not the tests themselves — the plan that decides which tests to write first and what they should cover. First batch of actual tests is a follow-up item that promotes from this one.
+
+**Why.** Today's regression-catching mechanism is the dogfood + benchmark-ratchet pattern. Real, but slow (a regression rides until the next 5-benchmark run) and unevenly covering — ratchet measures *outcomes* under the AI's interpretation of the workflow, not *invariants* under the server's contract. AI-driven changes are accelerating, and the structural risks that scale fastest are exactly the ones automated tests catch best:
+- **Implicit invariants between functions.** The 2026-04-27 5-minute auth-cache bug is the type case — an undocumented contract drifted, the AI's edit didn't notice, it sat broken until observed in a live session. A unit test on `_get_session_user` with two reads >5min apart would have failed loudly the moment the cache stopped refreshing.
+- **Cross-cutting changes.** AI may find N-1 of N places that needed updating; a golden-path integration test catches the inconsistent N'th.
+- **Server-vs-AI-instructions drift.** `server_instructions.md` says one thing, the code does another — invisible until a session hits the gap.
+
+**Shape.** Short doc that names:
+- Test layers (smoke / integration / unit) and approximate proportion. Probably golden-path-heavy given the project shape.
+- Concrete first-batch test cases for the highest-leverage golden path: start_topic → gather via 2–3 strategies → score → export → submit_feedback roundtrip.
+- Per-tool unit-test priority — which tools are most likely to drift silently. Initial guess: scoring tools (centrality semantics), auth helpers (the bug we just fixed sits here), cleanup tools (`filter_articles` deletion thresholds, `resolve_redirects` idempotence).
+- Relationship to the existing benchmark-ratchet harness. Is the ratchet itself the integration suite, or do we want something faster + more targeted for pre-deploy CI?
+- Tooling decisions: pytest vs unittest, in-tree vs separate harness, CI host (project deploys SSH-from-laptop today; no GitHub Actions yet) vs local-only-before-deploy.
+- Migration path — which tests get written first, in what order, with what coverage threshold.
+
+**Open questions.**
+- **Mocking strategy for Wikipedia API.** Cassette-style fixtures (deterministic, but rot when Wikipedia changes shape) vs actually-hit-Wikipedia (slow, flaky, rate-limited, but always-current). Probably hybrid: unit tests use fixtures, golden-path integration tests hit live with a small whitelist of stable test pages.
+- **DB reset.** Tests need a fresh SQLite per run or per-test. `DB_PATH` is already env-configurable (`db.py:8`), so a tmpfile fixture works — but we'd want the schema migrations to fire cleanly on an empty DB.
+- **MCP harness for integration tests.** Do we test via the FastMCP transport (closer to reality, more setup) or by calling the tool functions directly with synthetic Context (faster, but bypasses the transport layer that has its own quirks)?
+- **CI host gap.** No GitHub Actions today. v1 plan probably runs locally pre-`deploy.sh`; CI as a follow-up.
+
+**Sequencing.** Plan first (1–2 hours), then a small first batch of tests proving the harness works (half a day), then iterate. The plan is the gating step — without it we'd write the wrong tests first and discover that during the second batch.
+
 ---
 
 ## Tier 3 — deferred / speculative

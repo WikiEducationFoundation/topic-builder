@@ -2,6 +2,58 @@
 
 Provides tools for exploring Wikipedia's content structure to build
 comprehensive article lists for any topic.
+
+────────────────────────────────────────────────────────────────────
+Table of contents (grep for the `── <Heading> ──` markers to jump):
+
+  Imports + module setup            (top)
+  ── Usage logging ──                ~  L38
+  ── Auth helpers ──                 ~ L281
+  ── Topic management ──             ~ L383
+      start_topic / reset_topic / set_topic_rubric / get_topic_rubric
+      list_topics / authenticate / revoke_my_token / whoami
+      get_topic_visibility / set_topic_visibility / resume_topic
+  ── Confabulation crosscheck ──     ~ L1218
+  ── Status + describe ──            ~ L1584  (get_status, describe_topic)
+  ── Active scaffolding (audit_progress + topic_diff) ──   ~ L1790
+  ── Reconnaissance tools ──         ~ L2339
+      survey_categories / check_wikiproject / preview_wikiproject
+      find_wikiprojects / find_list_pages
+  ── Seed-anchored mining ──         ~ L2993
+      get_article_links / _backlinks / _categories / _templates
+      / _content; wikidata_get_entity
+  ── Wikidata ──                     ~ L3738
+      wikidata_search_entity / _entities_by_property / _query
+      resolve_qids
+  ── Gathering tools ──              ~ L4097
+      get_wikiproject_articles / get_category_articles
+      preview_category_pull / harvest_list_page (+ preview)
+      harvest_navbox / search_articles / search_similar
+      preview_search / preview_similar
+  ── Review aids ──                  ~ L5343
+      fetch_descriptions / fetch_article_leads
+  ── Scoring tools ──                ~ L5521
+      score_by_extract / set_scores / auto_score_by_keyword
+      auto_score_by_description / score_all_unscored
+  ── Edge browsing ──                ~ L5974  (browse_edges)
+  ── List management ──              ~ L6033
+      list_sources / get_articles / get_articles_by_source
+      remove_articles / remove_by_source / remove_by_pattern
+      reject_articles / list_rejections / unreject_articles
+      add_articles / filter_articles
+  ── Cleanup and export ──           ~ L6588
+      resolve_redirects / export_csv / submit_feedback
+  ── Dogfood / benchmark task entry points ──   ~ L7182
+      fetch_task_brief / list_tasks
+  ── Exemplars ──                    ~ L7348
+      list_exemplars / get_exemplar
+  ── Feedback ──                     ~ L7496  (just submit_feedback today;
+                                                 confabulation crosscheck
+                                                 helpers live near L1218)
+
+Line ranges are approximate and drift as the file grows; the section
+markers are stable. Use `grep -n '^# ── '` to regenerate.
+────────────────────────────────────────────────────────────────────
 """
 
 import csv
