@@ -76,12 +76,15 @@ from wikipedia_api import (
     api_query, api_query_all, api_get, normalize_title, wiki_api_url,
     get_rate_limit_stats, fetch_short_descriptions,
     fetch_descriptions_with_fallback, fetch_wikidata_qids,
+    annotate_types_for_titles as _annotate_types_for_titles,
     fetch_article_leads as _fetch_article_leads,
     resolve_redirects as _resolve_redirects,
     apply_redirect_map as _apply_redirect_map,
     reset_call_counters, get_call_counters,
     wikidata_sparql as _wikidata_sparql,
     wikidata_entities_by_property as _wikidata_entities_by_property,
+    wikidata_entities_by_property_titles_only
+        as _wikidata_entities_by_property_titles_only,
     wikidata_search_entity as _wikidata_search_entity,
     WIKIDATA_API as _WIKIDATA_API,
 )
@@ -942,16 +945,17 @@ def authenticate(token: str, ctx: Context = None) -> str:
         "expires_at": info['expires_at'],
         "note": ("Token bound to this MCP session. Subsequent tools will "
                  "act as this user when permission enforcement is on."),
-        "cross_session_persistence_tip": (
-            "If your AI client supports long-term memory (Claude Code, "
-            "Claude.ai, ChatGPT), you can offer to save this token to "
-            "memory so future chats can authenticate without re-pasting. "
-            "Treat the token like a password — only save it to memory "
+        "next_action_for_ai": (
+            "Ask the user, verbatim: \"Should I save this token to your "
+            "long-term memory so future sessions can authenticate "
+            "automatically?\" Save the token only on an explicit yes. "
+            "Treat the token like a password — save only to memory "
             "associated with this user's own account, never a shared "
-            "workspace. The token slides 30 days forward on each use, "
-            "so an active user rarely needs to re-issue. If the user "
-            "ever needs to invalidate a saved token, call "
-            "revoke_my_token(token=…)."),
+            "workspace. If the user is on a stateless client (no "
+            "long-term memory), skip the offer. The token slides 30 "
+            "days forward on each use, so an active user rarely needs "
+            "to re-issue; revoke any time via revoke_my_token(token=…)."
+        ),
     }, indent=2, ensure_ascii=False)
 
 
@@ -1253,6 +1257,7 @@ _TOOL_TO_MOVE = {
     "search_similar": "morelike-from-pure-topic-seed",
     "preview_similar": "morelike-from-pure-topic-seed",
     "wikidata_entities_by_property": "wikidata-property-probe-additive",
+    "preview_wikidata_property": "wikidata-property-probe-additive",
     "wikidata_query": "wikidata-property-probe-additive",
     "resolve_redirects": "redirect-resolution-pass",
     "remove_by_pattern": "description-fetch-then-pattern-clean",
@@ -1281,32 +1286,172 @@ _TOOL_TO_MOVE = {
 # "popular-culture-list-page-overlinking") aren't crosscheckable and are
 # left unflagged.
 
-_STRATEGY_FAMILY_EVIDENCE: dict[str, list[str]] = {
-    # tag (as the AI populates it on strategies_used) → list of tool
-    # names whose presence in the usage log corroborates the claim.
-    "navbox":             ["harvest_navbox"],
-    "category_crawl":     ["get_category_articles", "survey_categories",
-                           "preview_category_pull"],
-    "list_harvest":       ["harvest_list_page", "preview_harvest_list_page"],
-    "wikidata_property":  ["wikidata_get_entity",
-                           "wikidata_entities_by_property",
-                           "wikidata_query"],
-    "search":             ["search_articles", "preview_search"],
-    "similarity":         ["search_similar", "preview_similar"],
-    "article_links":      ["get_article_links", "get_article_backlinks",
-                           "get_article_categories", "get_article_templates",
-                           "get_article_content"],
-    "wikiproject_recon":  ["find_wikiprojects", "check_wikiproject",
-                           "get_wikiproject_articles"],
-    "edge_browse":        ["browse_edges"],
-    "fetch_leads":        ["fetch_article_leads"],
-    "fetch_descriptions": ["fetch_descriptions"],
-    "description_fetch":  ["fetch_descriptions"],   # alias seen in logs
-    "redirect_resolution": ["resolve_redirects"],
-    "source_pruning":     ["remove_by_source", "get_articles_by_source"],
-    "manual_reinclusion": ["add_articles"],
-    "get_exemplar":       ["get_exemplar", "list_exemplars"],
+def _normalize_claim(s: str) -> str:
+    """Normalize an AI-supplied claim for crosscheck lookup. Treats
+    `wikiproject-recon`, `wikiproject_recon`, and `WikiProject Recon`
+    as the same key. Lowercase + collapse non-alphanumerics to single
+    dashes."""
+    return re.sub(r'[^a-z0-9]+', '-', s.lower()).strip('-')
+
+
+def _parse_move_names_from_catalog() -> set[str]:
+    """Read `strategy_moves.md` and return the set of canonical move
+    names (the `## <move-name>` headings). Empty set if the file is
+    missing — the validator falls back to the legacy short-tag map."""
+    catalog_path = os.path.join(os.path.dirname(__file__),
+                                'strategy_moves.md')
+    names: set[str] = set()
+    try:
+        with open(catalog_path, 'r') as f:
+            for line in f:
+                if line.startswith('## '):
+                    name = line[3:].strip()
+                    # Drop trailing punctuation / parenthetical
+                    # qualifiers, keep only the canonical slug shape.
+                    if name and not name.startswith('('):
+                        names.add(name)
+    except Exception:
+        pass
+    return names
+
+
+# Move names that are known to be uncrosscheckable from a single topic's
+# usage log (cross-wiki workflows, judgment-shaped reflection moves,
+# meta-process labels). Listing them here lets the validator recognize
+# the claim without flagging "no evidence."
+_UNCHECKABLE_MOVES: set[str] = {
+    "cross-wiki-gap-probe-lightweight",
+    "parallel-wiki-build-and-walk-back",
+    "rubric-cleanup",
+    "rubric-redraft",
+    "scope-review",
+    "strategy-sketch",
+    "rubric-reread",
+    # Judgment-shaped patterns that don't have a clean tool signature.
+    "shortdesc-ambiguity-disambiguation",  # often inferred from rejection rationale
 }
+
+
+def _build_strategy_evidence_map() -> dict[str, list[str]]:
+    """Build the canonical move-name → evidence-tools map from three
+    sources, merged + normalized:
+
+    1. Inversion of `_TOOL_TO_MOVE` — every tool that maps to a move
+       counts as evidence of that move. Callable mappings (e.g.,
+       `harvest_navbox`'s topic-dependent variants) contribute the tool
+       to all possible variants.
+    2. Catalog headings from `strategy_moves.md` — adds known move
+       names that may not have any tool mapping yet (tracked as known
+       but uncrosscheckable).
+    3. Legacy short-tag aliases — kept for back-compat with older
+       feedback records that used short tags like `navbox` /
+       `category_crawl` / `wikidata_property`.
+
+    Keys are stored in normalized form (`_normalize_claim`); lookups
+    normalize the AI's claim before checking.
+    """
+    evidence: dict[str, list[str]] = {}
+
+    # 1. Invert _TOOL_TO_MOVE.
+    for tool, mapping in _TOOL_TO_MOVE.items():
+        if callable(mapping):
+            # Best-effort: introspect the closure to recover both
+            # possible move names. For `_harvest_navbox_moves`, the
+            # branches are 'founder-navbox-cascade' and
+            # 'parent-program-navbox' — both should have harvest_navbox
+            # as evidence.
+            for move_name in ('founder-navbox-cascade',
+                              'parent-program-navbox'):
+                key = _normalize_claim(move_name)
+                evidence.setdefault(key, []).append(tool)
+            continue
+        if not isinstance(mapping, str):
+            continue
+        key = _normalize_claim(mapping)
+        evidence.setdefault(key, []).append(tool)
+
+    # Triangulation-audit move uses describe_topic + audit_progress,
+    # neither of which is in _TOOL_TO_MOVE. Add explicitly.
+    evidence.setdefault(
+        _normalize_claim("triangulation-audit"),
+        []).extend(["describe_topic", "audit_progress"])
+    # Seed-anchored mining is a cluster of tools — register the
+    # canonical move name here even though it's not in _TOOL_TO_MOVE.
+    evidence.setdefault(
+        _normalize_claim("seed-anchored-mining-from-canonical-article"),
+        []).extend(["get_article_content", "get_article_links",
+                    "get_article_backlinks", "get_article_categories",
+                    "get_article_templates", "get_article_see_also"])
+    # auto_score_by_keyword maps to the same family as
+    # auto_score_by_description for evidence purposes.
+    evidence.setdefault(
+        _normalize_claim("auto-reject-by-disqualifying-shortdesc"),
+        []).extend(["auto_score_by_description", "auto_score_by_keyword",
+                    "set_scores"])
+    evidence.setdefault(
+        _normalize_claim("keyword-scoring"),
+        []).extend(["auto_score_by_keyword", "auto_score_by_description",
+                    "set_scores"])
+    # llm-fabricate-and-verify / niche-example-fabrication-spot-check —
+    # both backed by add_articles + preview_search.
+    for move_name in ("llm-fabricate-and-verify",
+                      "niche-example-fabrication-spot-check"):
+        evidence.setdefault(_normalize_claim(move_name), []).extend(
+            ["add_articles", "preview_search"])
+
+    # 2. Catalog moves that aren't otherwise represented — register
+    # them as known with whatever evidence we have; uncheckable ones
+    # get an empty list (won't flag).
+    for catalog_name in _parse_move_names_from_catalog():
+        key = _normalize_claim(catalog_name)
+        evidence.setdefault(key, [])
+
+    for unckeck in _UNCHECKABLE_MOVES:
+        evidence.setdefault(_normalize_claim(unckeck), [])
+
+    # 3. Legacy short-tag aliases — every short tag maps to the same
+    # evidence list as the canonical move. Keep older feedback records
+    # working without rewrite.
+    legacy_aliases: dict[str, list[str]] = {
+        "navbox":              ["harvest_navbox"],
+        "category_crawl":      ["get_category_articles",
+                                "survey_categories",
+                                "preview_category_pull"],
+        "list_harvest":        ["harvest_list_page",
+                                "preview_harvest_list_page"],
+        "wikidata_property":   ["wikidata_get_entity",
+                                "wikidata_entities_by_property",
+                                "preview_wikidata_property",
+                                "wikidata_query"],
+        "search":              ["search_articles", "preview_search"],
+        "similarity":          ["search_similar", "preview_similar"],
+        "article_links":       ["get_article_links", "get_article_backlinks",
+                                "get_article_categories",
+                                "get_article_templates",
+                                "get_article_content"],
+        "wikiproject_recon":   ["find_wikiprojects", "check_wikiproject",
+                                "get_wikiproject_articles"],
+        "wikiproject":         ["find_wikiprojects", "check_wikiproject",
+                                "get_wikiproject_articles"],
+        "rubric_cleanup":      [],  # judgment-shaped, no tool signature
+        "edge_browse":         ["browse_edges"],
+        "fetch_leads":         ["fetch_article_leads"],
+        "fetch_descriptions":  ["fetch_descriptions"],
+        "description_fetch":   ["fetch_descriptions"],
+        "redirect_resolution": ["resolve_redirects"],
+        "source_pruning":      ["remove_by_source",
+                                "get_articles_by_source"],
+        "manual_reinclusion":  ["add_articles"],
+        "get_exemplar":        ["get_exemplar", "list_exemplars"],
+    }
+    for tag, tools in legacy_aliases.items():
+        evidence.setdefault(_normalize_claim(tag), []).extend(tools)
+
+    # Deduplicate evidence tool lists.
+    return {k: sorted(set(v)) for k, v in evidence.items()}
+
+
+_STRATEGY_FAMILY_EVIDENCE: dict[str, list[str]] = _build_strategy_evidence_map()
 
 # sharp_edges_hit values that are tool-shaped and crosscheckable. Each
 # entry is {"tools": [...], "result_pattern": <regex or None>}. If the
@@ -1320,7 +1465,7 @@ _SHARP_EDGE_EVIDENCE: dict[str, dict] = {
     },
     "wikidata_filtered_entity_call_blocked": {
         "tools": ["wikidata_get_entity", "wikidata_entities_by_property",
-                  "wikidata_query"],
+                  "preview_wikidata_property", "wikidata_query"],
         "result_pattern": r"refus|block|safety|forbid",
     },
     "auto_score_by_description_proper_noun_collision": {
@@ -1380,7 +1525,8 @@ def _observed_signals_from_log(topic_name: str,
 def _compute_confabulation_flags(strategies_used: list | None,
                                  sharp_edges_hit: list | None,
                                  prep_calls_made: list | None,
-                                 observed: dict) -> list[dict]:
+                                 observed: dict,
+                                 spot_check: dict | None = None) -> list[dict]:
     """Crosscheck AI-claimed reflective fields against tool-call evidence
     from `observed` (output of _observed_signals_from_log). Returns a
     list of structured flag dicts, each {field, claim,
@@ -1389,21 +1535,29 @@ def _compute_confabulation_flags(strategies_used: list | None,
     counts = observed.get("tool_call_counts", {}) or {}
     results = observed.get("tool_call_results", {}) or {}
 
-    # 1. strategies_used — every claimed family with no corroborating call.
+    # 1. strategies_used — every claimed family with no corroborating
+    # call. Unknown claim → flag as unmapped. Known claim with empty
+    # evidence list → recognized-but-uncheckable, never flag (covers
+    # cross-wiki workflows, judgment-shaped reflection moves).
     for tag in (strategies_used or []):
         if not isinstance(tag, str):
             continue
-        if tag not in _STRATEGY_FAMILY_EVIDENCE:
+        key = _normalize_claim(tag)
+        if key not in _STRATEGY_FAMILY_EVIDENCE:
             flags.append({
                 "field": "strategies_used",
                 "claim": tag,
-                "expected_evidence": "(unmapped family — add to "
-                                     "_STRATEGY_FAMILY_EVIDENCE if this is "
-                                     "a real category)",
+                "expected_evidence": "(unmapped family — add to the "
+                                     "evidence map if this is a real "
+                                     "category, or to _UNCHECKABLE_MOVES "
+                                     "if it's known but judgment-shaped)",
                 "observed": "no mapping registered",
             })
             continue
-        evidence_tools = _STRATEGY_FAMILY_EVIDENCE[tag]
+        evidence_tools = _STRATEGY_FAMILY_EVIDENCE[key]
+        if not evidence_tools:
+            # Known move with no crosscheckable tool signature — accept.
+            continue
         if not any(counts.get(t, 0) > 0 for t in evidence_tools):
             flags.append({
                 "field": "strategies_used",
@@ -1462,6 +1616,9 @@ def _compute_confabulation_flags(strategies_used: list | None,
     #    and never flagged.
     _MENTAL_OPS = {"rubric_reread", "strategy_sketch", "scope_review",
                    "rubric_redraft"}
+    # Flatten all evidence-tool names once for fast tool-name lookup.
+    all_known_tools = {n for tools in _STRATEGY_FAMILY_EVIDENCE.values()
+                       for n in tools}
     for op in (prep_calls_made or []):
         if not isinstance(op, str) or op in _MENTAL_OPS:
             continue
@@ -1469,15 +1626,33 @@ def _compute_confabulation_flags(strategies_used: list | None,
         # Only crosscheck if it looks like a known MCP tool.
         if tool_name in counts:
             continue
-        if tool_name in _STRATEGY_FAMILY_EVIDENCE or \
-                tool_name in (n for tools in _STRATEGY_FAMILY_EVIDENCE.values()
-                              for n in tools):
+        if _normalize_claim(tool_name) in _STRATEGY_FAMILY_EVIDENCE or \
+                tool_name in all_known_tools:
             flags.append({
                 "field": "prep_calls_made",
                 "claim": op,
                 "expected_evidence": f"≥1 call to {tool_name}",
                 "observed": "no matching tool calls in this topic's log",
             })
+
+    # 4. spot_check.probes_count — claiming probes happened means the AI
+    # ran at least one search-shaped tool. Calls to preview_search /
+    # preview_similar / search_articles / search_similar all count.
+    # Skip the check when probes_count is missing or 0.
+    if isinstance(spot_check, dict):
+        probes = spot_check.get("probes_count")
+        if isinstance(probes, int) and probes > 0:
+            probe_tools = ["preview_search", "preview_similar",
+                           "search_articles", "search_similar"]
+            if not any(counts.get(t, 0) > 0 for t in probe_tools):
+                flags.append({
+                    "field": "spot_check.probes_count",
+                    "claim": f"probes_count={probes}",
+                    "expected_evidence":
+                        f"≥1 call to one of: {probe_tools}",
+                    "observed":
+                        "no probe-shaped tool calls in this topic's log",
+                })
 
     return flags
 
@@ -2893,6 +3068,7 @@ def _extract_topic_qualifier(topic_name: str | None) -> str:
 
 @mcp.tool()
 def find_list_pages(subject: str, wiki: str | None = None,
+                    relax_disambiguation_filter: bool = False,
                     note: str = "",
                     topic: str | None = None, auth_token: str | None = None, ctx: Context = None) -> str:
     """Search for list-shaped Wikipedia pages about a subject — "List of X",
@@ -2906,12 +3082,18 @@ def find_list_pages(subject: str, wiki: str | None = None,
     one token). Dropping the phrase quote lets CirrusSearch relevance-
     rank candidates instead.
 
-    Disambiguation filter: if the active topic (or passed-in `topic`) has
-    a parenthetical qualifier like "Symbolism (art movement)", candidates
-    are filtered to those whose shortdesc or title contains the
-    qualifier's tokens. This prevents homonym bleed — e.g. a bare
-    `find_list_pages("Symbolism")` otherwise returns semiotic/religious
-    list pages along with the art-movement ones.
+    Disambiguation filter: by default, candidate titles must contain at
+    least one subject-vocabulary token (and any parenthetical-qualifier
+    tokens from the active topic name) in title or shortdesc. This
+    prevents homonym bleed — e.g. a bare `find_list_pages("Symbolism")`
+    otherwise returns semiotic/religious list pages along with the
+    art-movement ones — but it ALSO drops sub-class lists whose titles
+    use a sub-class name instead of the topic name. For
+    `find_list_pages("orchid")`, list pages titled "List of Bulbophyllum
+    species" or "List of the orchids of Western Australia" are dropped
+    because the title doesn't contain "orchid". Set
+    `relax_disambiguation_filter=True` for taxonomy and geographic
+    topics where sub-class list pages are the high-yield reach surface.
 
     The prefix/suffix patterns are English-specific. On non-enwiki topics
     the tool typically returns zero results — other-language wikis use
@@ -2928,6 +3110,14 @@ def find_list_pages(subject: str, wiki: str | None = None,
         subject: Subject to search for (free text, e.g. "Apollo 11")
         wiki: Wikipedia language code to query. Defaults to the active
               topic's wiki, or "en" if no topic is active.
+        relax_disambiguation_filter: If True, skip the subject-token
+            relevance filter and return the raw "list of"/"index of"
+            prefix-search results. Use for taxonomy topics (genus /
+            family lists) and geographic topics (per-country / per-
+            region lists) where list-page titles use sub-class names
+            instead of the topic name. Default False — keeps precision
+            high on topics where every list explicitly names the
+            subject.
         note: Optional free-text observation for this call's log entry.
               Use for mid-flow reflection; empty by default.
         topic: Optional topic name to infer the wiki / qualifier from.
@@ -2993,7 +3183,16 @@ def find_list_pages(subject: str, wiki: str | None = None,
                   'the', 'and', 'for', 'with', 'from', 'into'}
     filter_tokens -= _STOPWORDS
 
-    if filter_tokens and all_candidates:
+    if relax_disambiguation_filter:
+        filtered = all_candidates
+        filter_note = (
+            "Disambiguation filter relaxed (relax_disambiguation_filter="
+            "True) — all prefix/suffix candidates returned without the "
+            "subject-token relevance check. Useful when sub-class list "
+            "pages (per-genus, per-country, etc.) are the high-yield "
+            "reach surface; review for homonyms before committing."
+        )
+    elif filter_tokens and all_candidates:
         descs = fetch_short_descriptions(all_candidates, wiki=wiki)
         kept = []
         dropped = []
@@ -3012,7 +3211,10 @@ def find_list_pages(subject: str, wiki: str | None = None,
                 f"title didn't match any relevance token from "
                 f"{sorted(filter_tokens)} (derived from subject"
                 f"{' and topic qualifier' if qualifier else ''}). "
-                f"Dropped sample: {dropped[:5]}"
+                f"Dropped sample: {dropped[:5]}. "
+                f"Set relax_disambiguation_filter=True if you want to "
+                f"see them — useful for taxonomy / geographic topics "
+                f"where list pages use sub-class names."
             )
     else:
         filtered = all_candidates
@@ -3036,7 +3238,9 @@ def find_list_pages(subject: str, wiki: str | None = None,
             f"are English-specific. Try search_articles with the list-page "
             f"prefix native to this wiki."
         )
-    log_usage(ctx, "find_list_pages", {"subject": subject, "wiki": wiki},
+    log_usage(ctx, "find_list_pages",
+              {"subject": subject, "wiki": wiki,
+               "relax_disambiguation_filter": relax_disambiguation_filter},
               f"{len(filtered)} pages (of {len(all_candidates)} candidates)",
               start_time=_start, note=note)
     return json.dumps(result, indent=2, ensure_ascii=False)
@@ -4124,6 +4328,62 @@ def wikidata_entities_by_property(property_id: str, value_qid: str,
 
 
 @mcp.tool()
+def preview_wikidata_property(property_id: str, value_qid: str,
+                              wiki: str | None = None,
+                              limit: int = 500,
+                              note: str = "",
+                              topic: str | None = None,
+                              ctx: Context = None) -> str:
+    """Titles-only sibling of `wikidata_entities_by_property`. Returns just
+    `{qid, title, sitelink_count}` per row — no Wikidata label, no
+    description. Use this when the property has hundreds of well-attested
+    entities and the full-body variant would overflow the MCP transport
+    cap. Results are sorted by `sitelink_count` descending, so the
+    most-cited entities surface first; page through to pick what to
+    inspect with `wikidata_get_entity` or commit with `add_articles`.
+    Same arguments as `wikidata_entities_by_property`.
+    """
+    _start = _start_call()
+    wiki = _resolve_wiki(ctx, wiki, topic)
+    try:
+        rows = _wikidata_entities_by_property_titles_only(
+            property_id, value_qid, wiki=wiki, limit=limit)
+    except ValueError as e:
+        return json.dumps({'error': str(e)}, indent=2)
+    except Exception as e:
+        return json.dumps({
+            'error': f'Wikidata query failed: {type(e).__name__}: {e}',
+            'hint': 'Check property/value QIDs are valid, or drop to '
+                    'wikidata_sparql for a diagnostic query.',
+        }, indent=2)
+
+    with_title = sum(1 for r in rows if r.get('title'))
+    response = {
+        'wiki': wiki,
+        'property': property_id,
+        'value': value_qid,
+        'total': len(rows),
+        'entities_with_sitelink': with_title,
+        'entities_without_sitelink': len(rows) - with_title,
+        'results': rows,
+        'note': (
+            f'Sorted by sitelink_count desc; rows without a {wiki}wiki '
+            f'sitelink (translation candidates or Wikidata-only entities) '
+            f'sit at the bottom. To commit titles you want, call '
+            f'add_articles(titles=[...], source="wikidata:{property_id}={value_qid}"). '
+            f'For full label + description on a specific row, follow up '
+            f'with wikidata_get_entity(qid).'
+        ),
+    }
+    log_usage(ctx, "preview_wikidata_property",
+              {"property": property_id, "value": value_qid,
+               "wiki": wiki, "limit": limit},
+              f"{len(rows)} entities, {with_title} on {wiki}",
+              start_time=_start, note=note)
+    return json.dumps(response, indent=2, ensure_ascii=False)
+
+
+@mcp.tool()
 def wikidata_query(sparql: str, note: str = "",
                    topic: str | None = None, ctx: Context = None) -> str:
     """Run a raw SPARQL query against query.wikidata.org. Use this only
@@ -4930,6 +5190,7 @@ def _fetch_list_page_links(title: str, wiki: str,
 @mcp.tool()
 def harvest_list_page(title: str, main_content_only: bool = True,
                       time_budget_s: int = 240,
+                      annotate_types: bool = False,
                       note: str = "",
                       topic: str | None = None, auth_token: str | None = None, ctx: Context = None) -> str:
     """Extract article links from a List/Index/Glossary page. Adds them
@@ -4954,6 +5215,19 @@ def harvest_list_page(title: str, main_content_only: bool = True,
             path paginates and can time out on pages with tens of
             thousands of links. On timeout, partial links are still
             committed; the AI can retry with `main_content_only=True`.
+        annotate_types: If True, after harvesting run a Wikidata-batched
+            type resolution over the harvested titles and return an
+            `annotation_summary` histogram of inferred types
+            (`person` / `taxon` / `place` / `organization` / `work` /
+            `concept` / `meta` / `other` / `unknown`). Use for spotting
+            "wrong-shaped row in this list" patterns (a person tagged in
+            a taxonomy list, a taxon in a bio list) without filtering
+            anything out — Wikidata coverage is uneven, and `unknown`
+            covers both "no Wikidata page" and "no P31 statement", so a
+            real biography missing from Wikidata would land in `unknown`,
+            not be silently coerced. Cost: ~2 batched API calls
+            (langlinks + one SPARQL VALUES query) regardless of how many
+            titles were harvested.
         note: Optional free-text observation for this call's log entry.
               Use for mid-flow reflection; empty by default.
         topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
@@ -4973,9 +5247,20 @@ def harvest_list_page(title: str, main_content_only: bool = True,
     batch = [(t, source_label, None) for t in links]
     added, updated = db.add_articles(topic_id, batch)
 
+    annotation_summary = None
+    if annotate_types and links:
+        try:
+            annotation_summary = _annotate_types_for_titles(
+                links, wiki=wiki).get('summary', {})
+        except Exception:
+            # Annotation is a non-essential add-on; never fail the
+            # harvest because of a Wikidata hiccup.
+            annotation_summary = None
+
     log_usage(ctx, "harvest_list_page",
               {"title": title, "wiki": wiki, "main_content_only": used_html,
-               "time_budget_s": time_budget_s},
+               "time_budget_s": time_budget_s,
+               "annotate_types": annotate_types},
               f"{len(links)} links, {added} new"
               f"{' (timed out)' if timed_out else ''}",
               start_time=_start, timed_out=timed_out, note=note)
@@ -5009,6 +5294,16 @@ def harvest_list_page(title: str, main_content_only: bool = True,
                 f'otherwise split the list page or raise time_budget_s.'
             ),
         }
+    if annotation_summary is not None:
+        result['annotation_summary'] = annotation_summary
+        result['annotation_note'] = (
+            'Inferred type buckets across all harvested titles. `unknown` '
+            'covers both "no Wikidata page" and "no P31 statement" — a '
+            'real on-topic article missing from Wikidata lands here, '
+            'never silently coerced. Use as a signal (e.g., a list of '
+            'orchids returning many `person` rows suggests eponym leaks), '
+            'not a filter.'
+        )
     return json.dumps(result, indent=2, ensure_ascii=False)
 
 
@@ -5016,6 +5311,7 @@ def harvest_list_page(title: str, main_content_only: bool = True,
 def preview_harvest_list_page(title: str, sample_size: int = 50,
                               main_content_only: bool = True,
                               time_budget_s: int = 240,
+                              annotate_types: bool = False,
                               note: str = "",
                               topic: str | None = None,
                               auth_token: str | None = None,
@@ -5039,6 +5335,14 @@ def preview_harvest_list_page(title: str, sample_size: int = 50,
         time_budget_s: Wall-clock budget in seconds (default 240). Same
                        semantics as harvest_list_page — only the prop=links
                        fallback path can time out.
+        annotate_types: If True, run a Wikidata-batched type resolution
+                        across ALL harvested titles (not just the sample)
+                        and return per-row `inferred_type` on the sample
+                        plus an `annotation_summary` histogram across the
+                        full set. Cost: ~2 batched API calls regardless
+                        of harvest size. Same vocabulary and `unknown`
+                        semantics as on harvest_list_page; see that
+                        tool's docstring.
         note: Optional free-text observation for this call's log entry.
               Use for mid-flow reflection; empty by default.
         topic: Optional topic name. Pass if your client doesn't maintain
@@ -5058,23 +5362,39 @@ def preview_harvest_list_page(title: str, sample_size: int = 50,
 
     sample_titles = links[:max(0, sample_size)]
     descriptions = fetch_descriptions_with_fallback(sample_titles, wiki=wiki) if sample_titles else {}
-    sample = [
-        {
+
+    annotations: dict = {}
+    annotation_summary: dict | None = None
+    if annotate_types and links:
+        try:
+            ann_result = _annotate_types_for_titles(links, wiki=wiki)
+            annotations = ann_result.get('annotations', {}) or {}
+            annotation_summary = ann_result.get('summary', {}) or {}
+        except Exception:
+            annotations = {}
+            annotation_summary = None
+
+    sample = []
+    for t in sample_titles:
+        row = {
             'title': t,
             'description': descriptions.get(t, ''),
             'already_in_topic': t in existing,
         }
-        for t in sample_titles
-    ]
+        if annotate_types:
+            row['inferred_type'] = (
+                annotations.get(t, {}).get('inferred_type', 'unknown'))
+        sample.append(row)
 
     would_be_source_label = f"list_page:{title}"
     log_usage(ctx, "preview_harvest_list_page",
               {"title": title, "wiki": wiki, "main_content_only": used_html,
-               "sample_size": sample_size, "time_budget_s": time_budget_s},
+               "sample_size": sample_size, "time_budget_s": time_budget_s,
+               "annotate_types": annotate_types},
               f"{len(links)} links ({new_count} new)"
               f"{' (timed out)' if timed_out else ''}",
               start_time=_start, timed_out=timed_out, note=note)
-    return json.dumps({
+    response = {
         'wiki': wiki,
         'source_page': title,
         'main_content_only': used_html,
@@ -5090,7 +5410,15 @@ def preview_harvest_list_page(title: str, sample_size: int = 50,
             'if the preview looks noisy. Pass main_content_only=False to '
             'see the raw prop=links set including navigation chrome.'
         ),
-    }, indent=2, ensure_ascii=False)
+    }
+    if annotation_summary is not None:
+        response['annotation_summary'] = annotation_summary
+        response['annotation_note'] = (
+            'Inferred type buckets across all harvested titles (not just '
+            'the sample). `unknown` covers both "no Wikidata page" and '
+            '"no P31 statement" — never silently coerced.'
+        )
+    return json.dumps(response, indent=2, ensure_ascii=False)
 
 
 class _AllMainspaceLinkExtractor(html.parser.HTMLParser):
@@ -6334,22 +6662,58 @@ def add_articles(titles: list[str], source: str = "manual", score: int | None = 
 
 @mcp.tool()
 def get_articles_by_source(source: str, exclude_sources: list[str] | None = None,
+                           prefix_match: bool = False, only_source: bool = False,
                            limit: int = 100, offset: int = 0, note: str = "",
                            topic: str | None = None, auth_token: str | None = None, ctx: Context = None) -> str:
-    """Get articles that came from a specific source, optionally excluding articles
-    that also came from other sources. Useful for reviewing noisy sources like list page harvests.
+    """Get articles that came from a specific source, optionally excluding
+    articles that also came from other sources. Useful for reviewing noisy
+    sources like list-page harvests.
 
-    For example: get_articles_by_source("list_page", exclude_sources=["category", "wikiproject"])
-    returns articles ONLY found via list pages — the ones most likely to be noise.
+    SOURCE LABELS ARE FULL STRINGS. They look like
+    `category:Climate_change`, `list_page:Index_of_climate_change_articles`,
+    `wikiproject:Climate change`, `search:morelike:Carbon dioxide`. Bare
+    family names like `"category"` will match NOTHING in default mode —
+    use `prefix_match=True` for family-level matching.
+
+    Examples:
+      # Articles tagged with this exact list-page label
+      get_articles_by_source("list_page:Index of climate change articles")
+
+      # All articles tagged with any list_page:* label
+      get_articles_by_source("list_page:", prefix_match=True)
+
+      # All articles tagged with any wikiproject:* label, excluding any
+      # also tagged with a category:* label
+      get_articles_by_source("wikiproject:", prefix_match=True,
+                             exclude_sources=["category:"])
+      # (exclude_sources also respects prefix_match.)
+
+      # Articles whose SOLE source is a particular list page — the
+      # cleanest "isolate to source X" question
+      get_articles_by_source("list_page:Glossary of climate change",
+                             only_source=True)
 
     Args:
-        source: Source to filter by (e.g., "list_page", "category", "wikiproject", "search")
-        exclude_sources: If set, exclude articles that also have any of these sources
-        limit: Max articles to return (default 100)
-        offset: Pagination offset
+        source: Source label (or, with `prefix_match=True`, source-label
+            prefix) to filter on.
+        exclude_sources: If set, exclude any article that also has at
+            least one source matching one of these entries. Honors
+            `prefix_match` in the same way `source` does.
+        prefix_match: If True, both `source` and `exclude_sources` match
+            on prefix (`s.startswith(<entry>)`) instead of exact string
+            equality. Default False, matching `remove_by_source`'s
+            convention.
+        only_source: If True, return only articles whose source list is
+            entirely covered by `source` (or its prefix family) — i.e.,
+            the article has NO other sources. Cleanest expression of
+            "isolate to this source only." When True, `exclude_sources`
+            is redundant and ignored.
+        limit: Max articles to return (default 100).
+        offset: Pagination offset.
         note: Optional free-text observation for this call's log entry.
               Use for mid-flow reflection; empty by default.
-        topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
+        topic: Optional topic name. Pass if your client doesn't maintain
+            an MCP session.
     """
     _start = _start_call()
     topic_id, wiki, err = _require_topic(ctx, topic, mode='read', auth_token=auth_token)
@@ -6357,14 +6721,28 @@ def get_articles_by_source(source: str, exclude_sources: list[str] | None = None
         return err
 
     all_articles = db.get_all_articles_dict(topic_id)
-    exclude = set(exclude_sources or [])
+    exclude = list(exclude_sources or [])
+
+    def matches_one(s: str, target: str) -> bool:
+        return s.startswith(target) if prefix_match else s == target
+
+    def has_match(sources, target: str) -> bool:
+        return any(matches_one(s, target) for s in sources)
+
+    def has_any_excluded(sources) -> bool:
+        return any(has_match(sources, x) for x in exclude)
 
     matches = []
     for title, article in sorted(all_articles.items()):
         sources = article.get('sources', [])
-        if source not in sources:
+        if not has_match(sources, source):
             continue
-        if exclude and any(s in exclude for s in sources):
+        if only_source:
+            # Every source on the article must match `source` (or its
+            # prefix family). Articles with extra sources are skipped.
+            if any(not matches_one(s, source) for s in sources):
+                continue
+        elif exclude and has_any_excluded(sources):
             continue
         matches.append({'title': title, 'description': article.get('description') or ''})
 
@@ -6373,15 +6751,26 @@ def get_articles_by_source(source: str, exclude_sources: list[str] | None = None
 
     log_usage(ctx, "get_articles_by_source",
               {"source": source, "exclude_sources": exclude_sources,
+               "prefix_match": prefix_match, "only_source": only_source,
                "limit": limit, "offset": offset},
               f"{total} matches", start_time=_start, note=note)
     return json.dumps({
         'source': source,
         'excluding': sorted(exclude) if exclude else None,
+        'prefix_match': prefix_match,
+        'only_source': only_source,
         'articles': page,
         'showing': f"{offset + 1}-{offset + len(page)} of {total}",
         'total_matching': total,
-        'note': 'Descriptions come from stored Wikidata short-descs. Call fetch_descriptions if they are blank and you want them populated.',
+        'note': (
+            'Source labels are full strings (e.g. "list_page:Foo"). Use '
+            'prefix_match=True for family-level matching ("list_page:" + '
+            'prefix_match matches every list_page:* label). Use '
+            'only_source=True for "isolate to this source only" semantics. '
+            'Descriptions come from stored Wikidata short-descs. Call '
+            'fetch_descriptions if they are blank and you want them '
+            'populated.'
+        ),
     }, indent=2, ensure_ascii=False)
 
 
@@ -7809,12 +8198,19 @@ def submit_feedback(summary: str, what_worked: str = "", what_didnt: str = "",
                is the reach-extension + reflection round. Production runs
                can leave this null.
         prep_calls_made: Optional list of preparatory-phase steps you
-                         actually completed before any metered tool call
-                         (phase-1 retrospective accountability). Suggested
-                         tags: "rubric_reread", "strategy_sketch",
-                         "user_confirmation", "list_exemplars",
-                         "get_exemplar:<slug>". Helps us see whether the
-                         prep checklist resists short-circuit.
+                         actually completed at any point in this topic's
+                         history — whether before phase 1 or surfaced
+                         mid-build. Tool-shaped entries
+                         (`list_exemplars`, `get_exemplar:<slug>`,
+                         `set_topic_rubric`, etc.) are crosschecked
+                         against this topic's usage log. CLAIMS THAT
+                         AREN'T BACKED BY ACTUAL TOOL CALLS WILL BE
+                         REJECTED on phase-1 submissions — the field is
+                         load-bearing accountability, not narration. If
+                         you didn't run a tool, don't list it. Mental
+                         ops (`rubric_reread`, `strategy_sketch`,
+                         `scope_review`) are unverifiable and accepted
+                         as-is.
         prep_calls_skipped: Optional list of prep steps you didn't take
                             but, looking back, would have helped (phase-2
                             reflection on phase-1). Same vocabulary as
@@ -7977,9 +8373,39 @@ def submit_feedback(summary: str, what_worked: str = "", what_didnt: str = "",
             sharp_edges_hit=sharp_edges_hit,
             prep_calls_made=prep_calls_made,
             observed=observed,
+            spot_check=spot_check,
         )
     except Exception:
         confabulation_flags = []
+
+    # Hard reject phase-1 submissions whose prep_calls_made claims
+    # tools that aren't in this topic's usage log. The field is
+    # load-bearing accountability for the PREP checklist; an unverified
+    # claim defeats its purpose. The feedback is NOT recorded — the AI
+    # must correct prep_calls_made and resubmit. Other confabulation
+    # flags remain advisory.
+    if phase == 1:
+        prep_block_flags = [f for f in confabulation_flags
+                            if f.get("field") == "prep_calls_made"]
+        if prep_block_flags:
+            return json.dumps({
+                "error": "submission_rejected",
+                "reason": (
+                    "prep_calls_made claims tools that aren't in this "
+                    "topic's usage log. Each tool-shaped entry must be "
+                    "backed by an actual call. Remove the unverified "
+                    "claims (or run the tools first) and resubmit."
+                ),
+                "rejected_claims": prep_block_flags,
+                "hint": (
+                    "Mental ops (rubric_reread, strategy_sketch, "
+                    "scope_review) are accepted without crosscheck. "
+                    "Tool-shaped entries are not — if you didn't call "
+                    "list_exemplars / get_exemplar / etc., don't list "
+                    "them."
+                ),
+            }, indent=2, ensure_ascii=False)
+
     if confabulation_flags:
         entry["confabulation_flags"] = confabulation_flags
 

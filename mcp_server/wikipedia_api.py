@@ -539,6 +539,186 @@ def wikidata_entities_by_property(property_id: str, value_qid: str,
     return out
 
 
+def wikidata_entities_by_property_titles_only(
+        property_id: str, value_qid: str, wiki: str = 'en',
+        limit: int = 500) -> list[dict]:
+    """Like `wikidata_entities_by_property` but returns only
+    `{qid, title, sitelink_count}` per row — no label, no description.
+    Use when paging through hundreds of well-attested entities where
+    the entity body would overflow the MCP transport cap. Sorted by
+    sitelink_count descending so the most-cited entities surface first.
+    """
+    if not property_id.startswith('P') or not value_qid.startswith('Q'):
+        raise ValueError(
+            "property_id must start with 'P' (e.g. 'P171') and value_qid "
+            "must start with 'Q' (e.g. 'Q25308'). For literal-valued "
+            "queries, use wikidata_sparql directly."
+        )
+    limit = max(1, min(int(limit), 10000))
+    sparql = f"""
+    SELECT ?item ?article ?sitelinkCount WHERE {{
+      ?item wdt:{property_id} wd:{value_qid} .
+      OPTIONAL {{
+        ?article schema:about ?item ;
+                 schema:isPartOf <https://{wiki}.wikipedia.org/> .
+      }}
+      OPTIONAL {{ ?item wikibase:sitelinks ?sitelinkCount . }}
+    }}
+    ORDER BY DESC(?sitelinkCount)
+    LIMIT {limit}
+    """
+    rows = wikidata_sparql(sparql)
+    title_prefix = f"https://{wiki}.wikipedia.org/wiki/"
+    out = []
+    for r in rows:
+        article_url = r.get('article', '')
+        title = ''
+        if article_url.startswith(title_prefix):
+            title = urllib.parse.unquote(
+                article_url[len(title_prefix):]).replace('_', ' ')
+        try:
+            sitelink_count = int(r.get('sitelinkCount', '') or 0)
+        except (TypeError, ValueError):
+            sitelink_count = 0
+        out.append({
+            'qid': r.get('item', ''),
+            'title': title,
+            'sitelink_count': sitelink_count,
+        })
+    return out
+
+
+# Wikidata P31 (instance of) values → narrow type bucket. Bucketing is
+# deliberately small: the goal is to surface "X-shaped row in a list of
+# Y" patterns (a person tagged in a taxonomy list, a taxon in a bio
+# list), not to give an authoritative ontology. Anything not in the map
+# is `other`; titles with no Wikidata QID OR no P31 are `unknown`.
+_P31_TYPE_BUCKETS: dict[str, str] = {
+    # person
+    "Q5": "person",
+    # taxon — covers plants, animals, fungi
+    "Q16521": "taxon",
+    "Q713623": "taxon",      # clade
+    # place
+    "Q486972": "place",      # human settlement
+    "Q3624078": "place",     # sovereign state
+    "Q6256": "place",        # country
+    "Q15642541": "place",    # historical-administrative entity
+    "Q56061": "place",       # administrative territorial entity
+    "Q23397": "place",       # lake
+    "Q4022": "place",        # river
+    "Q8502": "place",        # mountain
+    "Q35657": "place",       # state of the United States
+    # organization
+    "Q43229": "organization",
+    "Q4830453": "organization",   # business
+    "Q31855": "organization",     # research institute
+    "Q3918": "organization",      # university
+    "Q875538": "organization",    # public university
+    "Q163740": "organization",    # nonprofit organization
+    # work
+    "Q571": "work",          # book
+    "Q11424": "work",        # film
+    "Q2865907": "work",      # literary work
+    "Q7725634": "work",      # literary work (broader)
+    "Q5398426": "work",      # television series
+    "Q482994": "work",       # album
+    "Q7366": "work",         # song
+    "Q386724": "work",       # work
+    # concept / abstract
+    "Q11862829": "concept",  # academic discipline
+    "Q2996394": "concept",   # biological process
+    "Q151885": "concept",    # concept
+    "Q1914636": "concept",   # activity
+    # meta — disambiguation pages, list articles, etc. Worth tagging
+    # because a list-page harvest will sometimes pick up these
+    # accidentally and the AI wants to spot them.
+    "Q4167410": "meta",      # Wikimedia disambiguation page
+    "Q4167836": "meta",      # Wikimedia category
+    "Q13406463": "meta",     # Wikimedia list article
+    "Q11266439": "meta",     # Wikimedia template
+}
+
+
+def annotate_types_for_titles(titles, wiki: str = 'en') -> dict:
+    """Resolve a list of Wikipedia titles to narrow type buckets via
+    Wikidata, in two batched API calls regardless of how many titles
+    are passed.
+
+    Returns:
+        {
+          "annotations": {title: {"qid": "Q...", "p31": "Q...",
+                                  "inferred_type": "person|taxon|place|"
+                                                    "organization|work|"
+                                                    "concept|meta|other|"
+                                                    "unknown"}},
+          "summary": {bucket: count for bucket in <observed buckets>},
+        }
+
+    Cost: O(1) round trips to Wikidata regardless of len(titles), modulo
+    batching constraints. `fetch_wikidata_qids` paginates the langlinks
+    API in chunks (already shipped). The P31 resolution is one SPARQL
+    `VALUES` query covering all resolved QIDs — chunked at 500 QIDs per
+    query if you have more.
+
+    `unknown` covers two distinct cases that downstream callers should
+    treat as equivalent: title has no Wikidata QID at all (no Wikipedia
+    article, or article exists but is unsynced), and title has a QID
+    but no P31 statement. Either way the type is unknown — never
+    silently coerced to a positive bucket.
+    """
+    if not titles:
+        return {"annotations": {}, "summary": {}}
+
+    qid_map = fetch_wikidata_qids(titles, wiki=wiki)
+    qids = [q for q in qid_map.values() if q]
+    p31_by_qid: dict[str, str] = {}
+
+    chunk_size = 500
+    for i in range(0, len(qids), chunk_size):
+        chunk = qids[i:i + chunk_size]
+        values_clause = " ".join(f"wd:{q}" for q in chunk)
+        sparql = f"""
+        SELECT ?item ?p31 WHERE {{
+          VALUES ?item {{ {values_clause} }}
+          OPTIONAL {{ ?item wdt:P31 ?p31 . }}
+        }}
+        """
+        try:
+            rows = wikidata_sparql(sparql)
+        except Exception:
+            # If a chunk fails (rare — usually a transient WDQS issue),
+            # skip it: rows in this chunk fall through to "unknown".
+            # Better than failing the whole annotation pass.
+            continue
+        for r in rows:
+            qid = r.get('item', '')
+            p31 = r.get('p31', '')
+            if not qid or not p31:
+                continue
+            # Keep the first P31 seen — entities can have multiple,
+            # but the first one in result order is usually the most
+            # canonical.
+            p31_by_qid.setdefault(qid, p31)
+
+    annotations: dict[str, dict] = {}
+    summary: dict[str, int] = {}
+    for title in titles:
+        qid = qid_map.get(title, '') or ''
+        p31 = p31_by_qid.get(qid, '') if qid else ''
+        if not qid or not p31:
+            bucket = "unknown"
+        else:
+            bucket = _P31_TYPE_BUCKETS.get(p31, "other")
+        annotations[title] = {
+            "qid": qid,
+            "p31": p31,
+            "inferred_type": bucket,
+        }
+        summary[bucket] = summary.get(bucket, 0) + 1
+    return {"annotations": annotations, "summary": summary}
+
+
 def fetch_wikidata_qids(titles, wiki='en'):
     """Resolve Wikipedia article titles to Wikidata QIDs via the
     pageprops API (wikibase_item). Returns a dict mapping each input

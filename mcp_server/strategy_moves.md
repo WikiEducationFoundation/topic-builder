@@ -270,7 +270,11 @@ rescue:        if recall too low: union-add the WP-only or
 ## founder-navbox-cascade
 
 ```
-preconditions: shape is single-creator-oeuvre OR concentric-event-with-named-principals
+preconditions: shape is single-creator-oeuvre OR concentric-event-
+                 with-named-principals AND no mature WikiProject
+                 already covers the topic. Near-zero net-new when a
+                 mature dedicated WP exists — the navbox typically
+                 overlaps the WP membership.
 sequence:      harvest_navbox(<principal-1 template>),
                harvest_navbox(<principal-2 template>),
                harvest_navbox(<principal-3 template>)
@@ -286,7 +290,11 @@ rescue:        cross to per-work navboxes (Template:<film>,
 
 ```
 preconditions: shape is single-historical-event-with-cultural-tail
-                 (Apollo program, Olympic Games edition, etc.)
+                 (Apollo program, Olympic Games edition, etc.) AND
+                 no mature WikiProject already covers the topic.
+                 Useful when WP is absent or partial; near-zero net-
+                 new when a mature dedicated WP exists — the navbox's
+                 article set typically overlaps the WP membership.
 sequence:      harvest_navbox(<parent-program template>)
                  — e.g. Template:Apollo program, not Template:Apollo 11
 expected:      stitches across concentric layers (mission ↔ program
@@ -309,6 +317,12 @@ sequence:      topic-qid-resolution →
                wikidata_entities_by_property(<P-ID>, <topic-QID>) →
                review with sitelink_count flag → add_articles for
                  those with enwiki sitelinks
+               (when the property has hundreds of well-attested
+                 entities and the full-body call would overflow
+                 the transport cap, use preview_wikidata_property
+                 instead — same args, returns only
+                 {qid, title, sitelink_count} sorted by sitelink
+                 count desc.)
 expected:      catches articles whose category placement was
                  ambiguous or absent on Wikipedia; orchids P171 probe
                  found 27 articles a full category sweep missed
@@ -514,32 +528,53 @@ rescue:        if recall is low, the template name may be wrong (try
 ## articletopic-classifier-probe
 
 ```
-preconditions: any topic that maps cleanly to ORES topic taxonomy
-                 — STEM (Physics / Biology / Computing / ...),
-                 Culture (Music / Visual-arts / Literature / Film-
-                 and-TV / Sports / ...), Geography (Africa / Asia /
-                 ...), History-and-society. Useful as a *coarse
-                 filter* on a noisy probe (morelike: + articletopic:,
-                 cross-category union + articletopic:) more than as
-                 a primary gather.
-sequence:      pick the matching ORES topic — see
-                 https://www.mediawiki.org/wiki/ORES/Articletopic for
-                 the full hierarchy →
-               search_articles(query='articletopic:STEM.Physics.Astronomy
-                              [+ morelike:"<Seed>" | + incategory:...]')
+preconditions: topic has fuzzy or incomplete canonical category
+                 coverage AND maps to a broad ORES domain (biology,
+                 culture, geography, history, stem, ...). On topics
+                 with comprehensive category coverage, this move adds
+                 little — the broad-domain articletopic intersected
+                 with a topic-vocabulary term mostly returns articles
+                 already covered by the canonical category sweep.
+                 Used as a *coarse filter* on a noisy probe more than
+                 as a primary gather.
+sequence:      search_articles(query='articletopic:<broad-domain>
+                              <topic-vocabulary-term> [+ -incategory:
+                              <canonical-cat> | + morelike:"<Seed>"]')
+                 e.g., articletopic:biology orchid -incategory:Orchids
+                 — broad ORES domain (biology) intersected via free-
+                 text vocabulary (orchid), with the canonical category
+                 negated so only the long tail surfaces.
+                 NOTE: dot-separated subtopics
+                 (e.g., articletopic:stem.earth-and-environment) are
+                 unreliable on enwiki today — many subtopics return
+                 zero results. Stick to broad domains and intersect
+                 via free-text vocabulary.
+                 NOTE: `-incategory:X` excludes articles in X
+                 directly, NOT articles in subcategories of X. For
+                 "not anywhere under X" semantics there's no clean
+                 Cirrus form; combine `articletopic` or `morelike`
+                 with `incategory:X` and remove matches client-side.
+                 Same Cirrus single-level limitation applies wherever
+                 you use `-incategory:` (intitle-canonical-phrasing-
+                 enumeration, hastemplate-typed-probe, etc.).
 expected:      ML-classifier — precision moderate (70-90%) depending
-                 on training-data overlap; recall moderate.
-                 Strongest combined with another operator (filter, not
-                 primary). Multiple values OR by default within one
-                 operator: `articletopic:STEM.Physics|Space`.
+                 on training-data overlap; recall moderate. On a
+                 well-curated topic, expect mostly already-known
+                 articles plus a small handful of net-new finds
+                 (e.g., orchids 2026-04-28: 30 results, 1 net-new
+                 committed). On a sparse-category topic the yield is
+                 typically higher.
+                 Multiple values OR by default within one operator:
+                 `articletopic:biology|stem`.
 WARNING:       ORES coverage isn't uniform — sparse on stub articles,
                  historical figures, or recent topics post-cutoff.
                  Treat results as candidates needing review, never as
                  a subtractive filter.
-rescue:        if too few results, the tag is too narrow — widen up
-                 the hierarchy (Astronomy → Physics → STEM). If too
-                 many off-topic, combine with category, template, or
-                 morelike: filters.
+rescue:        if 0 results from a broad-domain query, drop the
+                 incategory negation or widen the vocabulary term. If
+                 results are dominated by canonical-category articles
+                 you already have, this topic doesn't need the move —
+                 skip and triangulate by other strategies.
 ```
 
 ## geographic-feature-class-probe
@@ -628,8 +663,16 @@ rescue:        manual search on "<Figure name>" with intitle: prefix
 ## peripheral-edge-browse
 
 ```
-preconditions: corpus has ≥100 articles and topic-canonical-category
+preconditions: corpus has ≥100 articles AND topic-canonical-category
                is dense (so the obvious neighbors are already in)
+               AND the topic has lateral connectivity — events,
+               movements, intersections, biographical hubs sharing
+               affiliations. Near-useless on taxonomy-dominated
+               topics (orchids: 5 candidates from 5 periphery seeds
+               at min_links=2, mostly noise — ISBN identifier,
+               Greenhouse, Pest control, Victorian era — because
+               species sit on parallel-not-overlapping taxonomic
+               branches and don't share many incoming edges).
 sequence:      pick 5–10 PERIPHERAL on-topic articles (not central
                  hubs) →
                browse_edges(seed_titles=[...], min_links=3)
@@ -643,14 +686,16 @@ rescue:        if 0 candidates: edge-browse is exhausted on this
 ## llm-fabricate-and-verify
 
 ```
-preconditions: sparse-canonical-surface — no dedicated WikiProject,
-                 sparse categories, incomplete Wikidata
-                 P31/P106/P171, OR non-Anglosphere depth, OR
-                 historical / pre-cutoff timeframe. Niche topics
-                 where structural tools surface thin recall. Don't
-                 use on popular contemporary topics — structural
-                 tools work well enough that fabrication adds noise
-                 more than coverage.
+preconditions: ANY topic where structural moves have run and you
+                 want to detect remaining gaps. This is a gap-
+                 detector, not just a sparse-topic recall extension.
+                 Two recent calibration runs surfaced 30-50% novel
+                 net-new on well-curated topics (climate-change
+                 4.5K-WP corpus: 31% gap-detect rate; orchids 3.5K
+                 corpus: 51% gap-detect rate). Especially valuable on
+                 sparse-canonical-surface topics (no WP, sparse
+                 categories) where structural tools surface thin
+                 recall.
 sequence:      sketch 50-100 candidate article titles you'd expect
                  on enwiki from your training-data knowledge of
                  Wikipedia, grouped by subdomain. Anchor each in a
@@ -670,11 +715,13 @@ sequence:      sketch 50-100 candidate article titles you'd expect
                optional 2nd round: ask "what *category* of articles
                  did I miss in round 1?" (non-Anglosphere bias,
                  pre-cutoff, adjacent disciplines).
-expected:      yield 30-70% on sparse-canonical-surface topics;
-                 near-zero novel finds on well-categorized
-                 contemporary topics. Hallucination rate on
-                 unverified titles is 10-30%; pre-validation drops
-                 it to ~0%.
+expected:      pre-validation hit rate 70-100% (well-known topic
+                 vocabulary). Of validated titles: 30-50% net-new on
+                 well-curated topics (gap-detector behavior); higher
+                 yield on sparse-canonical-surface topics. The gap-
+                 detect signal is the win on mature topics — even
+                 small absolute novel counts (e.g., 15 of 49 on a
+                 4K-corpus) are a strong reach signal.
 WARNINGS:      pre-validation is non-optional. Cap rounds at 2-3 —
                  diminishing returns are real. Track via the
                  source label so contribution is auditable.
@@ -747,6 +794,63 @@ rescue:        if an anchor returned 0 finds, it's saturated by
                  axis.
 ```
 
+## morelike-from-niche-anchor
+
+```
+preconditions: anchor article is topic-internal AND narrowly-scoped
+                 (a specific institution, person, work, or concept
+                 entirely contained within the topic). Distinct from
+                 morelike-from-generic-cultural-anchor, which uses a
+                 topic-adjacent cultural concept and accepts more
+                 noise.
+sequence:      pick a niche anchor whose entire neighborhood is
+                 plausibly on-topic →
+               preview_similar(seed_article=<anchor>, limit=30) →
+               commit clean candidates with add_articles.
+expected:      ~85-95% on-topic, high net-new rate. Recovers tight
+                 clusters that escape category sweeps. Orchids run
+                 2026-04-28: Veitch Nurseries anchor → 28/30 net-
+                 new, ~93% on-topic; recovered the entire Veitch
+                 collector network.
+WARNINGS:      use for precision-priority recall passes. The anchor
+                 must be tightly topic-scoped — a polymath
+                 biography or a popular cross-disciplinary concept
+                 is NOT a niche anchor. Same polymath caveat as
+                 morelike-from-pure-topic-seed.
+rescue:        if 0 finds: anchor is saturated. If > 30% noise:
+                 anchor was less niche than expected — switch to
+                 morelike-from-generic-cultural-anchor framing and
+                 filter aggressively.
+```
+
+## morelike-from-generic-cultural-anchor
+
+```
+preconditions: anchor article is topic-adjacent cultural / historical
+                 concept (e.g., a craze, fashion, public discourse
+                 phenomenon). Used when cultural-tail breadth is the
+                 explicit goal, not precision.
+sequence:      pick a topic-adjacent cultural anchor →
+               preview_similar(seed_article=<anchor>, limit=30) →
+               filter by topic vocabulary BEFORE committing — expect
+                 ~40% noise from "shared discourse" connections that
+                 have nothing to do with your topic.
+expected:      ~50-60% on-topic, ~40% noise. Reaches into the
+                 cultural tail that pure-topic seeds miss. Orchids
+                 run 2026-04-28: Orchidelirium anchor → 18/30 net-
+                 new (60% on-topic) but pulled Tulip mania,
+                 Bibliomania, Bookworm, Honey hunting, Oology — all
+                 culturally-adjacent crazes that share Orchidelirium's
+                 discourse but aren't orchid-specific.
+WARNINGS:      reach for this only when cultural-tail breadth is the
+                 goal AND you'll filter aggressively. For precision-
+                 priority passes, prefer morelike-from-niche-anchor
+                 or morelike-from-pure-topic-seed.
+rescue:        if filtered yield is < 5%: the anchor's neighborhood
+                 doesn't intersect the topic enough to justify the
+                 noise; pick a different anchor.
+```
+
 ## intersection-via-source-overlap
 
 ```
@@ -817,9 +921,81 @@ WARNING:       required_any axes leak on intersectional shapes
                  (implicit-axis problem). For intersectional bio
                  topics, run with disqualifying-only first, axes
                  only if profession is reliably stated.
+WARNING:       single-word markers fire on canonical-topic articles
+                 and on legit periphery. Climate-change run:
+                 "video game" rejected the canonical "Climate change
+                 video game"; "manufacturer" hit Solectrac (electric
+                 tractor mfr) and Skeleton Tech (battery). Prefer
+                 phrase markers ("video game journalism", not "video
+                 game") or paired markers (require two co-occurring
+                 disqualifiers) on topics with industrial / cultural
+                 periphery. Always dry-run and review samples before
+                 committing.
 rescue:        if rejection samples show genuine on-topic articles:
                  the terms are too broad; narrow them, or accept
                  lower precision and don't apply
+```
+
+## leads-confirm-disqualifying
+
+```
+preconditions: corpus has a noisy bulk source (e.g., articles
+               sourced ONLY from a wide-net WikiProject membership)
+               where shortdescs are too thin to support clean
+               auto-rejection.
+sequence:      get_articles_by_source(<noisy source>, only_source=
+                 True) → sample 5-15 candidate-removal titles →
+               fetch_article_leads(titles=[...]) →
+               for each lead: check whether the topic vocabulary
+                 appears at all → reject titles whose lead has zero
+                 topic-vocabulary mentions.
+expected:      higher precision than shortdesc-only rejection; lead
+                 text is dense enough to confirm or refute the
+                 noise classification. Climate-change run: confirmed
+                 4 Toyota-vehicle articles (Land Cruiser Prado,
+                 etc.) had no climate text in their leads —
+                 generalizes from one ad-hoc check into a move.
+WARNINGS:      cap sample size to 5-15 per pass; lead fetches cost
+                 real API calls. Use as a last-pass cleanup, not a
+                 first-pass scan.
+rescue:        if every sampled lead mentions the topic vocabulary,
+                 the source isn't noisy — leave it alone or revisit
+                 with a more specific rubric.
+```
+
+## country-level-list-page-harvest
+
+```
+preconditions: topic.scale=large/huge AND
+                 geographic_distribution=cosmopolitan (taxonomy,
+                 ecological / cultural phenomena that cross
+                 borders). The high-yield reach surface for these
+                 shapes — and one that find_list_pages misses by
+                 default because per-country list titles use the
+                 country name instead of the topic name.
+sequence:      find_list_pages(subject=<topic>,
+                               relax_disambiguation_filter=True) OR
+               articletopic:<broad-domain> "List of" <topic-token>
+                 via search_articles → enumerate "List of [topic]
+                 of [country/region]" titles →
+               preview_harvest_list_page on the most promising one,
+                 then commit harvest_list_page on the rest.
+expected:      45-60% novel rate, ~95% precision on taxonomy /
+                 phenomenon shapes (orchids 2026-04-28 Western
+                 Australia: 56 candidates → 25 net-new). Per-country
+                 lists are typically curated by editors with deep
+                 regional knowledge.
+WARNINGS:      relax_disambiguation_filter is required on
+                 find_list_pages or you'll see 0 of the per-country
+                 lists. Once you have the list of list-pages,
+                 review with preview_harvest_list_page before bulk-
+                 committing — country-level lists occasionally
+                 include peripheral content (museums, events) the
+                 topic rubric may not cover.
+rescue:        if per-country lists are sparse, fall back to
+                 wikidata-property-probe-additive on the relevant
+                 P-property (P171 for taxonomy, etc.) — different
+                 reach surface, similar yield.
 ```
 
 ## source-targeted-noise-removal

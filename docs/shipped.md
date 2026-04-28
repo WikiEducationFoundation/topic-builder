@@ -766,3 +766,146 @@ direct score-writers. Kept on the brainstorm menu for record-keeping;
 revisit only on a multi-session signal pointing at one specifically.
 Sister-project crosswalk and external-authority meta-tool stay on the
 brainstorm menu as the strongest unpromoted entries.
+
+## Sharp-edge / existing-tool improvement bundles (2026-04-28)
+
+Three bundles of small, high-leverage edits to existing tool surfaces
++ AI-facing instructions, all driven by recent dogfood evidence
+(climate-change exploratory id=71, orchids exploratory id=72,
+cybersecurity 2026-04-27, apollo-11 ChatGPT 2026-04-27,
+4-of-4 PREP short-circuits across 2026-04-28 runs). Sage approved
+proceeding while flagging that costly fan-out shapes need a deliberate
+review before more accumulate; that review is parked as
+`memory/project_tool_cost_review.md`.
+
+### Bundle A: tool surfaces
+
+- **`preview_wikidata_property`** — titles-only sibling of
+  `wikidata_entities_by_property`. Returns `{qid, title, sitelink_count}`
+  per row, sorted by sitelink_count desc. Fits well under the MCP
+  transport cap on properties with hundreds of entities (orchids
+  P171=Q25308 with limit=500 was hard-erroring on the full-body
+  variant). Tighter SPARQL drops `?itemLabel` and `?description`.
+- **`harvest_list_page` / `preview_harvest_list_page` `annotate_types=`** —
+  opt-in flag that runs a Wikidata-batched type resolution across all
+  harvested titles and returns an `annotation_summary` histogram (and
+  per-row `inferred_type` on preview). Vocabulary:
+  `person / taxon / place / organization / work / concept / meta /
+  other / unknown`. `unknown` covers both "no Wikidata page" and "no
+  P31 statement" — never silently coerced. **Cost shape:** ~3-5
+  batched API calls regardless of harvest size (one
+  `fetch_wikidata_qids` paginated langlinks + one SPARQL `VALUES`
+  query for all P31s, chunked at 500 QIDs). The per-title fan-out
+  shape that would have cost 500 round-trips on a 500-row list was
+  ruled out per Sage's pushback.
+- **`get_articles_by_source` `prefix_match=` and `only_source=`** —
+  diagnosed as docstring/semantics mismatch: example used family
+  names like `"list_page"` but impl did exact-string match against
+  full labels like `"list_page:Foo"`. Added `prefix_match` (mirror
+  `remove_by_source`) and `only_source` for the "isolate to X only"
+  intent the cybersecurity AI couldn't express. Default behavior
+  unchanged for existing callers; docstring rewritten with concrete
+  working examples.
+- **`find_list_pages` `relax_disambiguation_filter=`** — opt-in flag
+  to skip the title-must-contain-subject-token filter. Default False
+  preserves precision; True surfaces sub-class lists (per-genus
+  taxonomy lists, per-country geographic lists) that are the high-
+  yield reach surface for cosmopolitan topics. Orchids exploratory
+  found Western Australia's orchid list (25 net-new at ~95% precision)
+  only after working around the default filter; the flag makes that
+  the documented path.
+
+### Bundle B: validators + directives
+
+- **Confabulation crosscheck widening** — replaced the static
+  `_STRATEGY_FAMILY_EVIDENCE` dict with a derived registry built from
+  three sources: inversion of `_TOOL_TO_MOVE`, headings parsed from
+  `strategy_moves.md`, and legacy short-tag aliases. Claim strings
+  are normalized (`_normalize_claim`: lowercase + collapse non-
+  alphanumerics) before lookup, so `wikiproject-recon`,
+  `wikiproject_recon`, and `WikiProject Recon` all resolve to the
+  same key. New `_UNCHECKABLE_MOVES` set marks
+  cross-wiki-gap-probe-lightweight, parallel-wiki-build-and-walk-back,
+  and judgment-shaped reflection moves as recognized-but-not-flagged.
+  Added `spot_check.probes_count` crosscheck — claiming probes
+  happened means at least one probe-shaped tool call (preview_search,
+  preview_similar, search_articles, search_similar) must be in the
+  topic's log. Replay results: cybersecurity 5→2 flags (the lone
+  remaining strategy flag is a free-form ambiguous label; the
+  spot_check confab is correctly surfaced); climate-change-
+  exploratory 9→1 / 19→2 (only PREP-not-actually-called remains);
+  orchids-exploratory 12→1 / 21→4 (PREP + 4 strategy names that ARE
+  truly new — Bundle C catalog refinements add them).
+- **`authenticate()` save-to-memory directive** — renamed
+  `cross_session_persistence_tip` → `next_action_for_ai`; rephrased
+  from permissive ("you can offer to save…") to imperative ("Ask the
+  user, verbatim: 'Should I save this token to your long-term memory
+  so future sessions can authenticate automatically?' Save only on
+  explicit yes."). Tightened AUTHENTICATION rule 2 in
+  `server_instructions.md` to spell out the verbatim prompt instead
+  of saying "the response includes a phrasing tip."
+- **PREP-checklist short-circuit fix** — three moves: (a) PREP
+  section in `server_instructions.md` now uses imperative phrasing
+  ("Run X. Do not skip; do not simulate.") with a new
+  **Accountability** subsection explaining the rejection contract;
+  (b) `submit_feedback` hard-rejects phase-1 submissions whose
+  `prep_calls_made` claims tools that aren't in the topic's usage
+  log — submission fails with a structured error listing the
+  rejected claims; (c) docstring updated to make `prep_calls_made`
+  cover any-time-in-history calls (mid-build PREP counts), not just
+  pre-phase-1.
+
+### Bundle C: catalog refinements (`strategy_moves.md`)
+
+Driven by per-move yield/noise data from the 2026-04-28 climate-
+change + orchids exploratory calibrations. Pure documentation;
+deploy reloads via the FastMCP `instructions=` string at server
+start.
+
+- **`articletopic-classifier-probe` example syntax fixed** — replaced
+  `articletopic:STEM.Physics.Astronomy` (dot-separated subtopics
+  return zero on enwiki today) with the working broad-domain form
+  `articletopic:biology orchid -incategory:Orchids`. Added
+  precondition note: useful when canonical category coverage is
+  fuzzy/incomplete; near-zero net-new on well-categorized topics.
+- **`harvest_navbox`-related stanzas** (`founder-navbox-cascade`,
+  `parent-program-navbox`) now warn that mature dedicated WikiProject
+  coverage makes the move near-zero-net-new — climate-change run
+  showed 0 of 225 net-new from the Global warming navbox against the
+  4114-article WP corpus.
+- **`llm-fabricate-and-verify` reframed as gap-detector** — preconditions
+  expanded to ANY topic where structural moves have run; expected-
+  yield section updated with the 30-50% novel net-new on well-curated
+  topics (climate-change 31% gap-detect rate, orchids 51%). The
+  "spot-check" framing was undercutting a strong gap-detector signal.
+- **`auto-reject-by-disqualifying-shortdesc` warning** — added a
+  new WARNING about single-word markers firing on canonical
+  articles ("Climate change video game") and legit periphery (battery
+  manufacturers, electric tractor manufacturers). Recommends phrase
+  markers or paired markers, with mandatory dry-run.
+- **New move `leads-confirm-disqualifying`** — sample-then-verify
+  cleanup for noisy bulk sources where shortdescs are too thin.
+  Generalizes the climate-change run's ad-hoc lead-fetch on Toyota-
+  vehicle articles into a documented move.
+- **New move `country-level-list-page-harvest`** — for topics with
+  scale=large/huge AND geographic_distribution=cosmopolitan
+  (taxonomy, ecological / cultural phenomena). Pairs with the new
+  `find_list_pages(relax_disambiguation_filter=True)` flag (without
+  which the move's input surface is hidden by default).
+- **`morelike-from-cluster-anchor` split** — added two new stanzas
+  with distinct preconditions and yield expectations:
+  `morelike-from-niche-anchor` (~85-95% on-topic, precision-priority;
+  orchids: Veitch Nurseries → 28/30 net-new) and
+  `morelike-from-generic-cultural-anchor` (~50-60% on-topic, expect
+  cultural-tail noise; orchids: Orchidelirium → 18/30 net-new but
+  pulls Tulip mania, Bibliomania, Bookworm).
+- **`peripheral-edge-browse` precondition refined** — now warns the
+  move is near-useless on taxonomy-dominated topics where species
+  sit on parallel-not-overlapping branches (orchids: 5 candidates
+  from 5 periphery seeds, 4 near-noise).
+- **`-incategory:` Cirrus single-level limitation documented** — note
+  added to articletopic-classifier-probe (and referenced for sibling
+  Cirrus-using moves): excludes only direct members of X, NOT
+  subcategory members; no clean Cirrus form for "anywhere under X".
+- **COMMON TASK row update** — taxonomy row now lists
+  `country-level-list-page-harvest` for cosmopolitan distributions.

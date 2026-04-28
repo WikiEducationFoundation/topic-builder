@@ -111,7 +111,7 @@ closest current primitive.
 | User says... | Reach for |
 |---|---|
 | "all articles in a category" | `survey_categories(count_articles=True)` then `get_category_articles` (or `preview_category_pull` for uncertain subtrees) |
-| "extract links from this list page" / "harvest this list" | `preview_harvest_list_page` then `harvest_list_page` (default `main_content_only=True` strips navboxes) |
+| "extract links from this list page" / "harvest this list" | `preview_harvest_list_page` then `harvest_list_page` (default `main_content_only=True` strips navboxes). Pass `annotate_types=True` when the list might leak wrong-shaped rows (eponym biographies in a taxonomy list, taxa in a bio list) — surfaces a type-bucket histogram so you can see the contamination before/after committing. Costs ~2 batched API calls regardless of harvest size; `unknown` covers both "no Wikidata page" and "no P31" so real-but-untracked items aren't silently coerced. |
 | "pull every article in this navbox" / "enumerate by broadcaster / by program / by award" | `harvest_navbox(template)` — accepts `"Apollo program"` or `"Template:Apollo program"`. Navboxes are editor-curated and often cleaner than list-page harvests for award / franchise / program shapes. |
 | "what counts as central for this topic?" | `set_topic_rubric(rubric)` after scope confirmation; `get_topic_rubric()` to re-read mid-session |
 | "scope drifted mid-build" | Stop, update scope with the user, `set_topic_rubric` with the revised rubric, THEN continue. The rubric is the authoritative scope record. |
@@ -154,7 +154,7 @@ Quick shape index back into the catalog:
 | Art / literary / cultural movement | `main-article-as-list-page`, `wikidata-property-probe-additive` |
 | Pop culture franchise / contemporary media | `founder-navbox-cascade`, `wikidata-property-probe-additive` (sizing) |
 | Single historical event (with cultural tail) | `parent-program-navbox`, `wikidata-property-probe-additive` |
-| Taxonomy (species, genera) | `genus-species-list-harvest`, `wikidata-property-probe-additive` |
+| Taxonomy (species, genera) | `genus-species-list-harvest`, `wikidata-property-probe-additive`, `country-level-list-page-harvest` (cosmopolitan distributions) |
 | Intersectional biography (demographic × discipline) | `intersectional-occupation-ethnicity-probe`, `morelike-from-pure-topic-seed`, `shortdesc-ambiguity-disambiguation` |
 | Single-creator oeuvre | `founder-navbox-cascade` |
 | Religious / spiritual tradition | `branch-excluded-category-sweep`, `cross-wiki-gap-probe-lightweight`, `wikidata-property-probe-additive` |
@@ -408,9 +408,13 @@ SUBTRACTIVE tools below.
      associated with this user. If so, call `authenticate(token=...)`
      with it directly. Only fall back to prompting the user when no
      saved token is available, or when the saved one is rejected.
-  2. **After a successful first `authenticate()` call**, offer to save
-     the token to memory for future sessions — the response includes a
-     phrasing tip. Don't save it without the user's explicit consent.
+  2. **After a successful first `authenticate()` call**, ask the user
+     verbatim: *"Should I save this token to your long-term memory so
+     future sessions can authenticate automatically?"* Save the token
+     only on an explicit yes. The `authenticate()` response carries
+     this same prompt under `next_action_for_ai`; surface it as a
+     question to the user, not a silent acknowledgement. If the user
+     is on a stateless client (no long-term memory), skip the offer.
   3. **If a saved token is rejected** as expired/revoked, tell the user
      and prompt for a fresh sign-in at
      `https://topic-builder.wikiedu.org/oauth/login`; replace the saved
@@ -582,7 +586,12 @@ SUBTRACTIVE tools below.
       auto-truncated** at the transport layer. A truncated response
       carries a marker — if you see it, your query was too broad. Add
       `LIMIT`, narrow the class, or split by sitelink-count bands rather
-      than assuming you have the full set.
+      than assuming you have the full set. For paging through hundreds
+      of entities where you only need to pick which ones to inspect,
+      reach for `preview_wikidata_property` — it returns just
+      `{qid, title, sitelink_count}` per row sorted by sitelink count
+      desc, fits well under the cap, and pairs with `wikidata_get_entity`
+      for follow-up on specific picks.
     - **`filter_articles` refuses to drop >10% of the corpus as "missing
       on Wikipedia" without `force=True`.** Guardrail against silent
       mass-drops. If you hit a refusal, read the `sample_would_drop` in
@@ -708,10 +717,10 @@ SUBTRACTIVE tools below.
 ## Preparatory phase
 
 - PREPARATORY PHASE — after scope is confirmed and the rubric is set,
-  complete this checklist BEFORE any Wikipedia / Wikidata-hitting
-  tool call. Phase-level structure works for AIs; sub-step short-
-  circuits don't. Treat each item as a checkbox — don't skip individual
-  sub-steps:
+  complete this checklist BEFORE any Wikipedia / Wikidata-hitting tool
+  call. Each step is a directive, not a description — execute it,
+  don't acknowledge it. Phase-level structure works for AIs; sub-step
+  short-circuits don't. Treat each item as a checkbox.
 
   1. Commit to a **topic profile** using the canonical axis vocabulary
      in `mcp_server/shape_axes.md`: scale, structural primitives,
@@ -719,22 +728,23 @@ SUBTRACTIVE tools below.
      relationship, time profile, periphery type, and your perceived
      recall ceiling drivers. The profile is your working model of the
      topic; revise mid-build when surprising signals come in.
-  2. Call `list_exemplars(topic=<your topic>)`. Scan the menu of
-     authored worked examples and pick 1–2 entries whose axis
-     profiles most resemble yours. Call `get_exemplar(slug=...,
-     topic=<your topic>)` on each to read the full case study.
-  3. Browse `mcp_server/strategy_moves.md`; pick 3–5 moves whose
+  2. **Run** `list_exemplars(topic=<your topic>)`. Do not skip; do not
+     simulate. Scan the returned menu and pick 1–2 entries whose axis
+     profiles most resemble yours.
+  3. **Run** `get_exemplar(slug=..., topic=<your topic>)` on each
+     pick. Read the full case study before continuing.
+  4. Browse `mcp_server/strategy_moves.md`; pick 3–5 moves whose
      **preconditions match your axis profile**, in an order that
      builds confidence (recon → bulk gather → reach → cleanup →
      audit). Extend the exemplars rather than replicating; your
      topic has its own scope wrinkles.
-  4. Browse `mcp_server/failure_modes.md`; identify 1–3 failure
+  5. Browse `mcp_server/failure_modes.md`; identify 1–3 failure
      modes your axis profile makes likely so you know what to watch
      for during execution.
-  5. **Compare** the exemplars' approach to your rubric. Note where
+  6. **Compare** the exemplars' approach to your rubric. Note where
      the exemplar's shape matches yours and where it diverges.
      Divergences are interesting; capture them.
-  6. Name the *first* metered tool you'll call and *why* — which
+  7. Name the *first* metered tool you'll call and *why* — which
      axis it covers, what it'll surface, what move it implements.
 
   Skip preparation only if you've already done it earlier in this
@@ -742,6 +752,17 @@ SUBTRACTIVE tools below.
   recall and high cost — the AI's track record is that confident
   early dives miss large article classes that one prep round would
   have surfaced.
+
+  **Accountability.** When you call `submit_feedback`, the
+  `prep_calls_made` field is crosschecked against this topic's usage
+  log. On a phase-1 submission, claims that aren't backed by actual
+  tool calls **are rejected** — submission fails until you correct
+  them or run the tools. Mental ops (`rubric_reread`,
+  `strategy_sketch`) are unverifiable and accepted as-is; tool-shaped
+  entries (`list_exemplars`, `get_exemplar:<slug>`,
+  `set_topic_rubric`, etc.) are not. PREP calls anywhere in the topic
+  history count, including productive mid-build calls — the field
+  isn't phase-1-only, it's "what tools you actually ran."
 
 ## Reflection
 

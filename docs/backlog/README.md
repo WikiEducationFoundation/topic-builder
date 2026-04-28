@@ -23,71 +23,6 @@ Add new items here as signals come in; promote items to
 
 ## Tier 1 — small, high-leverage
 
-### ☐ `preview_wikidata_property` titles-only output `[NEW — 2026-04-26]`
-
-**What.** A read-only sibling of `wikidata_entities_by_property` that returns just `{title, sitelink_count}` per result, without entity bodies. Same params, smaller payload.
-
-**Why.** `wikidata_entities_by_property(property=..., value=..., limit=500)` returns full entity records and routinely exceeds the MCP token cap. Hit twice in the 2026-04-26 climate-change phase-2 run (~73K chars per call). The AI's workaround was to read the tool-result file off-channel and parse it with python — fine for power users on local hosts, untenable for a published web skill where the AI doesn't have filesystem access.
-
-A titles-only mode lets the AI page through the full result set (use the title list to pick what to fetch in detail) without ever blowing the token cap. Pairs with the existing `wikidata-class-instance-enumeration` move where you typically want to page through hundreds of P31 instances.
-
-**Shape.** New tool `preview_wikidata_property(property, value, limit=500)` returning `{count, results: [{title, sitelink_count, qid}]}`. Reuse the existing `wikidata_entities_by_property` plumbing; just project to a smaller record. Existing tool stays for cases where the entity body is genuinely needed.
-
-**Open questions.**
-- Should the existing `wikidata_entities_by_property` also accept a `titles_only=True` flag instead of a separate tool? Lean separate tool — matches the `preview_*` convention used for `harvest_list_page`, `category_pull`, `similar`. Same shape, same naming.
-- Sort order: by sitelink_count descending (most-cited first) is the most useful default — surfaces the well-attested entities at the top of a long list.
-
-**Sequencing note.** Single-session evidence (climate-change 2026-04-26), but the failure shape (token-cap collision on a heavily-curated property) will recur on any large biography-axis Wikidata probe (P101 / P106 on big fields). Worth Tier 1 if a second session hits it.
-
-### ☐ Type-hinted harvest annotation on `harvest_list_page` `[NEW — 2026-04-23/24 multi-session: AA-STEM + orchids]`
-
-**What.** Annotate harvested titles with a Wikidata-inferred type tag without filtering anything out by default. `harvest_list_page` (and `preview_harvest_list_page`) grow an optional `annotate_types=True` flag that, post-harvest, resolves P31 on each title via `fetch_wikidata_qids` + lookup, and returns `{title, inferred_type, confidence}` tuples. `inferred_type ∈ {person, plant, place, concept, ..., unknown}`; `unknown` is the explicit bucket for "no Wikidata P31 set" OR "Wikidata item doesn't exist" — never silently conflated with a positive type.
-
-Convenience wrappers (`persons_only=True`, `exclude_persons=True`) can be added later, but they MUST document the limitation clearly in their docstrings: _"Keeps titles tagged `person`; DROPS titles tagged as other types AND titles tagged `unknown`. Wikidata coverage is incomplete — real persons with no Wikidata P31 will be dropped silently. Prefer `annotate_types=True` for surfacing-without-filtering semantics."_
-
-**Why.** Two sessions in two days flagged the same friction:
-- AA-STEM ratchet run (2026-04-23): "List-page discovery looked promising but the obvious pages were noisy enough that I did not trust a bulk harvest without a person-only extraction mode."
-- Orchids ratchet run (2026-04-24): "Large species list pages, especially Dendrobium, leak unrelated biographies via eponym/name collisions."
-
-Same shape complaint, orthogonal directions (biography lists leaking non-bios, taxonomy lists leaking bios). Type-hinted annotation solves both AS-A-SIGNAL without introducing the silent-drop risk of a hard filter.
-
-**Shape.** Post-harvest step: `fetch_wikidata_qids` on all titles (already shipped), then per-QID lookup of P31 via `wikidata_query` (or cached batch resolution). Returns annotated tuples. Caller decides what to do — keep all, filter in code, feed to `remove_by_pattern`, or just eyeball.
-
-**Why not `persons_only=True` as the primary shape.** Wikidata is incomplete (see `memory/feedback_wikidata_incomplete.md`). A real biography without Wikidata P31=Q5 would be silently dropped by a hard persons-only gate. The failure mode is indistinguishable from the tool working correctly, which is exactly the silent-drop shape we want to design away from. Annotation preserves optionality; filter-wrappers can be added on top with loud docstring warnings.
-
-**Open questions.**
-- Cost: QID-resolve step post-harvest adds API work on big list pages. Make annotation opt-in; preview-variant resolves only a sample.
-- Type vocabulary: start narrow (`person` / `plant` / `place` / `organization` / `work` / `concept` / `unknown`) or expose raw QID chains? Start narrow; generalize when demand surfaces.
-
-### ☐ Widen confabulation crosscheck coverage `[NEW — 2026-04-27]`
-
-**What.** Two related expansions to the shipped `submit_feedback` confabulation crosscheck (see shipped entry above):
-1. **Widen `_STRATEGY_FAMILY_EVIDENCE` vocabulary** to cover the natural-language strategy names AIs actually use — not just the canonical move-catalog names.
-2. **Add `spot_check.probes_count` crosscheck** — validate the claimed probe count against `preview_search` / `preview_similar` / `search_articles` / `search_similar` calls in the topic's usage log.
-
-**Why.** First review-tool-aided session (cybersecurity, 2026-04-27) surfaced both gaps:
-- 5 `confabulation_flags` fired on `strategies_used`, all with `(unmapped family — add to _STRATEGY_FAMILY_EVIDENCE if this is a real category)` reasons. The claimed strategies — `wikiproject`, `rubric_cleanup`, `search/preview via category preview`, `redirect-resolution`, `keyword_scoring` — *did* happen (the tool calls confirm it), but the family vocabulary doesn't include those names. Net effect: false-positive confab flags that obscure real ones.
-- The same feedback claimed `spot_check.probes_count=100, hits=55, misses_real_gap=45` while the usage log shows zero `preview_search` / `preview_similar` calls. Either the AI counted samples-from-`preview_category_pull` as probes (defensible but not what the field is meant to capture) or the count is confabulated. The current crosscheck doesn't catch either case.
-
-**Shape.**
-- For (1): grep the existing `_STRATEGY_FAMILY_EVIDENCE` table, add aliases for: `wikiproject` → ['get_wikiproject_articles', 'check_wikiproject', 'find_wikiprojects'], `redirect_resolution` (and `redirect-resolution`) → ['resolve_redirects'], `keyword_scoring` (and variants) → ['auto_score_by_keyword', 'auto_score_by_description', 'set_scores'], `rubric_cleanup` → ['set_topic_rubric'] or treat as judgment-shaped non-flagged. Also normalize claim strings (lowercase + strip punctuation) before lookup.
-- For (2): add a `spot_check` clause to `_compute_confabulation_flags` — if `spot_check.probes_count > 0` but no relevant probe-shaped tool calls observed, flag with `expected_evidence: "≥1 call to one of: [preview_search, preview_similar, search_articles, search_similar]"`.
-
-**Sequencing.** Small bundle. ~20 lines of code + a replay verification against the cybersecurity feedback record (should drop from 5 flags to 0 after the family widening, then surface the spot_check confabulation as the genuine signal it is).
-
-### ☐ Investigate `get_articles_by_source` `exclude_sources` parameter behavior `[NEW — 2026-04-27]`
-
-**What.** Cybersecurity 2026-04-27 feedback flagged: "`get_articles_by_source` appears to have ignored or not supported the `exclude_sources` argument in the way I expected, since results included articles with other sources despite my attempt to isolate Data-breaches-only pages." Either the parameter doesn't work as the AI expected, the docstring is misleading, or both. Investigate and fix-or-document.
-
-**Why.** Source-isolation cleanup is one of the most useful patterns the AI uses (it surfaced 5 stranded chemicals from the air-filtering list in the houseplants run). If `exclude_sources` doesn't isolate as expected, the AI either gives up on the pattern or reaches for blunter tools (`remove_by_pattern` with broad regex) that catch more noise but also more legitimate cases.
-
-**Shape.** Read the implementation; figure out whether it's behaving correctly per its semantics, mis-documented, or buggy. Three possible outcomes:
-1. **Working as designed but mis-understood** — clarify the docstring (probably "exclude_sources excludes articles whose ONLY sources are in the list" vs the AI expecting "exclude any article tagged with any of these sources").
-2. **Buggy** — fix and add a docstring example.
-3. **Working but the AI's expected semantics are reasonable** — change the behavior and update callers.
-
-**Sequencing.** ~30 min investigation, fix-or-doc as warranted. Worth doing before the next major dogfood that leans on cleanup-by-source.
-
 ### ☐ At-pull-time category × WikiProject intersection `[NEW — 2026-04-27, multi-session signal carried over from the shipped topic_diff parent item]`
 
 **What.** A primitive that performs `category:X ∩ wikiproject:Y` (or `cat ∩ cat`) AT PULL TIME — without first ingesting all of WikiProject Y. Closer to PetScan than to a corpus diff. Sibling to the shipped `topic_diff` (which compares two already-ingested topics).
@@ -100,20 +35,25 @@ Climate-change (2026-04-26) feedback also flagged WikiProject ∩ category-tree 
 
 **Sequencing note.** Promote to active build slot. Adjacent to PetScan-style intersection (Tier 3) — design call when implementation starts is whether to ship a narrow two-set tool or fold into a more general intersection primitive.
 
-### ☐ Make `authenticate()` save-to-memory prompt fire reliably `[NEW — 2026-04-28, dogfood]`
+### ☑ Validate `<slug>-exploratory` format on a second topic `[NEW — 2026-04-28; satisfied 2026-04-28 same-day by orchids exploratory id=72]`
 
-**What.** Restructure the `authenticate()` response so the "offer to save token to long-term memory" instruction reaches the AI more reliably, and tighten the corresponding bullet in `server_instructions.md` AUTHENTICATION section to use directive phrasing. Both surfaces currently tell the AI to offer; neither reliably produces the offer in autonomous runs.
+**What.** Run `dogfood/kickoffs/exploratory-calibration.md` against one differently-shaped benchmark topic before promoting the brief to a seeded `<slug>-exploratory` task variant in `dogfood_tasks`. If the Phase-2 calibration report structure holds under a different shape, collapse the kickoff to "call fetch_task_brief and follow its instructions" and move the brief body into `dogfood/tasks/<slug>-exploratory.md`.
 
-**Why.** 2026-04-28 dogfood: the AI authenticated successfully on first `start_topic`, the server's `authenticate()` response included the existing `cross_session_persistence_tip` field with explicit save-to-memory framing, and the `server_instructions.md` AUTHENTICATION section's rule 2 says *"offer to save the token to memory for future sessions."* The AI never asked the user. Returning-user recovery is the whole point of save-to-memory; if the prompt doesn't fire, every fresh session continues to re-paste tokens — exactly what the mechanism was designed to prevent.
+**Verdict.** Format validated. Climate-change exploratory (id=71, policy-movement-culture shape) and orchids exploratory (id=72, taxonomy-dominated shape) both produced rich Phase-2 calibration reports under the prescribed structure. Different shapes surfaced different findings (climate-change: harvest_navbox redundancy, llm-fabricate gap-detection, shortdesc false-positives; orchids: country-level-list-page-harvest, morelike-niche-vs-cultural-anchor split, browse_edges precondition). Both cleared ~45–55 metered calls — well under the 80 ceiling. Promote per the follow-up item below.
 
-The failure pattern matches a known shape: soft permissive directives ("you can offer to save", "the response includes a phrasing tip") underperform imperatives in autonomous AI runs. Same insight that drove the PREPARATORY PHASE numbered-checklist restructure — explicit numbered steps resist short-circuit; principle-style guidance gets skipped.
+### ☐ Seed `<slug>-exploratory` task variants in `dogfood_tasks` `[NEW — 2026-04-28, follow-up to validation above]`
 
-**Shape.**
-- Restructure the `authenticate()` response: rename `cross_session_persistence_tip` → `next_action_for_ai` (or similar imperative-flavored key), and rephrase contents from permissive to directive — *"Ask the user: 'Should I save this token to long-term memory so future sessions can sign in automatically?' Save only on explicit yes."* Keep the existing security framing (token = password, save to user's own memory only, never a shared workspace).
-- Tighten `server_instructions.md` AUTHENTICATION rule 2 ("After a successful first `authenticate()` call, offer to save the token...") to spell out the expected verbatim prompt — similar to how PREPARATORY PHASE spells out each numbered step.
-- Optional: a small smoke that calls `authenticate()` and confirms the response payload's directive field reads as imperative (no further behavior test possible without an AI in the loop).
+**What.** Move the exploratory-calibration brief body from `dogfood/kickoffs/exploratory-calibration.md` into per-slug task files at `dogfood/tasks/<slug>-exploratory.md`, seed them via `scripts/seed_dogfood_tasks.py`, and collapse the kickoff to `Call fetch_task_brief(task_id="<slug>-exploratory"), then follow its instructions.` Mirror the structure used for the `-thin` ratchet variants today.
 
-**Sequencing.** Single-session signal but the failure shape is structural — every fresh dogfood / first-time user session runs into this. Small change (~10-line code edit + an instructions-section rewrite). Worth Tier 1 alongside other single-session-evidence small fixes (`exclude_sources` investigation, confabulation crosscheck widening).
+**Why.** Format-validation prerequisite cleared (climate-change + orchids exploratory, 2026-04-28). Seeded variants enable round-robin dispatch via `fetch_task_brief()`, deduplicate the Hard-coverage list across slugs, and let per-topic refinements (e.g., orchids should pre-name the depth=4 vs depth=3 cap) live in the per-slug brief instead of the shared kickoff.
+
+**Shape.** One markdown file per benchmark slug (`apollo-11`, `crispr-gene-editing`, `african-american-stem`, `hispanic-latino-stem-us`, `orchids`, `climate-change`) under `dogfood/tasks/<slug>-exploratory.md`, plus an updated `scripts/seed_dogfood_tasks.py` to register them. Per-slug files share the Hard coverage requirements + Phase-2 deliverable structure, but each one names its own (a) likely high-leverage moves on this shape, (b) likely refused/inapplicable moves with reasons (e.g., orchids: "no `harvest_navbox` — taxobox utilities only"), and (c) any topic-specific gotchas (e.g., orchids: "use Category:Orchids common name; Category:Orchidaceae Latin form is empty").
+
+**Open questions.**
+- Does the kickoff document stay around as a "how to author a new `<slug>-exploratory` brief" guide, or does it collapse to a one-liner? Probably stays as authoring guide since the substrate is still evolving.
+- Same brief body for all 6 slugs (de-duplicating happens at fetch time), or per-slug variations baked in? Lean per-slug — that's why we're seeding rather than templating.
+
+**Sequencing.** Tier 1 — small, mechanical follow-up. ~6 markdown files + seed-script update.
 
 ---
 
@@ -162,15 +102,22 @@ The AI's Q4 walkthrough made this partitioning explicit: "partition by title pat
 
 **Sequencing note.** Single-session evidence (Pulitzer) but tightly tied to the self-administered spot-check modality item, which has multi-session evidence. Reference: `dogfood/sessions/2026-04-23/session-2026-04-23-run2-notes.md`.
 
-### ☐ `harvest_navbox` preview mode / template discovery `[NEW]`
+### ☐ `harvest_navbox` preview mode / template discovery `[NEW; multi-shape evidence on filter heuristic 2026-04-28]`
 
 **What.** Post-ship extensions to the `harvest_navbox` tool that landed in the post-orchids chunk batch:
 1. **Preview mode** — `preview_harvest_navbox(template)` returning candidate title count + sample without committing, matching the `preview_*` convention.
 2. **Template discovery** — a helper that returns candidate navbox/infobox templates for a topic article, so the AI doesn't have to guess the template name.
+3. **Tighten the navbox-name regex in `get_article_templates(filter='navbox')`.** Current heuristic returns false positives across multiple topic shapes — it's filtering on name pattern rather than actual template kind.
 
 **Why.** `harvest_navbox` is the right tool for award / franchise / program shapes (apollo-11, crispr-gene-editing peripheral, pop-culture shapes) — but the AI has to know the exact template name, and has no dry-run surface before committing. Same friction `preview_harvest_list_page` / `preview_category_pull` resolved for their commit variants.
 
-**Shape.** Preview: small wrapper over existing `harvest_navbox` internals that returns count + sample. Discovery: given an article title, list templates used on that page (via `prop=templates`), filter to likely navboxes by name pattern.
+The filter-heuristic noise is now multi-shape:
+- Climate-change exploratory (2026-04-28): `get_article_templates(title="Climate change", filter="navbox")` returned 30 templates of which 27 were utility templates; the 3 actual content navboxes had to be inferred from article body.
+- Orchids exploratory (2026-04-28): `get_article_templates(title="Orchid", filter="navbox")` returned 32 templates, ALL 32 were taxobox utility infrastructure (`Automatic taxobox`, `Edit taxonomy`, `Period color`, etc.). Zero real content navboxes; AI confirmed via the templates list that no thematic family navbox exists for Orchidaceae.
+
+The pattern: name-regex matching catches utility templates whose names happen to match navbox naming conventions. A more reliable filter would inspect template content (look for `class="navbox"` / `wikitable navbox` markers) or check the template's own categories (`Category:Navigational boxes`).
+
+**Shape.** Preview: small wrapper over existing `harvest_navbox` internals that returns count + sample. Discovery: given an article title, list templates used on that page (via `prop=templates`), filter to likely navboxes by inspecting the template's own page (categories / class markers) rather than name pattern alone.
 
 **Open questions.** Is template discovery worth a separate tool, or should `harvest_navbox` itself accept an article title and auto-find the navbox template? The latter is fewer surfaces; the former is more predictable.
 
@@ -421,8 +368,9 @@ One-liners that have been considered and deliberately deferred. Promote to a tie
 - **Rate-limit backoff review.** Confirm that hitting a Wikimedia rate limit triggers actual exponential backoff in `wikipedia_api.py`, not just a counter increment. If the client is already doing the right thing, no work needed.
 - **`harvest_list_page` behavior on dewiki.** Kochutensilien user feedback (2026-04-22) complained "no direct tool support for extracting link targets from a Wikipedia list page" — which is literally `harvest_list_page`'s job. Either (a) they didn't discover the tool (addressed by shipped COMMON TASK → TOOL mapping), (b) they mean "display text vs. link target" in a way that suggests a dewiki-specific parsing quirk, or (c) the tool silently underperformed on their target page. With logging backfill shipped, future dewiki sessions should show whether the tool gets reached for.
 - **Hierarchical topic architecture (`start_topic(parent_topic=...)` + `reconcile_to_parent()`).** Considered and deferred 2026-04-22. The Q6 answer in the third feedback round suggested parallel topics should be first-class children of a parent topic, with reconciliation baked into the API. **Decided to take the light-touch path instead:** `cross_wiki_diff` (Tier 2) stays the only new primitive; parallel topics remain siblings; users / AI compose the workflow. Reasoning: the cost of adding parent/child concepts to the schema and API surface outweighs the benefit until we see the manual composition pattern prove too friction-heavy in real use. Revisit if (a) `cross_wiki_diff` ships and the AI still struggles to assemble the workflow, or (b) a user shape emerges where hierarchical topic relationships are central (e.g., long-running multi-wiki research projects).
-- **Soft-redirect category hint on empty `survey_categories` result.** If `survey_categories` reports an existing category page with 0 articles (container/redirect category), emit a "try sibling X instead" hint. K-drama dogfood surfaced this on `Category:Korean television dramas` → should have pointed at `Category:South Korean television series`. Needs sibling-finding logic — probably scan for same-prefix categories via `prop=categories` on the empty category page. `[NEW — 2026-04-23 dogfood run 2]`
-- **`auto_score_by_description` substring-matching edge on proper-noun words.** Pulitzer feedback: `disqualifying=["city", "county"]` would reject "The Kansas City Star" and "Orange County Register" because the geographic word is part of the institution's proper name. Word-boundary match alone doesn't fix it ("City" IS a word). Possible approaches: case-sensitive lowercase-only match, exclude matches where the word is part of a proper-noun phrase, or an "exclude-unless-preceded-by-lowercase" mode. No obvious right answer — more thought required. `[NEW — 2026-04-23 dogfood run 2]`
+- **Soft-redirect category hint on empty `survey_categories` result.** If `survey_categories` reports an existing category page with 0 articles (container/redirect category), emit a "try sibling X instead" hint. K-drama dogfood surfaced this on `Category:Korean television dramas` → should have pointed at `Category:South Korean television series`. Orchids exploratory (2026-04-28) added a same-shape case: `Category:Orchidaceae` (Latin form) is structurally empty on enwiki; canonical content lives at `Category:Orchids` (common name). One wasted survey call before the AI re-tried. Now multi-session — the Latin-vs-common-name failure is structural for biology topics. Needs sibling-finding logic — probably scan for same-prefix categories via `prop=categories` on the empty category page, or check Wikidata sitelinks for the topic QID and surface alternative category names. `[NEW — 2026-04-23 dogfood run 2; +2026-04-28 orchids exploratory]`
+- **`auto_score_by_description` substring-matching edge on proper-noun words.** Pulitzer feedback: `disqualifying=["city", "county"]` would reject "The Kansas City Star" and "Orange County Register" because the geographic word is part of the institution's proper name. Word-boundary match alone doesn't fix it ("City" IS a word). Possible approaches: case-sensitive lowercase-only match, exclude matches where the word is part of a proper-noun phrase, or an "exclude-unless-preceded-by-lowercase" mode. **2026-04-28 climate-change exploratory adds two more cases**: `"video game"` rejects the canonical "Climate change video game" (substring matches title prefix), and `"manufacturer"` hits legit-periphery industrial actors (Solectrac electric tractor mfr, Skeleton Tech battery). Now multi-session evidence; promote to a tier above. No obvious right answer — more thought required. Adjacent item in Tier 1 ("Catalog refinements from exploratory calibrations") adds a documentation-side warning to `auto-reject-by-disqualifying-shortdesc` in parallel. `[NEW — 2026-04-23 dogfood run 2; +2026-04-28 climate-change exploratory]`
+- **`remove_by_pattern` description-match misfires on geographic descriptors that overlap biome / place names.** Orchids exploratory (2026-04-28): a dry-run `remove_by_pattern(pattern="province", match_description=True)` would have dropped *Satyrium coriifolium*, a real Cape Province orchid whose description contains "Cape Provinces". The substring match doesn't distinguish "geographic descriptor in a real taxon's range" from "off-topic place article". Same family as the `auto_score_by_description` proper-noun edge case above. Possible approaches: paired markers, surface-as-suggestion-not-rejection, or constrain to "description contains pattern AND title doesn't contain a topic-vocabulary token". The dry-run-first habit caught it this time, but worth surfacing in the docstring or the catalog warning. `[NEW — 2026-04-28 orchids exploratory]`
 - **Refuse first gather call without `set_topic_rubric`.** server_instructions says rubric is mandatory before any gather call, but the houseplants 2026-04-27 run skipped it entirely (gathered + cleaned + submitted feedback with `centrality_rubric=''`). Could harden by having the topic-touching tools refuse with an actionable error until `set_topic_rubric` has fired. Behavior change with real friction implications — easy to imagine cases where the operator legitimately wants to gather-then-decide-scope. Single-session evidence; revisit if a second run skips the rubric. `[NEW — 2026-04-27]`
 
 ---
