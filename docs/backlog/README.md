@@ -23,63 +23,6 @@ Add new items here as signals come in; promote items to
 
 ## Tier 1 — small, high-leverage
 
-### ☐ "See also" section harvest — `get_article_see_also(title)` `[NEW — 2026-04-27, strategy brainstorm]`
-
-**What.** New tool that returns the link list from an article's `==See also==` section. Distinct from `get_article_links` (which mixes See also entries with passing-mention links from the body) and from `morelike:` (BM25 text similarity).
-
-**Why.** Editor-placed See also entries are the *intentional* relatedness layer — exactly the related articles Wikipedia's categorization can't surface cleanly. Sister to the recently-shipped `seed-anchored-mining-from-canonical-article` move, which proved "read the article harder" is a real strategy axis. See also is the most curation-dense slice of the canonical article we don't read separately. Identified in `strategy-brainstorm.md` Top Pick #3.
-
-Useful on intersectional / movement / abstract-concept shapes where editorial curation is dense — higher precision than `morelike:` on niche topics. Also bridges across topics (See also often points to *other* topics' core articles) and surfaces sub-topic enumerations (See also → "Outline of X" / "Glossary of X").
-
-**Shape.** New tool `get_article_see_also(title, wiki=None)` returning `{"see_also": ["Title 1", ...]}`. Two implementation routes:
-- Action API `parse&prop=sections` to locate the See also section index, then `parse&prop=wikitext&section=N` to pull its wikitext, then a small link parser.
-- REST `/api/rest_v1/page/html/{title}`, find `<h2>See also</h2>`'s following `<ul>`, extract `<a>` hrefs.
-
-The HTML route is simpler but heavier per call; wikitext is cheaper. Trivial either way; pick after a 30-minute prototype. Add a COMMON TASK → TOOL row in `server_instructions.md` and append the new tool as a sub-step of the `seed-anchored-mining-from-canonical-article` move in `strategy_moves.md` (or a sibling move if the See also signal warrants its own framing).
-
-**Sequencing.** Independent ship. Re-run the 5-benchmark ratchet to measure whether See-also-derived reach grows gold.
-
-### ☐ `hastemplate:` Cirrus operator as a typed-thing probe `[NEW — 2026-04-27, strategy brainstorm]`
-
-**What.** Document `hastemplate:"Infobox X"` as a named strategy move; optionally a thin `find_by_infobox(template, scope_category=None)` wrapper. The Cirrus operator already works inside `search_articles` — this is mostly framing + documentation, not new plumbing.
-
-**Why.** The infobox-template registry is, in effect, a free typed-entity ontology curated by editors. `{{Infobox botanist}}` marks every botanist; `{{Infobox spaceflight}}` marks every spaceflight. We use `incategory:` and `morelike:` heavily but ignore `hastemplate:`, the most type-precise filter Cirrus offers. It's currently mentioned in `server_instructions.md` only inside the compound-OR-splitting documentation, never as an active probe. Identified in `strategy-brainstorm.md` Top Pick #4.
-
-Useful for:
-- Biography-shape topics. `hastemplate:"Infobox scientist" incategory:"African American history"` is a tighter intersectional probe than category ∩ category.
-- Disambiguation cleanup. When list-page harvests leak bios into a taxonomy corpus, `hastemplate:"Infobox plant"` is precision filtering.
-- Wikidata-incompleteness rescue. P31 has uneven coverage; infobox usage is often more complete on enwiki for popular topic types (films, musicians, companies).
-
-**Shape.**
-- New named move `cirrus-hastemplate-typed-probe` in `strategy_moves.md` (preconditions: typed-thing axis, intersectional shape; rescue paths for low-yield templates).
-- New COMMON TASK → TOOL row: "find every article using a specific infobox" → `search_articles(query='hastemplate:"Template Name"')`.
-- Pair with `articletopic:` documentation in the same commit — the ORES-derived Cirrus operator that tags articles with topic categories (`STEM.Physics`, `Culture.Music.Classical`, `Geography.Africa`, etc.). Free deterministic ML classifier, also unused. Same shape, same zero-infra ship.
-- Optional thin wrapper `find_by_infobox(template, scope_category=None, limit=500)` only if a follow-up dogfood session shows the AI not reaching for the bare operator.
-
-**Sequencing.** Documentation-only first; first ship is probably zero code. Bundle `hastemplate:` and `articletopic:` documentation.
-
-### ☐ LLM-as-generator move — `llm-fabricate-and-verify` `[NEW — 2026-04-27, strategy brainstorm]`
-
-**What.** Document a strategy move where the AI uses its own Wikipedia-trained knowledge to generate candidate article titles, then verifies existence via batch lookup before committing. Inverts today's posture (tools surface candidates → AI judges) into AI imagines → tools validate.
-
-**Why.** The AI is trained largely on Wikipedia. For niche / non-Anglosphere / historical / pre-cutoff topics where the canonical tool surface is thin (sparse categories, no dedicated WikiProject, incomplete Wikidata coverage), the AI's recall of likely-existing article titles often beats what tools surface. We currently use the AI only as a judge of tool-found candidates, not as a candidate source. Identified in `strategy-brainstorm.md` Top Pick #6.
-
-Adjacent to the existing 3–5-niche-example spot-check pattern but more systematic and at larger scale (50–100 candidates per round, 2–3 rounds).
-
-Useful for:
-- Niche / sparse-resource topics. Apollo 11 needed seed-anchored mining because its canonical surface was thin; AI fabrication likely surfaces additional Apollo-related articles tools don't reach.
-- Non-Anglosphere shapes. AI knowledge of Brazilian orchidologists / Spanish-language climate activists / Japanese taxonomic authorities often exceeds enwiki's categorical surface.
-- Historical / pre-cutoff topics. Categories rarely surface 19th-century scientific instruments or pre-WWI labor figures cleanly; the AI knows them.
-
-**Shape.** New named move in `strategy_moves.md`. Existing tools already cover the plumbing — `add_articles` accepts arbitrary titles; existence check is feasible via `prop=info` (already used elsewhere in the code) or a thin new `verify_titles_exist(titles=[...])` only if dogfood shows the AI not reliably pre-validating.
-
-Move documentation must call out:
-- Pre-validation is non-optional. Plausible-sounding article titles routinely don't exist on enwiki. Committing without verification = false-positive corpus addition.
-- Redirects + normalization. Some valid candidates redirect to canonical titles; preserve provenance via the source label.
-- Cap rounds at 2–3. Diminishing returns are real.
-
-**Sequencing.** Documentation-only ship first. Single smoke against a known-sparse benchmark (Apollo 11 phase 2, climate-change phase 2) measures whether AI fabrication grows gold beyond the current ratchet baseline. Optional `verify_titles_exist` tool follow-on if friction.
-
 ### ☐ `preview_wikidata_property` titles-only output `[NEW — 2026-04-26]`
 
 **What.** A read-only sibling of `wikidata_entities_by_property` that returns just `{title, sitelink_count}` per result, without entity bodies. Same params, smaller payload.

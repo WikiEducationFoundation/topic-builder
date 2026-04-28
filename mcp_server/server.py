@@ -3787,6 +3787,150 @@ def get_article_content(title: str, wiki: str | None = None,
     }, indent=2, ensure_ascii=False)
 
 
+@mcp.tool()
+def get_article_see_also(title: str, wiki: str | None = None,
+                         section_name: str = "See also",
+                         note: str = "",
+                         topic: str | None = None,
+                         ctx: Context = None) -> str:
+    """Return the link list from an article's `==See also==` section.
+
+    Editor-curated semantic neighborhood — the *intentional* relatedness
+    layer the article asserts. Distinct from `get_article_links` (mixes
+    See also entries with passing-mention links from the body) and from
+    `morelike:` (BM25 text similarity over the whole article). Higher
+    precision than either on niche topics where editor curation is dense.
+
+    Free read-only tool. Does not modify the working list. To add
+    selected entries, follow up with `add_articles(titles=[...],
+    source="see_also:<title>")`.
+
+    Pair with the `seed-anchored-mining-from-canonical-article` move:
+    `get_article_content` for context → `get_article_see_also` for
+    curated neighbors → `get_article_links` for the broader 1-degree
+    neighborhood → `get_article_categories` / `get_article_templates`
+    for descent paths.
+
+    Implementation: action API `parse&prop=sections` to find the
+    section index, then `parse&prop=links&section=N` for that
+    section's mainspace internal links. Two cheap API calls. Returns
+    an empty `see_also` list (with `section_present: false`) when the
+    article has no matching section — no error.
+
+    Args:
+        title: Canonical article title (e.g., "Apollo 11"). Redirects
+            are followed automatically.
+        wiki: Wikipedia language code. Default: topic's wiki, or 'en'.
+        section_name: Section heading to harvest. Default "See also"
+            (enwiki convention). For non-en wikis pass the local
+            equivalent ("Véase también", "Siehe auch", "관련 항목",
+            etc.) — match is case-insensitive and ignores leading /
+            trailing whitespace.
+        topic: Optional topic name for stateless clients.
+    """
+    _start = _start_call()
+    if wiki is None:
+        wiki = _default_wiki(ctx, topic)
+
+    sections_params = {
+        'action': 'parse',
+        'page': title,
+        'prop': 'sections',
+        'redirects': '1',
+        'format': 'json',
+        'formatversion': '2',
+    }
+    sections_data = api_get(wiki_api_url(wiki), sections_params)
+    if 'error' in sections_data:
+        err = sections_data['error']
+        return json.dumps({
+            'wiki': wiki,
+            'title': title,
+            'error': err.get('info', str(err)),
+            'see_also': [],
+        }, indent=2, ensure_ascii=False)
+
+    sections = sections_data.get('parse', {}).get('sections', []) or []
+    canonical_title = sections_data.get('parse', {}).get('title') or title
+    target = section_name.strip().lower()
+    matched = None
+    for s in sections:
+        if (s.get('line') or '').strip().lower() == target:
+            matched = s
+            break
+
+    if matched is None:
+        log_usage(ctx, "get_article_see_also",
+                  {"title": title, "wiki": wiki,
+                   "section_name": section_name},
+                  "no matching section",
+                  start_time=_start, note=note)
+        return json.dumps({
+            'wiki': wiki,
+            'title': canonical_title,
+            'requested_title': title,
+            'section_name': section_name,
+            'section_present': False,
+            'count': 0,
+            'see_also': [],
+            'note': (
+                f'No section matching {section_name!r} found on '
+                f'{canonical_title!r}. For non-en wikis pass '
+                'section_name=<local equivalent>.'
+            ),
+        }, indent=2, ensure_ascii=False)
+
+    section_index = matched.get('index')
+
+    links_params = {
+        'action': 'parse',
+        'page': title,
+        'prop': 'links',
+        'section': str(section_index),
+        'redirects': '1',
+        'format': 'json',
+        'formatversion': '2',
+    }
+    links_data = api_get(wiki_api_url(wiki), links_params)
+    raw_links = links_data.get('parse', {}).get('links', []) or []
+
+    see_also: list[str] = []
+    seen: set[str] = set()
+    for link in raw_links:
+        try:
+            ns = int(link.get('ns', -1))
+        except (TypeError, ValueError):
+            continue
+        if ns != 0:
+            continue
+        if link.get('exists') is False:
+            continue
+        t = normalize_title(link.get('title') or link.get('*') or '')
+        if not t or t in seen:
+            continue
+        seen.add(t)
+        see_also.append(t)
+
+    log_usage(ctx, "get_article_see_also",
+              {"title": title, "wiki": wiki,
+               "section_name": matched.get('line')},
+              f"{len(see_also)} see-also links",
+              start_time=_start, note=note)
+    return json.dumps({
+        'wiki': wiki,
+        'title': canonical_title,
+        'requested_title': title,
+        'section_name': matched.get('line'),
+        'section_present': True,
+        'count': len(see_also),
+        'see_also': see_also,
+        'note': (
+            'Editor-curated related articles. Review then commit '
+            f'via add_articles(titles=[...], source="see_also:{canonical_title}").'
+        ),
+    }, indent=2, ensure_ascii=False)
+
+
 # ── Wikidata ──────────────────────────────────────────────────────────────
 
 @mcp.tool()

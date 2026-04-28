@@ -155,6 +155,13 @@ sequence:      identify the canonical article (e.g. "Apollo 11") →
                  topic's QID. Reveals which properties are populated
                  (e.g., P361 dense, P138 sparse for 1969 events).
                  Targeted property probes follow. →
+               get_article_see_also(title) — the article's editor-
+                 placed See also section. 5-30 manually-curated
+                 related articles; the *intentional* relatedness
+                 layer the article asserts. Higher precision than
+                 morelike: or the full outgoing-link list on niche
+                 topics. Empty result is fine — many articles have no
+                 See also. →
                get_article_links(title) — outgoing first-degree
                  neighborhood, ~80-400 candidates. Review and add. →
                get_article_backlinks(title, limit=500,
@@ -164,6 +171,7 @@ sequence:      identify the canonical article (e.g. "Apollo 11") →
 expected:      surfaces the topic's first-degree neighborhood
                  comprehensively from a single anchor. Yields:
                  categories ~95% on-topic, navboxes ~80-90%,
+                 see-also ~85-95% (curation-dense; small N),
                  outgoing links 70-90%, backlinks 40-70%
                  (filter-heavy). The strategy's value is breadth
                  across signal types, not any single signal.
@@ -468,6 +476,72 @@ rescue:        if a variant returns 0 net-new: its hits are already
                  deeper.
 ```
 
+## hastemplate-typed-probe
+
+```
+preconditions: typed-thing axis — the topic shape implies a clean
+                 entity type (biographies-of-X, films-with-Y,
+                 species-of-Z). Especially valuable for intersectional
+                 shapes (demographic × discipline) where category ∩
+                 category leaks. Also a precision cleanup probe.
+sequence:      identify the canonical infobox / navbox that marks
+                 the typed entity ("Infobox scientist", "Infobox
+                 film", "Infobox musical artist", "Infobox
+                 spaceflight", "Infobox botanist") →
+               search_articles(query='hastemplate:"<Template>"
+                              [+ incategory:"<Scope>"]')
+expected:      precision typically high (90-99%) — the template is a
+                 type marker editors maintain. Recall depends on
+                 template adoption: popular topic types (films,
+                 musicians, athletes) have near-complete coverage;
+                 niche or historical types have gaps. Stronger than
+                 categorical type-tagging on Wikipedia, comparable
+                 to or better than Wikidata P31 on shapes editors
+                 actively maintain.
+WARNING:       compound `hastemplate:"A" OR hastemplate:"B"`
+                 silently returns 0 (same Cirrus quirk as compound
+                 `intitle:`); split into separate calls and merge.
+                 See KNOWN SHARP EDGES.
+rescue:        if recall is low, the template name may be wrong (try
+                 sibling templates: Infobox person vs Infobox
+                 scientist) or the typed concept doesn't have a
+                 dedicated infobox (fall back to category + Wikidata
+                 P31). If precision is low, narrow with incategory:
+                 scope or intersect via
+                 get_articles(sources_all=[...]).
+```
+
+## articletopic-classifier-probe
+
+```
+preconditions: any topic that maps cleanly to ORES topic taxonomy
+                 — STEM (Physics / Biology / Computing / ...),
+                 Culture (Music / Visual-arts / Literature / Film-
+                 and-TV / Sports / ...), Geography (Africa / Asia /
+                 ...), History-and-society. Useful as a *coarse
+                 filter* on a noisy probe (morelike: + articletopic:,
+                 cross-category union + articletopic:) more than as
+                 a primary gather.
+sequence:      pick the matching ORES topic — see
+                 https://www.mediawiki.org/wiki/ORES/Articletopic for
+                 the full hierarchy →
+               search_articles(query='articletopic:STEM.Physics.Astronomy
+                              [+ morelike:"<Seed>" | + incategory:...]')
+expected:      ML-classifier — precision moderate (70-90%) depending
+                 on training-data overlap; recall moderate.
+                 Strongest combined with another operator (filter, not
+                 primary). Multiple values OR by default within one
+                 operator: `articletopic:STEM.Physics|Space`.
+WARNING:       ORES coverage isn't uniform — sparse on stub articles,
+                 historical figures, or recent topics post-cutoff.
+                 Treat results as candidates needing review, never as
+                 a subtractive filter.
+rescue:        if too few results, the tag is too narrow — widen up
+                 the hierarchy (Astronomy → Physics → STEM). If too
+                 many off-topic, combine with category, template, or
+                 morelike: filters.
+```
+
 ## geographic-feature-class-probe
 
 ```
@@ -564,6 +638,53 @@ expected:      thin yield on dense topics (most edges already in);
                is sparse compared to topic core
 rescue:        if 0 candidates: edge-browse is exhausted on this
                  topic; reach is now bounded by other strategies
+```
+
+## llm-fabricate-and-verify
+
+```
+preconditions: sparse-canonical-surface — no dedicated WikiProject,
+                 sparse categories, incomplete Wikidata
+                 P31/P106/P171, OR non-Anglosphere depth, OR
+                 historical / pre-cutoff timeframe. Niche topics
+                 where structural tools surface thin recall. Don't
+                 use on popular contemporary topics — structural
+                 tools work well enough that fabrication adds noise
+                 more than coverage.
+sequence:      sketch 50-100 candidate article titles you'd expect
+                 on enwiki from your training-data knowledge of
+                 Wikipedia, grouped by subdomain. Anchor each in a
+                 brief reason ("X is the canonical figure in
+                 <subdomain>"; "Y is named after Z and likely has
+                 its own article"). →
+               PRE-VALIDATE before committing — batched
+                 preview_search(query='intitle:"<Title>"', limit=1)
+                 per candidate, OR a compound search that hits all
+                 of them. Plausible-sounding titles routinely don't
+                 exist; committing without verification = false-
+                 positive corpus noise. →
+               for verified hits: add_articles(titles=[...],
+                                  source="llm-fabricate:<topic-stem>")
+                 — keep the source label so post-hoc audit can
+                 measure fabrication's contribution. →
+               optional 2nd round: ask "what *category* of articles
+                 did I miss in round 1?" (non-Anglosphere bias,
+                 pre-cutoff, adjacent disciplines).
+expected:      yield 30-70% on sparse-canonical-surface topics;
+                 near-zero novel finds on well-categorized
+                 contemporary topics. Hallucination rate on
+                 unverified titles is 10-30%; pre-validation drops
+                 it to ~0%.
+WARNINGS:      pre-validation is non-optional. Cap rounds at 2-3 —
+                 diminishing returns are real. Track via the
+                 source label so contribution is auditable.
+rescue:        if pre-validation drops most candidates, the topic
+                 is narrower than your training data suggests —
+                 refine the rubric and try a more specific
+                 subdomain. Adjacent: niche-example-fabrication-
+                 spot-check is a wrap-up coverage probe (smaller N,
+                 structured by subdomain) — this move is mid-build
+                 recall extension (larger N, commit-oriented).
 ```
 
 ---

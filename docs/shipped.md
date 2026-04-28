@@ -669,3 +669,100 @@ End-to-end Wikimedia OAuth-based authentication shipped after a one-day cutover 
 - `.gitignore` switched from `.claude/` (whole dir) to `.claude/*` + `!.claude/settings.json`, so the project-level deny rule is committed and shared per Claude Code's own convention.
 
 **Commits**: `51a2e72` (Auth Phase 2: enforce writes, sliding TTL, landing-page rewrite); `5c7da40` (operator-owned guardrails).
+
+## Three picks from the 2026-04-27 strategy brainstorm (2026-04-28)
+
+Three Tier 1 items from `docs/backlog/strategy-brainstorm.md` —
+"in-retrospect-obvious" topic-discovery directions sister to the
+recent `seed-anchored-mining-from-canonical-article` ship. The shared
+theme: read the article harder, use Cirrus operators we've been
+ignoring, and let the AI's own training data generate candidates that
+tools then verify.
+
+### `get_article_see_also` — read the editor-curated semantic neighborhood
+
+New MCP tool. Two cheap action-API calls (`parse&prop=sections` to
+find the section index, then `parse&prop=links&section=N` for that
+section's mainspace links). Returns
+`{section_present, count, see_also: [...]}`. Distinct from
+`get_article_links` (which mixes See also entries with passing-mention
+links from the body) and from `morelike:` (BM25 over the whole
+article). Higher precision than either on niche topics where editor
+curation is dense.
+
+Default `section_name="See also"` matches enwiki convention; non-en
+wikis pass the local equivalent (`Véase también`, `Siehe auch`,
+`관련 항목`, etc.) — match is case-insensitive and trims whitespace.
+Returns `section_present: false` cleanly when the article has no
+matching section (Climate change is a real example — no See also).
+
+Folded into the `seed-anchored-mining-from-canonical-article` move
+in `strategy_moves.md` between the Wikidata probe and the
+outgoing-link harvest, with revised yield estimates: see-also
+~85-95% on curation-dense topics, vs. outgoing links 70-90%.
+COMMON TASK → TOOL row in `server_instructions.md`. Landing-page
+entry in `landing.html`.
+
+Smoke against the deployed venv: Apollo 11 → 5 entries
+(Apollo in Real Time, Exploration of the Moon, List of missions to
+the Moon, ...); Phenomenology (philosophy) → 8 (Existentialism,
+Hard problem of consciousness, Heterophenomenology, ...); Climate
+change → 0 (no See also, handled cleanly); eswiki Apolo 11 with
+`section_name="Véase también"` → 7. Production logs confirm 2 API
+calls per success, ~250-700ms elapsed.
+
+### `hastemplate-typed-probe` + `articletopic-classifier-probe` — Cirrus operators we've been ignoring
+
+Two new strategy moves in `strategy_moves.md` Bulk gather section,
+plus matching COMMON TASK → TOOL rows in `server_instructions.md`.
+Pure documentation ship — the operators already work inside
+`search_articles`; this surfaces them.
+
+`hastemplate-typed-probe`: `hastemplate:"Infobox X"` finds every
+article using a given template — the infobox registry is a free
+typed-entity ontology editors maintain. `{{Infobox botanist}}` marks
+every botanist; `{{Infobox spaceflight}}` every spaceflight.
+Precision typically 90-99%; recall depends on template adoption.
+Carries the existing compound-OR sharp-edge warning (split
+`hastemplate:"A" OR hastemplate:"B"` into separate calls).
+
+`articletopic-classifier-probe`: `articletopic:STEM.Physics.Astronomy`
+filters to ORES topic-classifier categories — a free deterministic
+ML topic-tag layer we hadn't probed. Best as a *coarse filter* on a
+noisy probe (`morelike:"<seed>" articletopic:STEM.Physics`) more
+than as a primary gather. Full taxonomy at
+`mediawiki.org/wiki/ORES/Articletopic`. Coverage uneven (sparse on
+stubs, historical figures, post-cutoff topics); treat as candidates
+needing review, never as a subtractive filter.
+
+### `llm-fabricate-and-verify` — AI as candidate generator, tools as verifier
+
+New strategy move in `strategy_moves.md` Reach section. Inverts
+today's posture (tools surface candidates → AI judges) into AI
+fabricates → tools validate. The AI is trained on Wikipedia; for
+sparse-canonical-surface topics (no dedicated WikiProject, sparse
+categories, incomplete Wikidata, non-Anglosphere depth), the AI's
+training-data recall often beats what structural tools surface.
+
+Sequence: sketch 50-100 candidate titles grouped by subdomain →
+PRE-VALIDATE via batched `preview_search(query='intitle:"<Title>"')`
+→ commit verified hits with `source="llm-fabricate:<topic-stem>"` so
+contribution is auditable → optional 2nd round asking "what category
+of articles did I miss?" Cap rounds at 2-3 (diminishing returns).
+Hallucination rate on unverified titles is 10-30%; pre-validation
+drops it to ~0%.
+
+Distinguished from the existing `niche-example-fabrication-spot-check`
+move (wrap-up coverage probe, smaller N, structured by subdomain) by
+mid-build timing and commit-orientation.
+
+### What didn't ship from the brainstorm
+
+The pageviews / WikiProject importance / sitelink-count cluster
+(originally Top Picks #1, #2, #6 in the brainstorm) was deprioritized
+per the CLAUDE.md "Centrality is AI judgment, not tool computation"
+principle — the principle covers signal-surfacing tools too, not just
+direct score-writers. Kept on the brainstorm menu for record-keeping;
+revisit only on a multi-session signal pointing at one specifically.
+Sister-project crosswalk and external-authority meta-tool stay on the
+brainstorm menu as the strongest unpromoted entries.

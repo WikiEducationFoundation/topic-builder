@@ -11,12 +11,12 @@ Not a plan. Not a backlog. A menu, organized so future-you can step
 through one axis at a time and decide what's worth promoting to
 `backlog/README.md`.
 
-## Status (updated 2026-04-27 after first promotion pass)
+## Status (updated 2026-04-28)
 
-**Promoted to `backlog/README.md` Tier 1:**
-- See also section harvest (was Top Pick #3 / axis A1).
-- `hastemplate:` Cirrus operator move + `articletopic:` companion (was Top Pick #4 / axis I1 + D2).
-- LLM-as-generator move — `llm-fabricate-and-verify` (was item #6 in promotion list / axis D1).
+**Shipped to production 2026-04-28** (originally promoted from this brainstorm to backlog 2026-04-27, then built same week — see `docs/shipped.md`):
+- See also section harvest (was Top Pick #3 / axis A1) — new tool `get_article_see_also`.
+- `hastemplate:` Cirrus operator move + `articletopic:` companion (was Top Pick #4 / axis I1 + D2) — strategy moves `hastemplate-typed-probe` and `articletopic-classifier-probe`.
+- LLM-as-generator move (was item #6 in promotion list / axis D1) — strategy move `llm-fabricate-and-verify`.
 
 **Deprioritized "right now":** the centrality-tools cluster (pageviews / pageassessments / sitelink count — original Top Picks #1, #2, #6). These are kept on the menu below as a record of the brainstorm but are not active promotion candidates; the CLAUDE.md principle "Centrality is AI judgment, not tool computation" applies to centrality-proxy *signal* tools too, not just to direct score-writers. Revisit only if a multi-session signal points specifically at one of them.
 
