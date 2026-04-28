@@ -84,6 +84,35 @@ Same shape complaint, orthogonal directions (biography lists leaking non-bios, t
 - Cost: QID-resolve step post-harvest adds API work on big list pages. Make annotation opt-in; preview-variant resolves only a sample.
 - Type vocabulary: start narrow (`person` / `plant` / `place` / `organization` / `work` / `concept` / `unknown`) or expose raw QID chains? Start narrow; generalize when demand surfaces.
 
+### ☐ Widen confabulation crosscheck coverage `[NEW — 2026-04-28]`
+
+**What.** Two related expansions to the shipped `submit_feedback` confabulation crosscheck (see shipped entry above):
+1. **Widen `_STRATEGY_FAMILY_EVIDENCE` vocabulary** to cover the natural-language strategy names AIs actually use — not just the canonical move-catalog names.
+2. **Add `spot_check.probes_count` crosscheck** — validate the claimed probe count against `preview_search` / `preview_similar` / `search_articles` / `search_similar` calls in the topic's usage log.
+
+**Why.** First review-tool-aided session (cybersecurity, 2026-04-27) surfaced both gaps:
+- 5 `confabulation_flags` fired on `strategies_used`, all with `(unmapped family — add to _STRATEGY_FAMILY_EVIDENCE if this is a real category)` reasons. The claimed strategies — `wikiproject`, `rubric_cleanup`, `search/preview via category preview`, `redirect-resolution`, `keyword_scoring` — *did* happen (the tool calls confirm it), but the family vocabulary doesn't include those names. Net effect: false-positive confab flags that obscure real ones.
+- The same feedback claimed `spot_check.probes_count=100, hits=55, misses_real_gap=45` while the usage log shows zero `preview_search` / `preview_similar` calls. Either the AI counted samples-from-`preview_category_pull` as probes (defensible but not what the field is meant to capture) or the count is confabulated. The current crosscheck doesn't catch either case.
+
+**Shape.**
+- For (1): grep the existing `_STRATEGY_FAMILY_EVIDENCE` table, add aliases for: `wikiproject` → ['get_wikiproject_articles', 'check_wikiproject', 'find_wikiprojects'], `redirect_resolution` (and `redirect-resolution`) → ['resolve_redirects'], `keyword_scoring` (and variants) → ['auto_score_by_keyword', 'auto_score_by_description', 'set_scores'], `rubric_cleanup` → ['set_topic_rubric'] or treat as judgment-shaped non-flagged. Also normalize claim strings (lowercase + strip punctuation) before lookup.
+- For (2): add a `spot_check` clause to `_compute_confabulation_flags` — if `spot_check.probes_count > 0` but no relevant probe-shaped tool calls observed, flag with `expected_evidence: "≥1 call to one of: [preview_search, preview_similar, search_articles, search_similar]"`.
+
+**Sequencing.** Small bundle. ~20 lines of code + a replay verification against the cybersecurity feedback record (should drop from 5 flags to 0 after the family widening, then surface the spot_check confabulation as the genuine signal it is).
+
+### ☐ Investigate `get_articles_by_source` `exclude_sources` parameter behavior `[NEW — 2026-04-28]`
+
+**What.** Cybersecurity 2026-04-27 feedback flagged: "`get_articles_by_source` appears to have ignored or not supported the `exclude_sources` argument in the way I expected, since results included articles with other sources despite my attempt to isolate Data-breaches-only pages." Either the parameter doesn't work as the AI expected, the docstring is misleading, or both. Investigate and fix-or-document.
+
+**Why.** Source-isolation cleanup is one of the most useful patterns the AI uses (it surfaced 5 stranded chemicals from the air-filtering list in the houseplants run). If `exclude_sources` doesn't isolate as expected, the AI either gives up on the pattern or reaches for blunter tools (`remove_by_pattern` with broad regex) that catch more noise but also more legitimate cases.
+
+**Shape.** Read the implementation; figure out whether it's behaving correctly per its semantics, mis-documented, or buggy. Three possible outcomes:
+1. **Working as designed but mis-understood** — clarify the docstring (probably "exclude_sources excludes articles whose ONLY sources are in the list" vs the AI expecting "exclude any article tagged with any of these sources").
+2. **Buggy** — fix and add a docstring example.
+3. **Working but the AI's expected semantics are reasonable** — change the behavior and update callers.
+
+**Sequencing.** ~30 min investigation, fix-or-doc as warranted. Worth doing before the next major dogfood that leans on cleanup-by-source.
+
 ---
 
 ### ◐ Same-wiki topic diff / intersection primitive `[NEW — 2026-04-24, expanded + corpus-diff variant shipped 2026-04-27]`
@@ -558,5 +587,6 @@ One-liners that have been considered and deliberately deferred. Promote to a tie
 - **Hierarchical topic architecture (`start_topic(parent_topic=...)` + `reconcile_to_parent()`).** Considered and deferred 2026-04-22. The Q6 answer in the third feedback round suggested parallel topics should be first-class children of a parent topic, with reconciliation baked into the API. **Decided to take the light-touch path instead:** `cross_wiki_diff` (Tier 2) stays the only new primitive; parallel topics remain siblings; users / AI compose the workflow. Reasoning: the cost of adding parent/child concepts to the schema and API surface outweighs the benefit until we see the manual composition pattern prove too friction-heavy in real use. Revisit if (a) `cross_wiki_diff` ships and the AI still struggles to assemble the workflow, or (b) a user shape emerges where hierarchical topic relationships are central (e.g., long-running multi-wiki research projects).
 - **Soft-redirect category hint on empty `survey_categories` result.** If `survey_categories` reports an existing category page with 0 articles (container/redirect category), emit a "try sibling X instead" hint. K-drama dogfood surfaced this on `Category:Korean television dramas` → should have pointed at `Category:South Korean television series`. Needs sibling-finding logic — probably scan for same-prefix categories via `prop=categories` on the empty category page. `[NEW — 2026-04-23 dogfood run 2]`
 - **`auto_score_by_description` substring-matching edge on proper-noun words.** Pulitzer feedback: `disqualifying=["city", "county"]` would reject "The Kansas City Star" and "Orange County Register" because the geographic word is part of the institution's proper name. Word-boundary match alone doesn't fix it ("City" IS a word). Possible approaches: case-sensitive lowercase-only match, exclude matches where the word is part of a proper-noun phrase, or an "exclude-unless-preceded-by-lowercase" mode. No obvious right answer — more thought required. `[NEW — 2026-04-23 dogfood run 2]`
+- **Refuse first gather call without `set_topic_rubric`.** server_instructions says rubric is mandatory before any gather call, but the houseplants 2026-04-27 run skipped it entirely (gathered + cleaned + submitted feedback with `centrality_rubric=''`). Could harden by having the topic-touching tools refuse with an actionable error until `set_topic_rubric` has fired. Behavior change with real friction implications — easy to imagine cases where the operator legitimately wants to gather-then-decide-scope. Single-session evidence; revisit if a second run skips the rubric. `[NEW — 2026-04-28]`
 
 ---
