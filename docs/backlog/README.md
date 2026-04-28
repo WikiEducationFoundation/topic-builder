@@ -6,7 +6,6 @@ the "what to work on next" entry point and draws its shortlist from
 this doc.
 
 Sibling docs in this directory hold larger plans (deferred or in review):
-- `auth.md` — Wikipedia OAuth + paste-in-chat token flow.
 - `impact-visualizer.md` — publish_topic handle → Impact Visualizer import.
 - `exemplars-and-reach-pass.md` — `list_exemplars` + `get_exemplar` tools; preparatory-phase server-instructions posture; brief-driven two-phase dogfood (in review).
 
@@ -384,6 +383,19 @@ The 2026-04-23 dogfood `task.md` has already been patched to authorize the loop 
 
 **Sequencing note.** Wait for `cross_wiki_diff` and the spot-check primitives cluster to land before writing the instructions — those expand the strategy surface the coverage estimate reasons about, and the subdomain-axis examples want to name them. Full session context and signal-origin in `dogfood/sessions/2026-04-23/session-2026-04-23-notes.md`.
 
+### ☐ Auth Phase 3 — enforce reads + visibility-gated reads/exports `[NEW — 2026-04-27]`
+
+**What.** Flip `AUTH_ENFORCEMENT` from `writes` to `all`. Switch read-shaped tools (`get_articles`, `get_status`, `describe_topic`, `audit_progress`, `export_csv`, `resume_topic`, `list_topics`, etc.) to use `_require_topic_with_access(mode='read')`. Anonymous can still read `public_read` / `public_edit` topics; `private` topics return auth-required. `list_topics` for anonymous returns only public topics. `/exports/<slug>.csv` gated on visibility.
+
+**Why.** Phase 2 (shipped 2026-04-27) left reads open as a low-risk transition. With Phase 2 soaked and stable, the cleaner end-state is full enforcement — same ownership model on both axes, no surprise that "I can read your private topic anonymously."
+
+**Shape.** Most of the wiring already exists: `_require_topic_with_access(mode='read')` is implemented and `_can_read` does the right thing. What's left:
+- Walk each read-mode tool and switch its access call from `_require_topic` to `_require_topic_with_access(mode='read')`.
+- Decide `list_topics` for anonymous: empty list, or public-only list?
+- Gate `/exports/<slug>.csv` by visibility — either via a Python hop in front of nginx's static serving, or a signed-URL approach that bakes visibility into the URL itself.
+
+**Sequencing.** No rush. Promote when broader sharing of the URL begins or when a security review pushes for it. See `docs/shipped.md` for the Phase 1+2 cutover record.
+
 ---
 
 ## Tier 3 — deferred / speculative
@@ -495,6 +507,17 @@ Leaning: wait to see if the shipped regex filters + cost telemetry actually leav
 **Shape.** On each tool call for a topic, check whether the topic is > 5 minutes old AND has zero articles AND had no add-shaped call attempted. If all true, include a suggestion in the response.
 
 **Sequencing note.** Speculative until we see more of this pattern in the wild. Adjacent to the shipped resume-nudge (item 1.18) and COMMON TASK → TOOL mapping (item 2.7). Skip if those resolve the issue.
+
+### ☐ Auth Phase 4 polish `[NEW — 2026-04-27]`
+
+Speculative auth-side polish that wasn't worth blocking the Phase 1+2 cutover. Each independently shippable when there's signal:
+
+- **Per-user usage telemetry** in `get_status` — `logged_calls` by-user this session.
+- **Per-user rate limit** on the noisy gather tools — protects the shared Wikipedia API rate-limit bucket against a single noisy operator.
+- **`transfer_topic(slug, new_owner)`** — admin-only, for ownership reassignment edge cases (legacy topics whose default-owner mapping was wrong, off-boarding contributors, etc.).
+- **Token rotation tooling** — `/oauth/tokens` HTML page that lists active tokens for the logged-in user with revoke buttons. Better UX than passing the raw token to the `/oauth/revoke` form.
+
+**Sequencing.** Each item promotes independently when its signal arrives — telemetry when we want to study real usage, rate limit if a noisy session bites, transfer_topic if an off-boarding case lands, /oauth/tokens UI when users start losing track of their tokens. See `docs/shipped.md` for the Phase 1+2 cutover.
 
 ---
 

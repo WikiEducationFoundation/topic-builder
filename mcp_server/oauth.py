@@ -11,7 +11,7 @@ unset):
                              it to the user
   POST /oauth/revoke      — revokes a token
 
-The flow is documented in `docs/backlog/auth.md`. The user copies the
+The flow is summarized in `docs/shipped.md` (Auth Phase 1+2 cutover). The user copies the
 displayed bearer token and pastes it into the chat; the AI then calls
 the `authenticate(token=…)` MCP tool to bind it to the session.
 """

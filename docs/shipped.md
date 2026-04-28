@@ -620,3 +620,52 @@ A run **passes** if EITHER:
 Cost is the bonus axis when quality holds, NOT a co-equal hurdle. Verdict text in `format_scoreboard` updated to surface which clause triggered (or which conditions failed). Tolerance moved from 0.001 (0.1pp) to 0.005 (0.5pp) for noise.
 
 CRISPR + orchids baselines reset to the 2026-04-25 two-phase runs (354/91%/92.5% and 7138/100%/97% respectively); apollo-11 baseline left as-is (regressed precision; gate-fail is honest there).
+
+## Auth Phase 1 + 2 cutover (2026-04-27)
+
+End-to-end Wikimedia OAuth-based authentication shipped after a one-day cutover sprint. Retires the design plan that previously lived at `docs/backlog/auth.md` — Phases 0/1/2 all landed; Phase 3 (`AUTH_ENFORCEMENT=all` + read-mode wiring) and Phase 4 polish remain as one-line backlog entries.
+
+**OAuth flow** (`mcp_server/oauth.py`, mounted on the FastMCP Starlette app at `/oauth/login`, `/oauth/start`, `/oauth/callback`, `/oauth/revoke`):
+
+- Wikimedia OAuth 2.0 consumer registered on Meta-Wiki (confidential client, authorization-code grant only). Auto-approved.
+- User visits `/oauth/login` → approves at meta.wikimedia.org → `/oauth/callback` exchanges code for a Wikimedia access_token, fetches the username via the userinfo endpoint, and discards the access_token. Server mints a `tb_<32 hex>` bearer token (`secrets.token_hex`), stores SHA-256 hash in `auth_tokens`, and shows the raw value once on a token-display page. User pastes the line into chat.
+- **User-Agent fix**: Wikimedia's WAF (T400119) was blocking the default `Python-urllib/3.x` UA on the token + profile endpoints — both calls now send `WikipediaTopicBuilder/1.0`. The opaque "HTTP 4xx Forbidden" failure mode is also fixed: `_exchange_code` reads the OAuth 2.0 error_body so failures surface the real error code (`invalid_client`, `unauthorized_client`, etc.) instead of just the status line.
+
+**Token model** (`db.py`):
+
+- 30-day **sliding TTL**: `lookup_auth_token` slides `expires_at` to "now + 30 days" on every successful lookup (RETURNING-based, host SQLite is 3.46.1). Active users never re-auth; abandoned tokens die naturally. Rationale: our `tb_` tokens authenticate only against this server (no Wikimedia-side privileges), so the only security property expiry buys is leak hygiene against abandoned-but-leaked tokens — sliding gives that without periodic friction.
+- Self-revoke via new `revoke_my_token(token)` MCP tool (also reachable via `/oauth/revoke` POST form on the token-display page).
+- Tokens are SHA-256 hashed at rest. A leaked DB doesn't yield active tokens.
+
+**Three-tier visibility model** (per-topic):
+
+- `private` (default), `public_read` (anyone reads, owner writes), `public_edit` (anyone authenticated reads + writes). Per-topic `owner_username` + `visibility` columns on `topics`. Permission rules in `_can_read` / `_can_write`; integration via `_require_topic_with_access`. New tools `set_topic_visibility(visibility)` and `get_topic_visibility()`.
+
+**Enforcement** (env-flagged):
+
+- `AUTH_ENFORCEMENT=none` — legacy default, no checks (back-compat).
+- `AUTH_ENFORCEMENT=writes` — mutations require auth + ownership; reads stay open. **Production state.**
+- `AUTH_ENFORCEMENT=all` — both reads and writes gated. Available; deferred to Phase 3.
+
+**Migration of legacy topics**: on every boot, if `MIGRATION_DEFAULT_OWNER` is set, `db.init_db` backfills any topic with NULL `owner_username` to that value (idempotent). At cutover, all 66 existing topics got `owner_username='Sage (Wiki Ed)'`, `visibility=private`.
+
+**AI-facing instructions** (`server_instructions.md` AUTHENTICATION & CROSS-SESSION TOKENS section):
+
+- Differentiates **stateful** (Claude — call `authenticate()` once; session caches identity) vs **stateless** (ChatGPT — opens a fresh session per tool call; pass `auth_token=` directly on every call). The "when unsure, just pass `auth_token=` per call" closer is a safe default that works for both.
+- Tells the AI to check long-term memory for a saved token before prompting; offer to save on first authenticate; revoke on logout intent.
+- Always direct the user to the **full** `/oauth/login` URL — ChatGPT reproduces bare paths verbatim and leaves the user without a clickable link.
+
+**Landing-page rewrite** (`landing.html`):
+
+- New "Sign in" section with the chat-side OAuth flow.
+- New "Getting a more complete topic" section: five high-leverage user moments (push back during scoping; don't accept first "looks done"; run complementary strategies; spot-check before exporting; bring domain expertise to edges) plus a closer noting the built-in strategy menu isn't a fence.
+- Hero tagline: "No authentication required" → "Sign in with your Wikimedia account to build."
+- Four connector-config blurbs clarify "auth in chat, not connector."
+- Five new auth tools added to the tools-grid (`authenticate`, `whoami`, `revoke_my_token`, `get_topic_visibility`, `set_topic_visibility`).
+
+**Operational hardening** (post-cutover, after a same-day incident):
+
+- `/etc/topic-builder.env` (the production credentials file) is marked operator-owned. AI is denied any Bash command that names it via `.claude/settings.json` (deny pattern matches the local Bash command string before SSH wraps it). `CLAUDE.md` documents the policy and what AI does instead: propose lines for the operator to add; verify via `/proc/<pid>/environ` (loadable through `bash scripts/smoke.sh`) or observable side effects (HTTP responses, DB state). Triggered by a redundant `cat` that printed the OAuth client secret into a transcript; secret was rotated. The deny rule is self-applicable — committing this very change required routing the message through a file because the path appears multiple times in the body.
+- `.gitignore` switched from `.claude/` (whole dir) to `.claude/*` + `!.claude/settings.json`, so the project-level deny rule is committed and shared per Claude Code's own convention.
+
+**Commits**: `51a2e72` (Auth Phase 2: enforce writes, sliding TTL, landing-page rewrite); `5c7da40` (operator-owned guardrails).

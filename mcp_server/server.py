@@ -284,7 +284,8 @@ def _require_topic(ctx: Context, topic_name: str | None = None, *,
 # default "none" setting, _require_topic_with_access falls through to the
 # legacy _require_topic and no permission check happens. Once an operator
 # sets AUTH_ENFORCEMENT=writes (or "all"), the same helpers start refusing
-# calls that don't meet the access rules. See docs/backlog/auth.md.
+# calls that don't meet the access rules. See docs/shipped.md
+# (Auth Phase 1+2 cutover) for the design + permission model.
 
 
 def _set_session_user(ctx: Context, username: str) -> None:
