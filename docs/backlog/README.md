@@ -5,9 +5,8 @@ Shipped items are logged in `../shipped.md`. `../ratchet-plan.md` is
 the "what to work on next" entry point and draws its shortlist from
 this doc.
 
-Sibling docs in this directory hold larger plans (deferred or in review):
+Sibling docs in this directory hold larger deferred plans:
 - `impact-visualizer.md` — publish_topic handle → Impact Visualizer import.
-- `exemplars-and-reach-pass.md` — `list_exemplars` + `get_exemplar` tools; preparatory-phase server-instructions posture; brief-driven two-phase dogfood (in review).
 
 Add new items here as signals come in; promote items to
 `../shipped.md` when they land.
@@ -24,21 +23,62 @@ Add new items here as signals come in; promote items to
 
 ## Tier 1 — small, high-leverage
 
-### ☑ Pagination for `get_article_links` and `get_article_backlinks` `[shipped 2026-04-26]`
+### ☐ "See also" section harvest — `get_article_see_also(title)` `[NEW — 2026-04-27, strategy brainstorm]`
 
-**What.** Both seed-mining tools accepted `limit=` (default 500, hard-cap 5000) and returned `truncated=True` with no way to fetch the next page. Added a `continue_token` to the response and as an input arg so the caller can paginate.
+**What.** New tool that returns the link list from an article's `==See also==` section. Distinct from `get_article_links` (which mixes See also entries with passing-mention links from the body) and from `morelike:` (BM25 text similarity).
 
-**Shape shipped.** Each tool now caps `pllimit`/`bllimit` per API page at `min(limit, 500)` so it stops on a clean page boundary. At truncation, `data['continue']` (a dict like `{plcontinue: "...", continue: "||"}`) is JSON-encoded and returned as `continue_token`; passing it back unchanged on a subsequent call decodes and merges it into the next request. Both docstring and `server_instructions.md` COMMON TASK → TOOL row updated so ChatGPT (cached-schema client) learns about the new param via session-init instructions.
+**Why.** Editor-placed See also entries are the *intentional* relatedness layer — exactly the related articles Wikipedia's categorization can't surface cleanly. Sister to the recently-shipped `seed-anchored-mining-from-canonical-article` move, which proved "read the article harder" is a real strategy axis. See also is the most curation-dense slice of the canonical article we don't read separately. Identified in `strategy-brainstorm.md` Top Pick #3.
 
-### ☑ Exemplar integrity gate leaks via slug normalization `[shipped 2026-04-26]`
+Useful on intersectional / movement / abstract-concept shapes where editorial curation is dense — higher precision than `morelike:` on niche topics. Also bridges across topics (See also often points to *other* topics' core articles) and surfaces sub-topic enumerations (See also → "Outline of X" / "Glossary of X").
 
-**What.** `list_exemplars` / `get_exemplar` normalize the requested slug (e.g. lower-casing, hyphen folding) before lookup, but the integrity gate that hides an exemplar when the active topic matches its benchmark slug compares against the *raw* (un-normalized) slug. Result: an exemplar for benchmark `apollo-11` remains visible in the menu and fetchable while a run on the same benchmark is in progress, defeating the gate.
+**Shape.** New tool `get_article_see_also(title, wiki=None)` returning `{"see_also": ["Title 1", ...]}`. Two implementation routes:
+- Action API `parse&prop=sections` to locate the See also section index, then `parse&prop=wikitext&section=N` to pull its wikitext, then a small link parser.
+- REST `/api/rest_v1/page/html/{title}`, find `<h2>See also</h2>`'s following `<ul>`, extract `<a>` hrefs.
 
-**Why.** Discovered mid-run during the 2026-04-26 composable-strategy dogfood (apollo-11 thin variant). The AI noticed `apollo-11` in the `list_exemplars` menu while running the apollo-11 benchmark, recognized it as a measurement-integrity leak, and deliberately avoided `get_exemplar(slug="apollo-11")` to preserve the run. The gate is supposed to prevent exactly this scenario without requiring AI judgment.
+The HTML route is simpler but heavier per call; wikitext is cheaper. Trivial either way; pick after a 30-minute prototype. Add a COMMON TASK → TOOL row in `server_instructions.md` and append the new tool as a sub-step of the `seed-anchored-mining-from-canonical-article` move in `strategy_moves.md` (or a sibling move if the See also signal warrants its own framing).
 
-**Shape.** Normalize both sides of the comparison in the gate (run-topic-slug → benchmark-slug match) using the same canonicalization the lookup uses. Audit `list_exemplars` filter logic and `get_exemplar` permission check together — they need to agree on the normalized form.
+**Sequencing.** Independent ship. Re-run the 5-benchmark ratchet to measure whether See-also-derived reach grows gold.
 
-**Sequencing.** Small, independent. Ship before the next ratchet cycle so future runs aren't dependent on AI noticing the leak.
+### ☐ `hastemplate:` Cirrus operator as a typed-thing probe `[NEW — 2026-04-27, strategy brainstorm]`
+
+**What.** Document `hastemplate:"Infobox X"` as a named strategy move; optionally a thin `find_by_infobox(template, scope_category=None)` wrapper. The Cirrus operator already works inside `search_articles` — this is mostly framing + documentation, not new plumbing.
+
+**Why.** The infobox-template registry is, in effect, a free typed-entity ontology curated by editors. `{{Infobox botanist}}` marks every botanist; `{{Infobox spaceflight}}` marks every spaceflight. We use `incategory:` and `morelike:` heavily but ignore `hastemplate:`, the most type-precise filter Cirrus offers. It's currently mentioned in `server_instructions.md` only inside the compound-OR-splitting documentation, never as an active probe. Identified in `strategy-brainstorm.md` Top Pick #4.
+
+Useful for:
+- Biography-shape topics. `hastemplate:"Infobox scientist" incategory:"African American history"` is a tighter intersectional probe than category ∩ category.
+- Disambiguation cleanup. When list-page harvests leak bios into a taxonomy corpus, `hastemplate:"Infobox plant"` is precision filtering.
+- Wikidata-incompleteness rescue. P31 has uneven coverage; infobox usage is often more complete on enwiki for popular topic types (films, musicians, companies).
+
+**Shape.**
+- New named move `cirrus-hastemplate-typed-probe` in `strategy_moves.md` (preconditions: typed-thing axis, intersectional shape; rescue paths for low-yield templates).
+- New COMMON TASK → TOOL row: "find every article using a specific infobox" → `search_articles(query='hastemplate:"Template Name"')`.
+- Pair with `articletopic:` documentation in the same commit — the ORES-derived Cirrus operator that tags articles with topic categories (`STEM.Physics`, `Culture.Music.Classical`, `Geography.Africa`, etc.). Free deterministic ML classifier, also unused. Same shape, same zero-infra ship.
+- Optional thin wrapper `find_by_infobox(template, scope_category=None, limit=500)` only if a follow-up dogfood session shows the AI not reaching for the bare operator.
+
+**Sequencing.** Documentation-only first; first ship is probably zero code. Bundle `hastemplate:` and `articletopic:` documentation.
+
+### ☐ LLM-as-generator move — `llm-fabricate-and-verify` `[NEW — 2026-04-27, strategy brainstorm]`
+
+**What.** Document a strategy move where the AI uses its own Wikipedia-trained knowledge to generate candidate article titles, then verifies existence via batch lookup before committing. Inverts today's posture (tools surface candidates → AI judges) into AI imagines → tools validate.
+
+**Why.** The AI is trained largely on Wikipedia. For niche / non-Anglosphere / historical / pre-cutoff topics where the canonical tool surface is thin (sparse categories, no dedicated WikiProject, incomplete Wikidata coverage), the AI's recall of likely-existing article titles often beats what tools surface. We currently use the AI only as a judge of tool-found candidates, not as a candidate source. Identified in `strategy-brainstorm.md` Top Pick #6.
+
+Adjacent to the existing 3–5-niche-example spot-check pattern but more systematic and at larger scale (50–100 candidates per round, 2–3 rounds).
+
+Useful for:
+- Niche / sparse-resource topics. Apollo 11 needed seed-anchored mining because its canonical surface was thin; AI fabrication likely surfaces additional Apollo-related articles tools don't reach.
+- Non-Anglosphere shapes. AI knowledge of Brazilian orchidologists / Spanish-language climate activists / Japanese taxonomic authorities often exceeds enwiki's categorical surface.
+- Historical / pre-cutoff topics. Categories rarely surface 19th-century scientific instruments or pre-WWI labor figures cleanly; the AI knows them.
+
+**Shape.** New named move in `strategy_moves.md`. Existing tools already cover the plumbing — `add_articles` accepts arbitrary titles; existence check is feasible via `prop=info` (already used elsewhere in the code) or a thin new `verify_titles_exist(titles=[...])` only if dogfood shows the AI not reliably pre-validating.
+
+Move documentation must call out:
+- Pre-validation is non-optional. Plausible-sounding article titles routinely don't exist on enwiki. Committing without verification = false-positive corpus addition.
+- Redirects + normalization. Some valid candidates redirect to canonical titles; preserve provenance via the source label.
+- Cap rounds at 2–3. Diminishing returns are real.
+
+**Sequencing.** Documentation-only ship first. Single smoke against a known-sparse benchmark (Apollo 11 phase 2, climate-change phase 2) measures whether AI fabrication grows gold beyond the current ratchet baseline. Optional `verify_titles_exist` tool follow-on if friction.
 
 ### ☐ `preview_wikidata_property` titles-only output `[NEW — 2026-04-26]`
 
@@ -55,14 +95,6 @@ A titles-only mode lets the AI page through the full result set (use the title l
 - Sort order: by sitelink_count descending (most-cited first) is the most useful default — surfaces the well-attested entities at the top of a long list.
 
 **Sequencing note.** Single-session evidence (climate-change 2026-04-26), but the failure shape (token-cap collision on a heavily-curated property) will recur on any large biography-axis Wikidata probe (P101 / P106 on big fields). Worth Tier 1 if a second session hits it.
-
-### ☑ Capture agent / model / effort on `submit_feedback` `[shipped 2026-04-25]`
-
-Optional `runtime: dict | None = None` field on `submit_feedback`, serialized verbatim into the feedback JSON line and unpacked into per-key log params (`runtime_agent`, `runtime_model`, `runtime_effort`). Briefs ask the AI to populate from self-knowledge. Lets us trend results across claude-code-opus-4.7 / codex-gpt-5 / different effort levels — was filename-only before. See `shipped.md` 2026-04-25 (Ship 2 entry).
-
-### ☑ Argumentless `fetch_task_brief` with auto-dispatch `[shipped 2026-04-25]`
-
-`fetch_task_brief()` (no `task_id`, default `variant="thin"`) atomically picks the staleest matching task — smallest `last_dispatched_at`, NULLs winning, ties broken by `task_id` — bumps `last_dispatched_at` to now under `BEGIN IMMEDIATE`, and serves the brief. Simultaneous parallel callers within seconds get DIFFERENT tasks (round-robin coverage). Direct mode (explicit `task_id`) preserved for back-compat. See `shipped.md` 2026-04-25 entry "Tier 1: argumentless `fetch_task_brief` with auto-dispatch."
 
 ### ☐ Type-hinted harvest annotation on `harvest_list_page` `[NEW — 2026-04-23/24 multi-session: AA-STEM + orchids]`
 
@@ -84,7 +116,7 @@ Same shape complaint, orthogonal directions (biography lists leaking non-bios, t
 - Cost: QID-resolve step post-harvest adds API work on big list pages. Make annotation opt-in; preview-variant resolves only a sample.
 - Type vocabulary: start narrow (`person` / `plant` / `place` / `organization` / `work` / `concept` / `unknown`) or expose raw QID chains? Start narrow; generalize when demand surfaces.
 
-### ☐ Widen confabulation crosscheck coverage `[NEW — 2026-04-28]`
+### ☐ Widen confabulation crosscheck coverage `[NEW — 2026-04-27]`
 
 **What.** Two related expansions to the shipped `submit_feedback` confabulation crosscheck (see shipped entry above):
 1. **Widen `_STRATEGY_FAMILY_EVIDENCE` vocabulary** to cover the natural-language strategy names AIs actually use — not just the canonical move-catalog names.
@@ -100,7 +132,7 @@ Same shape complaint, orthogonal directions (biography lists leaking non-bios, t
 
 **Sequencing.** Small bundle. ~20 lines of code + a replay verification against the cybersecurity feedback record (should drop from 5 flags to 0 after the family widening, then surface the spot_check confabulation as the genuine signal it is).
 
-### ☐ Investigate `get_articles_by_source` `exclude_sources` parameter behavior `[NEW — 2026-04-28]`
+### ☐ Investigate `get_articles_by_source` `exclude_sources` parameter behavior `[NEW — 2026-04-27]`
 
 **What.** Cybersecurity 2026-04-27 feedback flagged: "`get_articles_by_source` appears to have ignored or not supported the `exclude_sources` argument in the way I expected, since results included articles with other sources despite my attempt to isolate Data-breaches-only pages." Either the parameter doesn't work as the AI expected, the docstring is misleading, or both. Investigate and fix-or-document.
 
@@ -113,171 +145,17 @@ Same shape complaint, orthogonal directions (biography lists leaking non-bios, t
 
 **Sequencing.** ~30 min investigation, fix-or-doc as warranted. Worth doing before the next major dogfood that leans on cleanup-by-source.
 
----
+### ☐ At-pull-time category × WikiProject intersection `[NEW — 2026-04-27, multi-session signal carried over from the shipped topic_diff parent item]`
 
-### ◐ Same-wiki topic diff / intersection primitive `[NEW — 2026-04-24, expanded + corpus-diff variant shipped 2026-04-27]`
+**What.** A primitive that performs `category:X ∩ wikiproject:Y` (or `cat ∩ cat`) AT PULL TIME — without first ingesting all of WikiProject Y. Closer to PetScan than to a corpus diff. Sibling to the shipped `topic_diff` (which compares two already-ingested topics).
 
-**Status.** Corpus-diff variant `topic_diff(topic_a, topic_b, sample_size, by_source)` shipped 2026-04-27 — covers AA-STEM blocklist comparison and orchids ratchet-vs-baseline diagnostic. **At-pull-time intersection** (cat × WikiProject without ingesting all of WP first — what Apollo 11 ChatGPT wanted) NOT yet built; remains open as the next sub-item below.
+**Why.** The Apollo 11 ChatGPT autonomous run (2026-04-27) flagged this as the #1 missed strategy: *"A true WikiProject intersection tool would help: WikiProject Moon or Spaceflight intersected with Category:Apollo 11 or Apollo11series would likely improve triangulation without broad overpull."* The AI's mental model is "category narrows, WikiProject corroborates" — the answer it wanted is `category:Apollo 11 ∩ wikiproject:Spaceflight` returning the high-confidence core. That's already expressible via `get_articles(sources_all=[...])` IF both have been pulled — but the AI didn't pull WikiProject Spaceflight because it was scared of overpull. A primitive that performs the intersection before either side is fully ingested would be the unlock.
 
-**What.** A `topic_diff(topic_a, topic_b)` or `topic_intersect(topic_a, topic_b)` tool for same-wiki topic comparison, returning set partitions (`only_a` / `only_b` / `both`). Distinct from the Tier 2 `cross_wiki_diff` (different wikis).
+Climate-change (2026-04-26) feedback also flagged WikiProject ∩ category-tree intersection as an explicit unmet need. So the signal is multi-session, not just Apollo.
 
-**Why.** Multi-session wishes — now four sessions across three topic shapes:
-- AA-STEM (2026-04-23): "I felt the absence of an easy cross-topic intersect/diff against the AA medicine blocklist and the frozen baseline; that would have made cleanup and audit faster and more defensible." — wanting to compare `african-american-stem` against `AA STEM medicine blocklist` to surface likely-clinical-physician false positives.
-- Orchids (2026-04-24): "A corpus-diff tool against another topic/source set (for example baseline topic vs current topic, or category/list harvest vs Wikidata sitelinks) would also make gap and noise review much faster." — wanting to compare ratchet-run corpus against the frozen baseline corpus to surface exactly the additions and removals.
-- Climate-change (2026-04-26): WikiProject ∩ category-tree intersection was an explicit unmet need flagged in feedback.
-- **Apollo 11 ChatGPT autonomous (2026-04-27):** highest-recommended phase-2 move per the AI was "WikiProject Spaceflight × Category:Apollo 11 intersection," and the AI flagged its absence as the #1 missed strategy: *"A true WikiProject intersection tool would help: WikiProject Moon or Spaceflight intersected with Category:Apollo 11 or Apollo11series would likely improve triangulation without broad overpull."*
+**Shape.** Adjacent to the deferred PetScan-style intersection (Tier 3) but narrower (just two-set cases). Could either share that tool surface or land as a sibling. Ratchet-plan currently nominates this as the strongest live signal to work on next.
 
-Second use case is especially useful as a ratchet diagnostic: the scoring script shows metrics, but a human-readable "here are the 456 titles this run added that baseline didn't have" is more auditable than a percentage.
-
-**Shape.** Read-only SQL over `articles` table scoped to two topic IDs. Partition into three buckets. Return counts + optional per-bucket sample. May want a `by_source=True` mode that surfaces which sources contribute to each bucket.
-
-For the Apollo-shape WikiProject-intersection case specifically, the AI's mental model is "category narrows, WikiProject corroborates" — the answer it wanted is `category:Apollo 11 ∩ wikiproject:Spaceflight` returning the high-confidence core. That's already expressible via `get_articles(sources_all=["category:Apollo 11", "wikiproject:Spaceflight"])` IF both have been pulled — but the AI didn't pull WikiProject Spaceflight because it was scared of overpull. A primitive that performs the intersection AT PULL TIME (i.e., "give me articles in category X that are also tagged by WikiProject Y, without first ingesting all of Y") would be the actual unlock — closer to PetScan than to a corpus diff. Worth distinguishing the two shapes when sequencing:
-- **`topic_diff` over already-ingested topics** — what AA-STEM and orchids wanted. Cheap.
-- **At-pull-time intersection** (cat × WikiProject, cat × cat) — what Apollo 11 wanted. Adjacent to the deferred PetScan-style item but narrower (just two-set cases).
-
-**Sequencing note.** Promote to active build slot. The corpus-diff variant is simpler than `cross_wiki_diff` (no langlinks / Wikidata roundtrips needed); ship that first. The at-pull-time intersection can either share the tool surface or land as a sibling — design call when implementation starts.
-
-### ☑ `audit_progress` strategy-detection: navbox harvests not credited as `parent-program-navbox` `[shipped 2026-04-27]`
-
-`_TOOL_TO_MOVE` now supports callable values (entry, topic_name → list[str]). `harvest_navbox` uses a callable that picks `founder-navbox-cascade` when the template name contains the topic stem (e.g., `Apollo11series` for an `apollo-11-thin` topic) and `parent-program-navbox` otherwise (e.g., `Apollo program`, `Lunar landers`). Verified with offline replay of the apollo-11 ChatGPT run: both moves now correctly credited from the same session's harvest_navbox calls. Shape-derivation table (the *applicable* moves logic in `_applicable_moves_for_profile`) was already correct; this fix is to the *attempted* moves derivation.
-
-### ☑ `submit_feedback` confabulation crosscheck against `usage.jsonl` `[shipped 2026-04-27]`
-
-V1 shipped: `_STRATEGY_FAMILY_EVIDENCE` + `_SHARP_EDGE_EVIDENCE` mapping tables + `_observed_signals_from_log` helper + `_compute_confabulation_flags`. `submit_feedback` now persists a `confabulation_flags` list on the feedback record (when non-empty) and surfaces a "⚠ Cross-checks against usage.jsonl flagged N self-report mismatches" block in the response. Crosscheck covers `strategies_used` (against tool-call presence), `sharp_edges_hit` (only the tool-shaped edges with explicit predicates; judgment-shaped edges left unflagged), and `prep_calls_made` (tool-call entries; mental ops like `rubric_reread` left unflagged). Verified by replaying the apollo-11 ChatGPT confabulation: produces exactly the 8 expected flags (`wikidata_property`, `article_links`, `wikiproject_recon` strategies; `filter_articles_refusal`, `wikidata_filtered_entity_call_blocked` edges; 3 prep calls), no false positives on corroborated claims, no false positives on judgment edges. `tool_friction` not yet crosschecked (Tier 2 follow-up — value strings are too unstructured for a clean predicate table).
-
-**Original spec preserved below for context.**
-
-**What.** Cross-validate the AI-self-reported fields on `submit_feedback` (`strategies_used`, `sharp_edges_hit`, `tool_friction`, plus `prep_calls_made` / `prep_calls_skipped`) against actual tool calls observed in `usage.jsonl` for this topic. When a self-reported strategy/sharp-edge has no corresponding tool-call evidence, surface a structured warning in the `submit_feedback` response AND tag the feedback record with `confabulation_flags: [...]` so downstream scoring can discount or filter.
-
-The existing `strategy_execution.moves_observed_from_log` field already does exactly this for `strategy_execution.moves_attempted` (added in Ship 1, 2026-04-26). This item generalizes the same pattern across the other AI-self-reported lists.
-
-**Why.** Apollo 11 ChatGPT autonomous run 2026-04-27 produced a stark example. Feedback claimed:
-- `strategies_used` included `wikidata_property` in BOTH phases.
-- `strategy_execution.moves_succeeded` included `wikidata-property-probe-additive`.
-- `sharp_edges_hit` included `wikidata_filtered_entity_call_blocked` and `filter_articles_refusal`.
-- An add_articles `note` claimed verbatim: "Committing enwiki sitelinks from phase-2 Wikidata P361=Q43653…"
-
-The usage log shows **zero `wikidata_*` calls** on this topic across both phases. The single `filter_articles` call succeeded (226→221, no refusal). The AI fabricated the wikidata sitelinks from internal knowledge and reported them as if a tool call had happened. Same run also fabricated a `Developer-directed` / `Developer-requested` framing in 19 of 32 call notes — but the operator confirmed afterward this was a fully-autonomous run with zero direction beyond the standard kickoff prompt. So the confabulation isn't isolated to one field; the AI is constructing a backstory of context (operator direction, tool calls, strategies) to make its output read as more deliberate / corroborated than it actually is.
-
-This directly threatens ratchet measurement integrity. If `strategies_used` and `sharp_edges_hit` are used as longitudinal signals (which they're meant to be), confabulated entries pollute the trend lines. The `band` derivation already pulls from `signals.shape_strategies_attempted` (real, log-derived) for thresholding, so the immediate scoreboard isn't poisoned — but the per-run reflection texts and any future correlations against agent / model / effort would be.
-
-**Shape.**
-- New helper `_observed_signals_from_log(topic_name)` that returns:
-  - `tool_call_counts`: `{tool_name: count}` for the topic's recent usage entries.
-  - `move_evidence`: same shape as `moves_observed_from_log`, derived once.
-  - `strategy_family_evidence`: maps `strategies_used` family tags (`navbox`, `wikidata_property`, `category_crawl`, ...) to the tool calls that would corroborate them. e.g., `wikidata_property` requires ≥1 `wikidata_*` call; `navbox` requires ≥1 `harvest_navbox` call.
-- In `submit_feedback`, after entry construction, run the crosscheck and produce a `confabulation_flags` list:
-  - If `strategies_used` contains a family with zero corroborating calls → `claimed_strategy_no_log_evidence:<family>`.
-  - If `sharp_edges_hit` claims a tool-specific edge (e.g., `wikidata_*_blocked`, `filter_articles_refusal`) but the relevant tool was never called or always succeeded → `claimed_sharp_edge_no_evidence:<edge>`.
-  - If `prep_calls_made` includes a name that doesn't appear in the log within the topic's session window → `claimed_prep_call_no_evidence:<name>`.
-- Persist `confabulation_flags` in the feedback log line so scoring scripts can filter; surface the same flags in the response so the AI sees them mid-conversation (mild calibration pressure).
-- DON'T refuse the feedback. Keep recording. The flag is signal, not policy.
-
-**Open questions.**
-- Tool-to-family mapping for `strategies_used` is fuzzy (`search` covers both `search_articles` and `preview_search` and `search_similar`). Build a deliberate mapping table; flag UNMAPPED family values too (so adding a new family value to a brief without server-side mapping is loud rather than silent).
-- Should `note=` substrings on individual calls (e.g., "Committing enwiki sitelinks from phase-2 Wikidata P361") get cross-checked too? Probably not in v1 — too much surface, false-positive prone. But the worst confabulations show up in notes, so a future pass might want a fuzzier scan.
-- Surface as an error or as a side-band warning in the response? Lean side-band — feedback is feedback even if some claims are unverifiable. The score scripts decide whether to discount.
-
-**Sequencing note.** High-leverage. Single-session evidence so far, but the failure shape is structural: any reflective field that the AI populates from its own narrative-of-the-session is vulnerable to this kind of drift, and we have evidence the drift is meaningful (entire strategies fabricated, operator-direction backstory invented). Worth Tier 1 active-build slot. Ship before extending submit_feedback's reflective surface further.
-
----
-
-### ☐ Benchmark system polish (6 sub-items) `[NEW — 2026-04-23]`
-
-Bundle of small changes around the benchmark / ratchet system now that `fetch_task_brief` + thin variants exist and today's fat-variant runs exposed baseline-quality issues. Sub-items are independently ship-able but share sequencing constraints (see below). Each ships as its own commit.
-
-**Sequencing.**
-- **1.a MUST ship first.** ☑ shipped 2026-04-24. Locks the thin-prompt shape via template rendering; adds structured submit_feedback fields.
-- **1.b (rebuild baselines)** ships after 1.a, as each thin run lands.
-- **1.c (api_calls=0 gate fix)** ☑ shipped 2026-04-24. Small and independent.
-- **1.d (abstract shape wisdom)** ☑ shipped 2026-04-24 (after 1.b). First measurable ratchet cycle starts here: next thin runs are the "after" against the thin-variant baselines we just landed.
-- **1.e (informed variant)** ☑ shipped 2026-04-24. Five `<slug>-informed` briefs seeded alongside the thin variants; same protocol, adds a "Baseline + gold snapshot" section with the current gold_in count + baseline precision/recall/corpus-size + a one-sentence read.
-- **1.f (doc sweep)** ☑ shipped 2026-04-24. Updated ratchet-plan, benchmarks/README, CLAUDE.md, dogfood/README, dogfood/tasks/README; added dogfood/kickoffs/README framing the fat-variant files as legacy.
-
-#### 1.a `[☑ shipped 2026-04-24]` Brief durability pass + template mechanism
-
-**What.** Lock the shape of the thin-variant prompt so it can stay frozen across many ratchet cycles. Changes:
-
-1. **Brief-as-template with server-side rendering.** Both the `run_topic_name` AND the `brief_markdown` body are templates. `fetch_task_brief` runs one substitution pass at call time:
-   - `{ts}` → current minute-UTC (`YYYYMMDDTHHMM`).
-   - (Future variables like `{task_id}` / `{benchmark_slug}` can share the same pass if we need them; ship `{ts}` only for now.)
-
-   DB stores the templates; tool returns the rendered strings. The brief body naturally uses the rendered name in step 1 (`start_topic(name="apollo-11-thin 20260424T0013", ...)`) because that literal line is produced by the same substitution pass. Brief source stays frozen; output is unique per fetch. Operators no longer know the exact run-topic name from the prompt source alone — they see it in the returned brief or via 1.a.2 scoring tooling.
-2. **Scoring script `--task <task_id>` alternative.** `scripts/benchmark_score.py` grows a mode where you pass a task_id and it picks the most recent run-topic matching the template's stem (plus optional `--nth N` for older runs). Preserves the explicit `<run-topic-name>` positional arg for back-compat.
-3. **Strip operational details out of briefs, into `server_instructions.md`.** Anything that might evolve (spot-check probe counts, rubric tier framework, etc.) moves out of the brief into the canonical instructions. Brief just says "do the SPOT CHECK and GAP CHECK per server instructions" and "draft a rubric following the SCOPE RUBRIC framework" — no numbers or tier names. Audit fragile references; replace specific tool names with "the server's pipeline" where appropriate. Keep stable-API references (`start_topic`, `set_topic_rubric`, `submit_feedback`, `export_csv`).
-4. **Enrich `submit_feedback` schema with structured optional fields** that we want to trend over time. Brief names them so AI populates; schema evolves server-side without brief edits:
-   - `strategies_used: list[str]` — tool-family tags (`category_crawl`, `list_harvest`, `navbox`, `wikidata_property`, `search`, `similarity`, `edge_browse`, `fetch_leads`). Lets us track strategy diversity per topic shape over time.
-   - `spot_check: dict` — `{"probes_count": N, "hits": M, "misses_redirect": X, "misses_hallucination": Y, "misses_real_gap": Z}`. Structured spot-check results.
-   - `sharp_edges_hit: list[str]` — enum of KNOWN SHARP EDGES tags the AI actually hit this session. Tells us which warnings are live-saving vs. theoretical.
-   - `tool_friction: list[str]` — tagged one-liners (`"fetch_descriptions_timeout"`, `"harvest_navbox_empty"`). Aggregates mid-run surprises; complements `note=` on individual calls.
-5. **Mode statement stays** ("deep consultative, completeness-seeking") — it's the mode we've chosen to measure under. Document the why in a tasks/README section so future-us doesn't wonder.
-
-**Why.** Sage's framing (2026-04-23): "we don't want to have to change these. if the only changes are server instructions and tools, while the prompts are static, that'll be the cleanest way to ratchet up." A frozen prompt makes longitudinal measurement possible; every movement in the metrics attributes to a specific code/instruction change, not to operator drift.
-
-**Open questions** (resolve before shipping):
-- `spot_check.misses_*` enum — fixed vocabulary (`redirect` / `hallucination` / `real_gap`) or freeform? Fixed trends better; freeform captures edge cases. Lean: fixed, with `other` fallback.
-- Brief body template variables beyond `{ts}` — probably not, keep minimal.
-- Is `strategies_used` AI-self-reported or computed from `usage.jsonl`? Self-report for intent ("I tried X first because..."); parallel usage-log telemetry can validate later.
-
-**Shape.** DB migration (one column), tool-render logic in `fetch_task_brief`, scoring script alternative, 5 brief rewrites, `submit_feedback` schema addition, `server_instructions.md` additions for stuff that left the briefs (spot-check probe count guidance). Ship as one cohesive commit or small bundle; partial ship leaves the system inconsistent.
-
-#### 1.b `[☑ shipped 2026-04-24]` Rebuild baselines from thin runs
-
-**What.** Today's `baseline.json` files encode pre-logging-backfill runs with data-quality issues (api_calls=0 on AA-STEM / HL-STEM, mixed quick-autonomous / consultative modes, pre-Chunk-1-6 tool behavior). Replace them with metrics from fresh thin-variant runs under the 1.a-locked prompt. Mothball today's fat-variant scoreboards as historical-only.
-
-**Shape.** Small `scripts/update_baseline_from_run.py` helper that reads the archived scoreboard + topic state, writes `benchmarks/<slug>/baseline.json`. Archive old baselines in-place (rename to `baseline-archive-2026-04-23.json` so git history preserves them). After all 5 thin runs under locked-prompt are in, this becomes the new measurement floor.
-
-**Why.** Today's gate compares against baselines we've already flagged as unreliable (see today's scoreboards). A thin-prompt baseline under the locked format = first real measurement under the "standard shape" that the ratchet is supposed to iterate from.
-
-**Sequencing.** AFTER 1.a — baselines should be under the durable prompt, not the current one.
-
-#### 1.c `[☑ shipped 2026-04-24]` `benchmark_score.py`: treat `api_calls=0` on baseline as unrecorded
-
-**What.** When `baseline.total_api_calls == 0`, skip that axis in the cost-improvement gate (currently any ratchet run with non-zero api_calls is counted as "worse" even if genuinely efficient). Add a note to the scoreboard output. Parallel to the wall_time caveat shipped in `b6d1635`.
-
-**Why.** AA-STEM and HL-STEM baselines predate the Stage 1.1 logging backfill — their api_calls=0 is missing-data, not actual-zero. Today's scoreboards show up as FAIL partly for this reason. Fix unblocks meaningful comparison during the 1.a→1.b transition. Will eventually be moot once 1.b lands (new baselines will have real api_calls), but ship it so interim comparisons aren't gated on phantom regressions.
-
-**Shape.** One `if baseline_api_calls == 0: skip` branch in `compute_scoreboard`, plus a "(baseline data unavailable)" label in the table.
-
-#### 1.d `[☑ shipped 2026-04-24]` Abstract shape-strategy wisdom into `server_instructions.md`
-
-**What.** Move cross-topic-shape wisdom currently baked into the 2026-04-23 fat-variant kickoff prompts into the canonical instructions, so every thin-variant run benefits automatically without operator pre-hinting. Concrete edits:
-
-- **Expand the existing `SHAPE → WIKIDATA PROPERTY` table** with `P138 (named after)` for named-event / award / institution shapes and `P171 (parent taxon)` for taxonomic shapes; add a "high-leverage first move" column. P171 evidence from the 2026-04-24 orchids thin-variant run: `wikidata_entities_by_property(property="P171", value="Q25308")` returned 66 enwiki sitelinks of which **27 were not already in the corpus** after a full category + list-page sweep — concrete lift data. **Frame these as ADDITIVE probes only** — they find candidates you'd otherwise miss; they do NOT have completeness properties. A taxon without P171 set still exists on Wikipedia; the probe won't find it. See `memory/feedback_wikidata_incomplete.md`.
-- **Add an "additive vs subtractive tools" principle bullet** in the instructions (placement: near NOISE TAXONOMY or KNOWN SHARP EDGES): every tool is either **additive** (surfaces candidates; use freely) or **subtractive** (drops candidates; use carefully). Subtractive tools hide silent drops — `filter_articles` bug (2026-04-24), `auto_score_by_description(disqualifying=...)` proper-noun misses, any Wikidata-gated filter. When using a subtractive tool, prefer `preview_*` / `dry_run=True` variants; when reaching for a Wikidata property as an exclusion rule, reach for it as an annotation instead (see the revised type-hinted harvest item above).
-- **Add a SOURCE-TRUST principle bullet**: when a source is topic-definitional (category named after the topic, list-page authored by topic specialists), trust source-provenance over shortdesc for inclusion. Evidence: orchids baseline's source-trust rule recovered ~5000 taxa whose Wikidata shortdesc said only "Species of plant".
-- **Reinforce INTERSECTIONAL TOPICS** with a pointer to `fetch_article_leads` for ambiguous biography shortdescs — that's where the tool earns its keep (AA-STEM / HL-STEM wrap-up feedback this cycle).
-- **Add "for parent-program shapes, `harvest_navbox` on the parent's template is your highest-leverage first move"** (Apollo 11's Kennedy-Space-Center-miss exemplar — recovered in the fat-variant run but only after a scope-wide dig).
-
-**Topic-specific rulings that should NOT generalize** and stay in each topic's rubric (not in instructions): Brazilian-vs-peninsular-Spanish exclusions, medicine-blocklist cross-referencing, orchids-cultural-tail narrowness. Those are scope calls, not tool-strategy advice.
-
-**Why.** Running thin-prompts without operator hand-holding only works if shape-general wisdom is in the substrate. The fat-variant prompts proved these strategies work; abstracting them lets thin runs benefit without operator pre-briefing.
-
-**Sequencing.** MUST ship AFTER 1.b. Otherwise the abstraction gets baked into the new baselines and we can't measure whether it helped. The first ratchet cycle post-baseline IS this abstraction — that's what we're measuring.
-
-#### 1.e `[☑ shipped 2026-04-24]` Informed-variant briefs for gold farming
-
-**What.** Add `<slug>-informed.md` briefs under `dogfood/tasks/` with frontmatter `variant: informed`. Body = thin brief's content + "the gold set contains at least N articles; the prior thin baseline hit P precision, R recall." Reseed DB.
-
-**Why.** Two-variant measurement split (per discussion 2026-04-23): **thin = product measurement** (what a realistic user gets); **informed = ceiling probe + gold-farming** (what the AI can do with target visibility). Gold farming is the specific value — an informed run is most likely to surface gold-growth candidates because the AI knows where the bar is. Orchids is the biggest current opportunity (2026-04-24 thin-variant run surfaced **456 reach candidates** at 100% precision; auditing + promoting would materially grow the orchids gold set).
-
-**Shape.** Pure content / seed work. No code. Five new markdown files + a reseed. Can ship any time after 1.a (to use the locked template format); doesn't affect the thin-ratchet loop.
-
-#### 1.f `[☑ shipped 2026-04-24]` Doc sweep for server-mediated dogfood task briefs
-
-**What.** The `fetch_task_brief` / `list_tasks` entry-point system shipped 2026-04-23, but the surrounding docs still describe the old copy-paste-kickoff-file path as canonical. Five docs need updates:
-
-1. **`docs/ratchet-plan.md`** — "Kick-off-and-leave-for-a-while mode" section. Point at `fetch_task_brief(task_id=...)` as the preferred kickoff.
-2. **`dogfood/README.md`** — add a "Running a benchmark task" section with the one-line kickoff prompt.
-3. **`benchmarks/README.md`** — "Fresh AI-driven builds" design note. Add the server-mediated path as a third option + mark as preferred for benchmarks.
-4. **`CLAUDE.md`** — "~45 tools" is stale (now ~47); brief mention of dogfood task system under "Architecture at a glance".
-5. **`dogfood/tasks/README.md`** — expand framing (why the system exists; when thin vs. informed vs. `task.md` freehand).
-
-**Deliberately NOT updating:** `mcp_server/server_instructions.md`. Tool docstrings say "don't call in normal sessions"; adding to instructions would invite misuse.
-
-**Open: what to do with the `dogfood/kickoffs/ratchet-2026-04-23-*.md` files?** Three options: (1) leave as historical, (2) add a README in `dogfood/kickoffs/` framing them as legacy-for-now, (3) migrate into DB as `<slug>-fat` tasks and delete the files. Leaning (2) for this sweep; (3) as follow-up if thin variants prove the right primary measurement and we want full DB consolidation.
-
-**Shape.** Pure doc edits. Zero code change.
+**Sequencing note.** Promote to active build slot. Adjacent to PetScan-style intersection (Tier 3) — design call when implementation starts is whether to ship a narrow two-set tool or fold into a more general intersection primitive.
 
 ---
 
@@ -587,6 +465,6 @@ One-liners that have been considered and deliberately deferred. Promote to a tie
 - **Hierarchical topic architecture (`start_topic(parent_topic=...)` + `reconcile_to_parent()`).** Considered and deferred 2026-04-22. The Q6 answer in the third feedback round suggested parallel topics should be first-class children of a parent topic, with reconciliation baked into the API. **Decided to take the light-touch path instead:** `cross_wiki_diff` (Tier 2) stays the only new primitive; parallel topics remain siblings; users / AI compose the workflow. Reasoning: the cost of adding parent/child concepts to the schema and API surface outweighs the benefit until we see the manual composition pattern prove too friction-heavy in real use. Revisit if (a) `cross_wiki_diff` ships and the AI still struggles to assemble the workflow, or (b) a user shape emerges where hierarchical topic relationships are central (e.g., long-running multi-wiki research projects).
 - **Soft-redirect category hint on empty `survey_categories` result.** If `survey_categories` reports an existing category page with 0 articles (container/redirect category), emit a "try sibling X instead" hint. K-drama dogfood surfaced this on `Category:Korean television dramas` → should have pointed at `Category:South Korean television series`. Needs sibling-finding logic — probably scan for same-prefix categories via `prop=categories` on the empty category page. `[NEW — 2026-04-23 dogfood run 2]`
 - **`auto_score_by_description` substring-matching edge on proper-noun words.** Pulitzer feedback: `disqualifying=["city", "county"]` would reject "The Kansas City Star" and "Orange County Register" because the geographic word is part of the institution's proper name. Word-boundary match alone doesn't fix it ("City" IS a word). Possible approaches: case-sensitive lowercase-only match, exclude matches where the word is part of a proper-noun phrase, or an "exclude-unless-preceded-by-lowercase" mode. No obvious right answer — more thought required. `[NEW — 2026-04-23 dogfood run 2]`
-- **Refuse first gather call without `set_topic_rubric`.** server_instructions says rubric is mandatory before any gather call, but the houseplants 2026-04-27 run skipped it entirely (gathered + cleaned + submitted feedback with `centrality_rubric=''`). Could harden by having the topic-touching tools refuse with an actionable error until `set_topic_rubric` has fired. Behavior change with real friction implications — easy to imagine cases where the operator legitimately wants to gather-then-decide-scope. Single-session evidence; revisit if a second run skips the rubric. `[NEW — 2026-04-28]`
+- **Refuse first gather call without `set_topic_rubric`.** server_instructions says rubric is mandatory before any gather call, but the houseplants 2026-04-27 run skipped it entirely (gathered + cleaned + submitted feedback with `centrality_rubric=''`). Could harden by having the topic-touching tools refuse with an actionable error until `set_topic_rubric` has fired. Behavior change with real friction implications — easy to imagine cases where the operator legitimately wants to gather-then-decide-scope. Single-session evidence; revisit if a second run skips the rubric. `[NEW — 2026-04-27]`
 
 ---

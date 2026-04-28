@@ -494,6 +494,4 @@ is meaningful (~2,500 API calls at this corpus size).
 - `dogfood/README.md` — operator recipe for running a dogfood task.
 - `docs/ratchet-plan.md` — gate semantics + cycle workflow (when a benchmark joins ratchet runs).
 - `mcp_server/server_instructions.md` — what the AI reads at session start. The exemplar-consultation prep checklist lives here.
-- `docs/backlog/exemplars-and-reach-pass.md` — the design doc behind
-  Ship 1 + Ship 2; explains why the menu-card schema looks the way
-  it does and what the own-slug exclusion gate is for.
+- `docs/shipped.md` — the Ship 1 (two-phase dogfood + structured reflection) and Ship 2 (exemplar tools + 5 worked-example exemplars) entries from 2026-04-25 capture the menu-card schema rationale and the own-slug exclusion gate.
