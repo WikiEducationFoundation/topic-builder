@@ -73,9 +73,16 @@ ssh -i deploy_key root@$HOST "/opt/topic-builder/venv/bin/python /opt/topic-buil
 # drill into one topic (by id or name substring)
 ssh -i deploy_key root@$HOST "/opt/topic-builder/venv/bin/python /opt/topic-builder/bin/status.py 6"
 ssh -i deploy_key root@$HOST "/opt/topic-builder/venv/bin/python /opt/topic-builder/bin/status.py hispanic --recent 30"
+
+# end-of-run review (rubric + corpus shape + sources + tool counts +
+# pretty-printed feedback with confabulation flags + sharp edges)
+ssh -i deploy_key root@$HOST "/opt/topic-builder/venv/bin/python /opt/topic-builder/bin/review.py houseplants"
+ssh -i deploy_key root@$HOST "/opt/topic-builder/venv/bin/python /opt/topic-builder/bin/review.py 67 --full-feedback"
 ```
 
-`status.py` lives in `scripts/session_status.py` in the repo; `deploy.sh` copies it to `/opt/topic-builder/bin/status.py`. For ad-hoc use before a deploy, scp it to `/tmp/status.py` on the host and run from there — the script has the invocation in its docstring.
+`status.py` lives in `scripts/session_status.py` in the repo; `review.py` lives in `scripts/review_run.py`. `deploy.sh` copies both to `/opt/topic-builder/bin/`. For ad-hoc use before a deploy, run via `bash scripts/smoke.sh scripts/<name>.py [args]` — the smoke wrapper SCPs to /tmp on the host and runs through the deployed venv (no manual scp/ssh dance).
+
+Use `status.py` for the broad "what's in the DB right now" overview; use `review.py` after a session wraps to surface the AI's self-assessment, confabulation flags, and workflow gaps in one screen.
 
 ### Sessions / per-client state
 

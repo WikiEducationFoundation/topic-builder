@@ -30,6 +30,7 @@ $SCP_CMD "$SCRIPT_DIR/landing.html" "$DEPLOY_USER@$DEPLOY_HOST:$REMOTE_DIR/stati
 echo "==> Syncing admin scripts to $REMOTE_DIR/bin/"
 $SSH_CMD "mkdir -p $REMOTE_DIR/bin"
 $SCP_CMD "$PROJECT_DIR/scripts/session_status.py" "$DEPLOY_USER@$DEPLOY_HOST:$REMOTE_DIR/bin/status.py"
+$SCP_CMD "$PROJECT_DIR/scripts/review_run.py" "$DEPLOY_USER@$DEPLOY_HOST:$REMOTE_DIR/bin/review.py"
 
 echo "==> Installing dependencies"
 $SSH_CMD "cd $REMOTE_DIR && python3 -m venv venv 2>/dev/null; $REMOTE_DIR/venv/bin/pip install -q -r $REMOTE_DIR/app/requirements.txt"
