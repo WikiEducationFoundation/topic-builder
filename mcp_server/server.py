@@ -300,10 +300,19 @@ def _get_session_user(ctx: Context) -> str | None:
         return None
     username, cached_at = cached
     if time.monotonic() - cached_at > _AUTH_CACHE_TTL_SECONDS:
-        # Cache is stale; force a re-validation on the next caller resolve.
+        # Cache hasn't been touched in TTL — drop it. (We only store the
+        # username, not the token, so we can't silently re-validate on
+        # expiry; falling through to anonymous forces a fresh authenticate.
+        # Long-pause re-binding belongs to the AI's saved-token-in-memory
+        # path, not here.)
         with _session_lock:
             _session_users.pop(_session_key(ctx), None)
         return None
+    # Refresh the timestamp on every successful read so an active session
+    # never expires mid-build. The TTL is now an idle-timeout, not a
+    # since-bind hard limit.
+    with _session_lock:
+        _session_users[_session_key(ctx)] = (username, time.monotonic())
     return username
 
 
