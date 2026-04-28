@@ -192,7 +192,7 @@ Bundle of small changes around the benchmark / ratchet system now that `fetch_ta
 
 **Shape.** DB migration (one column), tool-render logic in `fetch_task_brief`, scoring script alternative, 5 brief rewrites, `submit_feedback` schema addition, `server_instructions.md` additions for stuff that left the briefs (spot-check probe count guidance). Ship as one cohesive commit or small bundle; partial ship leaves the system inconsistent.
 
-#### 1.b `[☐]` Rebuild baselines from thin runs
+#### 1.b `[☑ shipped 2026-04-24]` Rebuild baselines from thin runs
 
 **What.** Today's `baseline.json` files encode pre-logging-backfill runs with data-quality issues (api_calls=0 on AA-STEM / HL-STEM, mixed quick-autonomous / consultative modes, pre-Chunk-1-6 tool behavior). Replace them with metrics from fresh thin-variant runs under the 1.a-locked prompt. Mothball today's fat-variant scoreboards as historical-only.
 

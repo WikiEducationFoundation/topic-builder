@@ -65,37 +65,20 @@ flags reach additions, audit them, and if they pass, append to
 
 ## Current state snapshot
 
-**Shipped (server-side, all live):**
-- Chunks 1–6 from the post-dogfood sprint (Oct 23): `intitle:OR`
-  silent-empty fix, `find_list_pages` widen + disambiguation filter,
-  `harvest_list_page` caption-as-title fix, `wikidata_entities_by_property`
-  sitelink_count + auto-trim, `wikidata_query` auto-truncate,
-  `fetch_descriptions` REST fallback on enwiki + deadline-aware,
-  `filter_articles` drops unresolved titles, triangulation warning at
-  export, `harvest_navbox` primitive, `find_wikiprojects` /
-  `check_wikiproject` harmonize, plus two hot-patches.
-- `set_topic_rubric` / `get_topic_rubric` tools + server-instructions
-  integration (the three-tier rubric is MANDATORY before gather).
-- Shape → Wikidata property table in `server_instructions.md`.
-- Main-article-as-list-page fallback pattern in instructions.
+`docs/shipped.md` is the authoritative log of what's landed; this doc
+points at what to do next, not what's been done. `docs/backlog/README.md`
+holds the open items with full evidence citations.
 
-**Scaffolded (benchmark infrastructure):**
-- Benchmark topics — `apollo-11`, `crispr-gene-editing`,
-  `african-american-stem`, `hispanic-latino-stem-us`, `orchids`
-  (scaffolded 2026-04-23), `climate-change` (scaffolded 2026-04-25,
-  the project's origin topic) — each with `scope.md`, `rubric.txt`,
-  `baseline.json`, audited `gold.csv`, `audit.py` (reproducible
-  classifier), `audit_notes.md` (human commentary), `README.md`.
-  The suite size isn't fixed; new shapes get added as they surface.
-- `scripts/bootstrap_benchmark.py` — baseline.json + gold.csv dumper
-  for new benchmarks.
-- `scripts/benchmark_score.py` — the scoreboard.
-- Gitignore keeps names-paired-with-judgments out of the repo; shape
-  of scaffolding + metrics + prose commentary IS tracked.
-
-**Documented:**
-- `docs/backlog/README.md` — open items with full evidence citations.
-- `docs/shipped.md` — log of what landed.
+Benchmark scaffolding lives under `benchmarks/<slug>/` — six benchmarks
+as of 2026-04-25 (`apollo-11`, `crispr-gene-editing`,
+`african-american-stem`, `hispanic-latino-stem-us`, `orchids`,
+`climate-change`), each with `scope.md`, `rubric.txt`, `baseline.json`,
+audited `gold.csv`, `audit.py` (reproducible classifier), and
+`audit_notes.md`. `scripts/bootstrap_benchmark.py` and
+`scripts/benchmark_score.py` are the harness. Suite size isn't fixed —
+see `docs/adding-exemplars.md` for the inclusion rubric. `.gitignore`
+keeps names-paired-with-judgments out of the repo; scaffolding shape +
+metrics + prose commentary IS tracked.
 
 ## Prioritized candidates
 
@@ -105,24 +88,31 @@ is just the "what I'd pick up next" opinion.
 
 ## What I'd work on next (opinion)
 
-**Ship the Tier 1 bundle together.** The three items
-(`fetch_article_leads`, `coverage_estimate` field on `submit_feedback`,
-known-bug workarounds in `server_instructions.md`) are small,
-independent, and each unambiguously good. The benchmarks re-run
-after that gives us:
-- Evidence on whether `fetch_article_leads` improves rubric adherence
-  (expect: better precision on weak-triangulation topics like
-  phenomenology-class and aa-stem marginal cases).
-- A durable `coverage_estimate` signal to track over time.
-- A small instruction-hygiene win.
+The strongest live signal is the **`topic_diff` at-pull-time
+intersection** sub-item (still ◐ on the backlog). The Apollo 11
+ChatGPT autonomous run on 2026-04-27 explicitly flagged its absence
+as the #1 missed strategy — wanting WikiProject × Category
+intersection without a full WikiProject ingest first ("would likely
+improve triangulation without broad overpull"). The corpus-diff
+sibling shipped same day, so half the surface is built; this adds
+the at-pull-time variant. Bounded scope, recent multi-source signal,
+ratchetable.
 
-That's a one- or two-sitting package. **Then run the 5-benchmark
-ratchet against it** — the first real ratchet cycle with a
-non-trivial expected gain.
+Adjacent small ship: **type-hinted annotation on `harvest_list_page`**
+(Tier 1, multi-session evidence — AA-STEM and orchids flagged the
+same shape from opposite directions, bio lists leaking non-bios vs
+taxonomy lists leaking bios). Annotation rather than hard-filter
+avoids the silent-drop trap.
 
-After that, **Tier 2 `cross_wiki_diff`** is the biggest
-single-change leverage — but it's also a real 2–3 day build. It most
-directly unlocks orchids / phenomenology / Latino-STEM reach.
+Bigger Tier 2 lever, when a multi-day slot opens:
+**`cross_wiki_diff`**. Most directly unlocks orchids / phenomenology /
+Latino-STEM reach. Real 2–3 day build.
+
+Single-session-evidence holds (waiting for a second signal to
+promote): **`preview_wikidata_property`** titles-only output, after
+climate-change 2026-04-26 hit the MCP token cap.
+
+Whatever ships, run the 5-benchmark ratchet after.
 
 ## Kick-off-and-leave-for-a-while mode
 
