@@ -100,6 +100,21 @@ Climate-change (2026-04-26) feedback also flagged WikiProject ∩ category-tree 
 
 **Sequencing note.** Promote to active build slot. Adjacent to PetScan-style intersection (Tier 3) — design call when implementation starts is whether to ship a narrow two-set tool or fold into a more general intersection primitive.
 
+### ☐ Make `authenticate()` save-to-memory prompt fire reliably `[NEW — 2026-04-28, dogfood]`
+
+**What.** Restructure the `authenticate()` response so the "offer to save token to long-term memory" instruction reaches the AI more reliably, and tighten the corresponding bullet in `server_instructions.md` AUTHENTICATION section to use directive phrasing. Both surfaces currently tell the AI to offer; neither reliably produces the offer in autonomous runs.
+
+**Why.** 2026-04-28 dogfood: the AI authenticated successfully on first `start_topic`, the server's `authenticate()` response included the existing `cross_session_persistence_tip` field with explicit save-to-memory framing, and the `server_instructions.md` AUTHENTICATION section's rule 2 says *"offer to save the token to memory for future sessions."* The AI never asked the user. Returning-user recovery is the whole point of save-to-memory; if the prompt doesn't fire, every fresh session continues to re-paste tokens — exactly what the mechanism was designed to prevent.
+
+The failure pattern matches a known shape: soft permissive directives ("you can offer to save", "the response includes a phrasing tip") underperform imperatives in autonomous AI runs. Same insight that drove the PREPARATORY PHASE numbered-checklist restructure — explicit numbered steps resist short-circuit; principle-style guidance gets skipped.
+
+**Shape.**
+- Restructure the `authenticate()` response: rename `cross_session_persistence_tip` → `next_action_for_ai` (or similar imperative-flavored key), and rephrase contents from permissive to directive — *"Ask the user: 'Should I save this token to long-term memory so future sessions can sign in automatically?' Save only on explicit yes."* Keep the existing security framing (token = password, save to user's own memory only, never a shared workspace).
+- Tighten `server_instructions.md` AUTHENTICATION rule 2 ("After a successful first `authenticate()` call, offer to save the token...") to spell out the expected verbatim prompt — similar to how PREPARATORY PHASE spells out each numbered step.
+- Optional: a small smoke that calls `authenticate()` and confirms the response payload's directive field reads as imperative (no further behavior test possible without an AI in the loop).
+
+**Sequencing.** Single-session signal but the failure shape is structural — every fresh dogfood / first-time user session runs into this. Small change (~10-line code edit + an instructions-section rewrite). Worth Tier 1 alongside other single-session-evidence small fixes (`exclude_sources` investigation, confabulation crosscheck widening).
+
 ---
 
 ## Tier 2 — medium effort, multi-session-validated

@@ -132,6 +132,8 @@ The project has no automated test suite. Verification is via:
 
 - **Syntax:** `python3 -m py_compile mcp_server/server.py` (the project's `.claude/settings.json` denies `python3 -c`; use `py_compile` or a throwaway script).
 - **Tool schema check on the server:** write a smoke as `/tmp/check_<whatever>.py` that imports from `server` and prints what you want to inspect, then run it on the host via `bash scripts/smoke.sh /tmp/check_<whatever>.py`. The wrapper reads `.env` internally, scp's the script to `/tmp/` on the host, and runs it through `/opt/topic-builder/venv/bin/python`. Don't hand-roll `source .env && scp ... && ssh ...` — it triggers permission prompts the wrapper was built to avoid. See `docs/operations.md` for additional admin one-liners.
+- **Reviewing a finished run:** `bash scripts/smoke.sh scripts/review_run.py -- <topic-id-or-substring>` — prints corpus state, tool-call tail, all `submit_feedback` entries (with confabulation flags + moves observed from log), and export status in one screen. Use after a session wraps before reaching for ad-hoc scripts. Sibling `scripts/session_status.py` is the broad cross-topic overview; `scripts/review_run.py` is the focused single-topic deep-dive. Both also installed at `/opt/topic-builder/bin/{status.py, review.py}` after deploy.
+- **Scoring a benchmark run:** `python3 scripts/benchmark_score.py --task <slug>-thin` — runs *locally* (SSHes to the host itself); don't wrap it in `smoke.sh` or it'll fail importing local-only `redirect_utils`.
 - **Live dogfood.** Build a small topic end-to-end in Claude and ChatGPT after a deploy. The Seattle / educational psychology topics are useful known shapes.
 
 ## Benchmark gold maintenance
