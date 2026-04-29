@@ -89,6 +89,7 @@ from wikipedia_api import (
     WIKIDATA_API as _WIKIDATA_API,
 )
 import db
+import csv_export
 
 # ── Usage logging ──────────────────────────────────────────────────────────
 
@@ -264,6 +265,12 @@ mcp.settings.port = int(os.environ.get("PORT", 8000))
 # on at runtime is just an env-var change + restart.
 import oauth as _oauth  # noqa: E402
 _oauth.register(mcp)
+
+# Signed-in HTML pages: /topics (owned-topics list with on-demand CSV
+# download links). Lives in topics_ui.py; auth via the tb_session cookie
+# set by /oauth/callback.
+import topics_ui as _topics_ui  # noqa: E402
+_topics_ui.register(mcp)
 
 
 def _require_topic(ctx: Context, topic_name: str | None = None, *,
@@ -7587,90 +7594,22 @@ def export_csv(min_score: int = 0, scored_only: bool = False,
         return err
 
     _, topic_name, _ = _get_topic(ctx)
-    all_articles = db.get_all_articles_dict(topic_id)
 
-    titles = []
-    for title, article in sorted(all_articles.items()):
-        score = article.get('score')
-
-        if scored_only and score is None:
-            continue
-        if score is not None and score < min_score:
-            continue
-        # If min_score > 0 and article is unscored, skip it
-        if min_score > 0 and score is None:
-            continue
-
-        titles.append(title)
-
-    # Use stored descriptions from the DB where available; fetch any that
-    # are still NULL (not-yet-fetched) and persist them for next time.
-    # Empty-string description = "no short-desc exists for this page" — use as-is.
-    descriptions = {}
-    missing = []
-    for title in titles:
-        stored = all_articles.get(title, {}).get('description')
-        if stored is None:
-            missing.append(title)
-        else:
-            descriptions[title] = stored
-    if missing:
-        fetched = fetch_descriptions_with_fallback(missing, wiki=wiki)
-        db.set_descriptions(topic_id, fetched)
-        descriptions.update(fetched)
-
-    # Save to a downloadable file. utf-8-sig prepends a BOM so Excel detects
-    # UTF-8 (otherwise accented characters get mojibaked to Windows-1252).
-    # csv.writer with newline='' emits RFC-4180 CRLF line endings and handles
-    # quote escaping for titles containing commas, quotes, or newlines.
-    slug = topic_name.lower().replace(' ', '_').replace("'", '').replace('"', '')
-    export_dir = os.path.join(os.environ.get("EXPORT_DIR", "/opt/topic-builder/exports"))
-    os.makedirs(export_dir, exist_ok=True)
-    suffix = '-enriched' if enriched else ''
-    filename = f"topic-articles-{slug}{suffix}.csv"
-    filepath = os.path.join(export_dir, filename)
-
-    with open(filepath, 'w', encoding='utf-8-sig', newline='') as f:
-        writer = csv.writer(f)
-        if enriched:
-            writer.writerow(['title', 'wikidata_qid', 'description', 'score',
-                             'source_labels', 'first_added_at'])
-            for title in titles:
-                article = all_articles.get(title, {})
-                sources = article.get('sources') or []
-                writer.writerow([
-                    title,
-                    article.get('wikidata_qid') or '',
-                    descriptions.get(title, ''),
-                    article.get('score') if article.get('score') is not None else '',
-                    '|'.join(sources),
-                    article.get('created_at') or '',
-                ])
-        else:
-            for title in titles:
-                writer.writerow([title, descriptions.get(title, '')])
-
+    # IO logic lives in csv_export so the on-demand HTTP download route
+    # at /topics/<slug>/download.csv shares the same code path.
+    result = csv_export.write_topic_csv(
+        topic_id, topic_name, wiki,
+        enriched=enriched, min_score=min_score, scored_only=scored_only)
+    titles = result['titles']
+    all_articles = result['all_articles']
+    filename = result['filename']
     download_url = f"https://topic-builder.wikiedu.org/exports/{filename}"
-
-    # Sidecar rubric file on enriched exports — the rubric is the
-    # shape-agnostic scope statement the AI (and later a reader) can use
-    # to interpret the scored corpus. Plain .txt sidecar keeps the CSV
-    # itself Impact-Visualizer-compatible.
+    rubric_filename = result['rubric_filename']
+    rubric_download_url = (
+        f"https://topic-builder.wikiedu.org/exports/{rubric_filename}"
+        if rubric_filename else None
+    )
     rubric = db.get_topic_rubric(topic_id)
-    rubric_filename = None
-    rubric_download_url = None
-    if enriched and rubric:
-        rubric_filename = f"topic-articles-{slug}-rubric.txt"
-        rubric_path = os.path.join(export_dir, rubric_filename)
-        with open(rubric_path, 'w', encoding='utf-8') as rf:
-            rf.write(f"# Centrality rubric for topic: {topic_name}\n")
-            rf.write(f"# wiki: {wiki}\n")
-            rf.write(f"# exported: {datetime.datetime.now(datetime.timezone.utc).isoformat()}\n")
-            rf.write("\n")
-            rf.write(rubric)
-            if not rubric.endswith('\n'):
-                rf.write('\n')
-        rubric_download_url = f"https://topic-builder.wikiedu.org/exports/{rubric_filename}"
 
     # Triangulation stats — articles present in multiple sources are more
     # trustworthy than single-sourced ones. The 2026-04-23 dogfood arc

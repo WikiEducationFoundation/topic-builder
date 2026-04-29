@@ -43,6 +43,14 @@ PROFILE_URL = "https://meta.wikimedia.org/w/rest.php/oauth2/resource/profile"
 # OAuth-redirect-style flow.
 STATE_COOKIE = "tb_oauth_state"
 
+# Cookie name for the user's bearer-token session — same value as the
+# `tb_<hex>` token shown on /oauth/callback. Set when the token is minted
+# so the user can browse /topics without re-pasting; cleared on
+# /oauth/revoke when the revoked token matches the cookie. HttpOnly +
+# Secure + SameSite=Lax. Read by topics_ui.
+SESSION_COOKIE = "tb_session"
+SESSION_MAX_AGE = 30 * 24 * 3600  # matches the token's initial 30-day TTL
+
 
 def _client_id() -> str | None:
     return os.environ.get("OAUTH_CLIENT_ID") or None
@@ -158,7 +166,16 @@ async def callback(request: Request) -> Response:
 
     # Mint a Topic Builder bearer token for this user.
     raw, expires_at = db.create_auth_token(username, ttl_days=30)
-    return _token_display_page(username, raw, expires_at)
+    resp = _token_display_page(username, raw, expires_at)
+    # Also bind the token to the browser as an HttpOnly session cookie so
+    # the same user can land on /topics without pasting the token. The
+    # token has a sliding 30-day TTL (lookup_auth_token bumps it on each
+    # use); if the cookie outlives the token, /topics 302s back to login.
+    resp.set_cookie(
+        SESSION_COOKIE, raw,
+        max_age=SESSION_MAX_AGE,
+        httponly=True, samesite="lax", secure=True, path="/")
+    return resp
 
 
 async def revoke(request: Request) -> Response:
@@ -180,7 +197,13 @@ async def revoke(request: Request) -> Response:
 </body></html>
 """ % ("The token has been revoked. Any session using it will need a fresh sign-in."
        if ok else "Token not found or already revoked.")
-    return HTMLResponse(body)
+    resp = HTMLResponse(body)
+    # If the just-revoked token is the one bound to this browser, clear
+    # the session cookie so /topics drops the user back to /oauth/login
+    # immediately (rather than on next page load when the lookup fails).
+    if ok and request.cookies.get(SESSION_COOKIE) == raw:
+        resp.delete_cookie(SESSION_COOKIE, path="/")
+    return resp
 
 
 # ── Helpers ───────────────────────────────────────────────────────────
