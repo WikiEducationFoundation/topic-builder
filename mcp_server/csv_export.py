@@ -62,17 +62,18 @@ def write_topic_csv(topic_id: int, topic_name: str, wiki: str, *,
         titles.append(title)
 
     descriptions: dict[str, str] = {}
-    missing: list[str] = []
-    for title in titles:
-        stored = all_articles.get(title, {}).get("description")
-        if stored is None:
-            missing.append(title)
-        else:
-            descriptions[title] = stored
-    if missing:
-        fetched = fetch_descriptions_with_fallback(missing, wiki=wiki)
-        db.set_descriptions(topic_id, fetched)
-        descriptions.update(fetched)
+    if enriched:
+        missing: list[str] = []
+        for title in titles:
+            stored = all_articles.get(title, {}).get("description")
+            if stored is None:
+                missing.append(title)
+            else:
+                descriptions[title] = stored
+        if missing:
+            fetched = fetch_descriptions_with_fallback(missing, wiki=wiki)
+            db.set_descriptions(topic_id, fetched)
+            descriptions.update(fetched)
 
     out_dir = export_dir()
     os.makedirs(out_dir, exist_ok=True)
@@ -80,11 +81,15 @@ def write_topic_csv(topic_id: int, topic_name: str, wiki: str, *,
     filename = csv_filename(slug, enriched=enriched)
     filepath = os.path.join(out_dir, filename)
 
-    # utf-8-sig prepends a BOM so Excel detects UTF-8.
-    # csv.writer with newline='' emits RFC-4180 CRLF and quotes correctly.
-    with open(filepath, "w", encoding="utf-8-sig", newline="") as f:
-        writer = csv.writer(f)
-        if enriched:
+    # Enriched is for human/Excel consumption: utf-8-sig BOM helps Excel
+    # detect UTF-8, header row labels columns. Default is for Impact
+    # Visualizer import: single-column titles, no BOM (IV's CSV
+    # normalizer doesn't strip BOM and would mangle the first row), no
+    # header. csv.writer with newline='' emits RFC-4180 CRLF and quotes
+    # only when needed.
+    if enriched:
+        with open(filepath, "w", encoding="utf-8-sig", newline="") as f:
+            writer = csv.writer(f)
             writer.writerow([
                 "title", "wikidata_qid", "description", "score",
                 "source_labels", "first_added_at",
@@ -100,9 +105,11 @@ def write_topic_csv(topic_id: int, topic_name: str, wiki: str, *,
                     "|".join(sources),
                     article.get("created_at") or "",
                 ])
-        else:
+    else:
+        with open(filepath, "w", encoding="utf-8", newline="") as f:
+            writer = csv.writer(f)
             for title in titles:
-                writer.writerow([title, descriptions.get(title, "")])
+                writer.writerow([title])
 
     rubric_fname = None
     rubric_path = None

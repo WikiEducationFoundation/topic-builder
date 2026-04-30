@@ -7578,9 +7578,10 @@ def export_csv(min_score: int = 0, scored_only: bool = False,
                    Set to 7 to export only scored-and-relevant articles.
         scored_only: If True, only export articles that have been scored. Default False.
         enriched: If False (default), emit the Impact-Visualizer-compatible
-                   two-column CSV: `title, description` with no header row.
-                   If True, emit a five-column CSV with a header row:
-                   `title, description, score, source_labels, first_added_at`.
+                   single-column CSV: just `title`, one per row, no header,
+                   plain UTF-8 (no BOM). If True, emit a six-column CSV with
+                   a header row: `title, wikidata_qid, description, score,
+                   source_labels, first_added_at`, UTF-8 with BOM for Excel.
                    Use enriched=True for manual review / downstream analysis;
                    keep the default for IV import. `source_labels` is pipe-
                    separated to avoid colliding with commas in label names.
@@ -7667,13 +7668,12 @@ def export_csv(min_score: int = 0, scored_only: bool = False,
         f'source_labels, first_added_at) with a header row. wikidata_qid is '
         f'blank for unresolved articles — call resolve_qids to populate it. '
         f'source_labels is pipe-separated. '
-        f'For Impact Visualizer import use enriched=False (the two-column '
+        f'For Impact Visualizer import use enriched=False (the single-column '
         f'default).' if enriched else
-        f'The CSV has two columns per row: article title and a Wikidata short '
-        f'description (empty if none). No header row. This is the '
-        f'Impact-Visualizer-compatible format — pass the same wiki on import. '
-        f'For richer output (score, source labels, timestamp), call export_csv '
-        f'with enriched=True.'
+        f'The CSV has one article title per row. No header row, no other '
+        f'columns. This is the Impact-Visualizer-compatible format — pass the '
+        f'same wiki on import. For richer output (description, score, source '
+        f'labels, timestamp), call export_csv with enriched=True.'
     )
     response: dict = {
         'wiki': wiki,

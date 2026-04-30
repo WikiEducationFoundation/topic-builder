@@ -604,7 +604,7 @@
                 <div class="tool"><span class="tool-name">reject_articles</span><span class="tool-desc">Add titles to a sticky rejection list so future gathers won't re-introduce them.</span></div>
                 <div class="tool"><span class="tool-name">list_rejections</span><span class="tool-desc">List the topic's sticky rejections (title + reason + timestamp).</span></div>
                 <div class="tool"><span class="tool-name">unreject_articles</span><span class="tool-desc">Remove titles from the sticky rejection list.</span></div>
-                <div class="tool"><span class="tool-name">export_csv</span><span class="tool-desc">Export as CSV. Default = 2-column Impact-Visualizer-compatible; enriched=True = 6 columns incl. QID, score, sources.</span></div>
+                <div class="tool"><span class="tool-name">export_csv</span><span class="tool-desc">Export as CSV. Default = single-column titles, Impact-Visualizer-compatible; enriched=True = 6 columns incl. QID, description, score, sources.</span></div>
                 <div class="tool"><span class="tool-name">submit_feedback</span><span class="tool-desc">Submit a retrospective at the end of a session.</span></div>
                 <div class="tool"><span class="tool-name">fetch_task_brief</span><span class="tool-desc">Entry point for benchmark / dogfood runs: returns the full prompt + target topic name for a given task_id. Not used in normal topic-building sessions.</span></div>
                 <div class="tool"><span class="tool-name">list_tasks</span><span class="tool-desc">List available benchmark / dogfood task briefs (for research runs).</span></div>
@@ -620,8 +620,8 @@
 
         <section>
             <h2>Output format</h2>
-            <p>By default, <code>export_csv</code> emits a plain two-column CSV &mdash; article title and its Wikidata short description &mdash; ready to feed into the <a href="https://github.com/WikiEducationFoundation/impact-visualizer">Wiki Education Impact Visualizer</a>, which reads the title column.</p>
-            <p>Pass <code>enriched=True</code> for a richer six-column variant with a header row: <code>title</code>, <code>wikidata_qid</code>, <code>description</code>, <code>score</code>, <code>source_labels</code> (pipe-separated), <code>first_added_at</code>. Useful for manual review, downstream tooling, or future Impact Visualizer filtering on topic centrality.</p>
+            <p>By default, <code>export_csv</code> emits a single-column CSV &mdash; one article title per row, no header, plain UTF-8 &mdash; ready to feed into the <a href="https://github.com/WikiEducationFoundation/impact-visualizer">Wiki Education Impact Visualizer</a>, which reads exactly that shape.</p>
+            <p>Pass <code>enriched=True</code> for a richer six-column variant with a header row: <code>title</code>, <code>wikidata_qid</code>, <code>description</code>, <code>score</code>, <code>source_labels</code> (pipe-separated), <code>first_added_at</code>. UTF-8 with BOM so Excel detects encoding. Useful for manual review, downstream tooling, or future Impact Visualizer filtering on topic centrality.</p>
         </section>
 
     </main>
