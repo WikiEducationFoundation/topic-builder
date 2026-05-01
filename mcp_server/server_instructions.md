@@ -922,43 +922,63 @@ on the CSV path.
 
 ### What TB autofills vs. what to ask the user
 
-- **Autofilled** (you don't ask): `iv_name` (title-cased canonical
-  topic name), `iv_slug` (slugified), `wiki` (topic state),
-  `timepoint_day_interval` (default 30, IV's snapshot cadence).
+The defaults are tuned so that for most sessions the only field the
+AI needs to actively produce is `iv_description`. Override the others
+only when the topic clearly demands it.
+
+- **Autofilled silently** (don't ask, don't surface unless overriding):
+  - `iv_name` → the canonical topic name pass-through (no
+    transformation). Override only if the canonical name needs
+    capitalization polish for IV display.
+  - `iv_slug` → slugified `iv_name`. Override on collision.
+  - `wiki` → topic state.
+  - `editor_label` → `'editors'` — the right answer for almost all
+    sessions. Override only if the topic clearly suggests a different
+    cohort (e.g., a course tracking `'students'`).
+  - `start_date` / `end_date` → `2001-01-15 → today` (full Wikipedia
+    history). Override to a course term or campaign window when the
+    user mentions one.
+  - `timepoint_day_interval` → scales with the date span (≤1y → 30,
+    1-5y → 90, >5y → 365). Override for finer/coarser cadence.
 - **AI-drafted, user confirms**: `iv_description` — a 1–3 paragraph
   summary suitable for IV's topic page. Draft it from the centrality
-  rubric and the scope-discussion conversation, show it inline, accept
-  edits.
-- **Always ask the user**: `editor_label` (the lowercase word for the
-  editor cohort whose contributions IV visualizes — 'students',
-  'editors', 'participants', 'fellows'), `start_date`, `end_date`
-  (ISO 8601 YYYY-MM-DD; the analysis window — usually a course term
-  or campaign).
+  rubric and the scope-discussion conversation, show it inline,
+  accept edits.
 
 ### Conversation chunking
 
-Two turns covers it:
+Most sessions are one turn: draft `iv_description` from the rubric,
+show it inline, call `prepare_iv_handoff(iv_description=...)` with no
+other args, then surface the preview to the user.
 
-1. "Who's editing, and over what window?" → editor_label + dates.
-2. Draft description from the rubric + scope discussion; show it
-   inline; auto-derive slug; offer to override slug only on collision.
+If the topic clearly suggests something other than the defaults
+(e.g., the user said "this is for the spring 2026 cohort"), set
+those overrides explicitly and mention them when surfacing the
+preview. Don't ask the user to enumerate fields they haven't already
+mentioned.
 
 ### Two-step flow
 
 Always call `prepare_iv_handoff(...)` first. It returns a preview
 (config block, article count, first 10 articles with centrality, a
-centrality histogram) without writing the DB. Paste the preview into
-chat — e.g.:
+centrality histogram) without writing the DB. Paste the relevant
+parts into chat — and **explicitly surface `name` and `slug` to the
+user**, since those will appear on Impact Visualizer as shown:
 
-> Here's what will be published — 187 articles (4 scored 10, 11
-> scored 9, 92 unrated), dates 2026-01-15 to 2026-05-30,
-> editor_label='students', slug='educational-psychology'. OK to
-> publish?
+> Here's what will be published — **name: "Educational Psychology",
+> slug: "educational-psychology"** (let me know if either looks
+> off), 187 articles (4 scored 10, 11 scored 9, 92 unrated), full
+> Wikipedia history (2001-01-15 to today), monthly snapshots,
+> editor_label='editors'. OK to publish?
 
 Only after the user confirms, call `publish_topic(...)` with the same
 args. The package is FROZEN at publish time — edits to the topic
 afterward do NOT propagate to IV. To refresh IV, re-call
 `publish_topic` to mint a fresh handle.
+
+The `editability_note` field on the prepare preview is your reminder
+to surface name + slug specifically — they're the most visible
+attributes downstream and the most likely to want a tweak.
 
 ### Handing the URL back to the user
 

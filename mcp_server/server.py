@@ -7745,21 +7745,58 @@ def _summarize_centrality(articles: list[dict]) -> dict[str, int]:
     return out
 
 
+# Default IV analysis-window start. The first edit on the English
+# Wikipedia is from 2001-01-15; for "show me how this topic evolved"
+# use cases, that's the natural default lower bound. Operators who want
+# narrower windows (course term, campaign) override.
+_IV_DEFAULT_START_DATE = "2001-01-15"
+
+
+def _default_timepoint_interval(start_date: str, end_date: str) -> int:
+    """Pick a sensible snapshot cadence (in days) given the analysis
+    window. Targets ~12-30 timepoints across the span:
+      ≤ 1 year   → 30  (monthly)
+      1-5 years  → 90  (quarterly)
+      > 5 years  → 365 (yearly)
+    Falls back to 30 on unparseable dates — validation will catch the
+    bad input separately."""
+    try:
+        start = datetime.date.fromisoformat(start_date)
+        end = datetime.date.fromisoformat(end_date)
+    except (ValueError, TypeError):
+        return 30
+    days = (end - start).days
+    if days <= 365:
+        return 30
+    if days <= 365 * 5:
+        return 90
+    return 365
+
+
 def _build_iv_config_and_articles(
     topic_id: int, canonical_name: str, wiki: str, *,
     iv_name: str | None,
     iv_slug: str | None,
     iv_description: str,
     editor_label: str,
-    start_date: str,
-    end_date: str,
-    timepoint_day_interval: int,
+    start_date: str | None,
+    end_date: str | None,
+    timepoint_day_interval: int | None,
     min_centrality: int,
 ) -> tuple[dict, list[dict], list[str]]:
     """Apply defaults + validate + compute the would-be config and
     article list. Pure function — no DB write. Shared by
     prepare_iv_handoff and publish_topic so previews and commits agree
     on shape.
+
+    Defaults (applied here, not at the @mcp.tool() signature, so today's
+    date is computed fresh per call):
+      iv_name → canonical_name pass-through (no title-casing)
+      iv_slug → slugify(iv_name)
+      editor_label → 'editors'
+      start_date → 2001-01-15 (Wikipedia's epoch — full-history default)
+      end_date → today (UTC)
+      timepoint_day_interval → 30 / 90 / 365 by window length
 
     Returns (config, articles, errors). errors is a list of
     human-readable strings; success when empty.
@@ -7768,9 +7805,12 @@ def _build_iv_config_and_articles(
 
     name = (iv_name or "").strip()
     if not name:
-        # Title-case the canonical topic name as a default. Keep simple —
-        # users override iv_name in the call when capitalization matters.
-        name = canonical_name.strip().title()
+        # Pass through the canonical name as-is — the topic owner
+        # passed this when calling start_topic, so it's authoritative.
+        # Don't title-case: it mangles slug-form names ("climate-change"
+        # → "Climate-Change"). The caller overrides iv_name when the
+        # canonical name needs polishing for IV display.
+        name = canonical_name.strip()
 
     slug = (iv_slug or "").strip()
     if not slug:
@@ -7782,12 +7822,14 @@ def _build_iv_config_and_articles(
     if not description:
         errors.append("iv_description is required (1-3 paragraphs).")
 
-    editor = (editor_label or "").strip()
-    if not editor:
-        errors.append("editor_label is required ('students', 'editors', etc.)")
+    editor = (editor_label or "").strip() or "editors"
 
-    # Dates — accept ISO 8601 YYYY-MM-DD. Reject obvious malformed input
-    # but don't try to be smart about timezones; IV is the authority.
+    # Dates: default start to Wikipedia's epoch, end to today. Operators
+    # override either to narrow to a course term / campaign window.
+    sd = (start_date or "").strip() or _IV_DEFAULT_START_DATE
+    ed = (end_date or "").strip() or (
+        datetime.datetime.now(datetime.timezone.utc).date().isoformat())
+
     def _valid_iso_date(s: str) -> bool:
         try:
             datetime.date.fromisoformat(s)
@@ -7795,17 +7837,23 @@ def _build_iv_config_and_articles(
         except (ValueError, TypeError):
             return False
 
-    if not _valid_iso_date(start_date):
-        errors.append(f"start_date must be ISO 8601 YYYY-MM-DD (got {start_date!r})")
-    if not _valid_iso_date(end_date):
-        errors.append(f"end_date must be ISO 8601 YYYY-MM-DD (got {end_date!r})")
-    if (_valid_iso_date(start_date) and _valid_iso_date(end_date)
-            and start_date >= end_date):
-        errors.append(f"start_date ({start_date}) must be before end_date ({end_date})")
+    if not _valid_iso_date(sd):
+        errors.append(f"start_date must be ISO 8601 YYYY-MM-DD (got {sd!r})")
+    if not _valid_iso_date(ed):
+        errors.append(f"end_date must be ISO 8601 YYYY-MM-DD (got {ed!r})")
+    if (_valid_iso_date(sd) and _valid_iso_date(ed) and sd >= ed):
+        errors.append(f"start_date ({sd}) must be before end_date ({ed})")
 
-    if not (1 <= timepoint_day_interval <= 365):
+    # Timepoint interval: scale with window length when caller didn't
+    # specify. 30/90/365 day cadences cover the common shapes (course
+    # term, multi-year program, full-history).
+    if timepoint_day_interval is None:
+        tdi = _default_timepoint_interval(sd, ed)
+    else:
+        tdi = timepoint_day_interval
+    if not (1 <= tdi <= 365):
         errors.append(
-            f"timepoint_day_interval must be in 1..365 (got {timepoint_day_interval})")
+            f"timepoint_day_interval must be in 1..365 (got {tdi})")
 
     if not (0 <= min_centrality <= 10):
         errors.append(
@@ -7816,17 +7864,19 @@ def _build_iv_config_and_articles(
         "slug": slug,
         "description": description,
         "editor_label": editor,
-        "start_date": start_date,
-        "end_date": end_date,
-        "timepoint_day_interval": timepoint_day_interval,
+        "start_date": sd,
+        "end_date": ed,
+        "timepoint_day_interval": tdi,
         "wiki": wiki,
         "wiki_id": _IV_WIKI_ID.get(wiki),
     }
 
-    # Articles: read the full corpus; filter by centrality. min_centrality=0
-    # keeps everything (including unscored / NULL). min_centrality>=1 drops
-    # NULL — unscored articles aren't promoted into the high-confidence
-    # slice by default.
+    # Articles: read the full corpus. Default behavior (min_centrality=0)
+    # ships everything in the working list — every article that's part of
+    # the topic at any centrality (or unassessed / NULL) goes to IV.
+    # Centrality is a slicing override, not a default filter:
+    # min_centrality>=1 publishes the high-confidence slice only and
+    # drops NULL.
     all_articles = db.get_all_articles_dict(topic_id)
     articles: list[dict] = []
     for title in sorted(all_articles.keys()):
@@ -7841,12 +7891,12 @@ def _build_iv_config_and_articles(
 
 @mcp.tool()
 def prepare_iv_handoff(iv_description: str,
-                       editor_label: str,
-                       start_date: str,
-                       end_date: str,
+                       editor_label: str = "editors",
+                       start_date: str | None = None,
+                       end_date: str | None = None,
                        iv_name: str | None = None,
                        iv_slug: str | None = None,
-                       timepoint_day_interval: int = 30,
+                       timepoint_day_interval: int | None = None,
                        min_centrality: int = 0,
                        note: str = "",
                        topic: str | None = None,
@@ -7860,23 +7910,36 @@ def prepare_iv_handoff(iv_description: str,
     publish_topic with the same args to mint the handle and the import
     URL. Read-only — does not write the DB.
 
+    The standard flow is "include everything in the topic" — every
+    article that's part of the topic (any centrality, or unassessed)
+    rides over to IV by default. min_centrality is a slicing override;
+    leave it at 0 unless the user asks for a high-confidence-only slice.
+
     Args:
         iv_description: 1-3 paragraph description for IV's topic page.
             Draft from the centrality rubric and scope discussion;
-            don't ask the user to write from scratch.
+            don't ask the user to write from scratch. Required.
         editor_label: Lowercase word for the editor cohort whose
-            contributions will be visualized — 'students', 'editors',
-            'participants', 'fellows'. Ask the user.
+            contributions IV visualizes. Defaults to 'editors' — the
+            right answer for almost all sessions. Override only when
+            the topic clearly suggests otherwise (e.g., a course
+            tracking 'students').
         start_date / end_date: ISO 8601 YYYY-MM-DD. Analysis window.
-            Ask the user (often a course term or campaign).
-        iv_name: Defaulted from the canonical topic name (title-cased)
-            when omitted.
+            Default: 2001-01-15 → today (full Wikipedia history). Pass
+            narrower windows for course terms or campaigns.
+        iv_name: Defaulted to the canonical topic name as-is (no
+            transformation). Override when the canonical name needs
+            display polish for IV (e.g., proper capitalization).
         iv_slug: Defaulted from iv_name (slugified). Override on
             collision.
-        timepoint_day_interval: Snapshot cadence in days. Default 30.
+        timepoint_day_interval: Snapshot cadence in days. Default
+            scales with the date span: ≤1y → 30, 1-5y → 90, >5y → 365
+            (targets 12-30 timepoints across the window). Override
+            for finer or coarser cadence.
         min_centrality: Include only articles with centrality >= N.
-            0 (default) keeps everything including unscored (NULL).
-            7 publishes the high-confidence slice only.
+            0 (default) ships everything in the working list including
+            unscored (NULL) — the standard flow. 7 publishes a
+            high-confidence slice and drops NULL.
         note: Optional free-text observation for this call's log.
         topic: Optional topic name for stateless clients.
     """
@@ -7900,6 +7963,11 @@ def prepare_iv_handoff(iv_description: str,
         "article_count": len(articles),
         "first_articles": articles[:10],
         "centrality_distribution": _summarize_centrality(articles),
+        "editability_note": (
+            "The name and slug above will appear on Impact Visualizer "
+            "exactly as shown. Surface them to the user before "
+            "publishing so they can override iv_name= or iv_slug= if "
+            "either looks off."),
         "would_be_handle_format": "tbp_<22-char-url-safe>",
         "expiry_days": 30,
         "import_url_format": (
@@ -7918,12 +7986,12 @@ def prepare_iv_handoff(iv_description: str,
 
 @mcp.tool()
 def publish_topic(iv_description: str,
-                  editor_label: str,
-                  start_date: str,
-                  end_date: str,
+                  editor_label: str = "editors",
+                  start_date: str | None = None,
+                  end_date: str | None = None,
                   iv_name: str | None = None,
                   iv_slug: str | None = None,
-                  timepoint_day_interval: int = 30,
+                  timepoint_day_interval: int | None = None,
                   min_centrality: int = 0,
                   note: str = "",
                   topic: str | None = None,
@@ -7931,12 +7999,11 @@ def publish_topic(iv_description: str,
                   ctx: Context = None) -> str:
     """Mint an Impact Visualizer handoff handle and return the import URL.
 
-    Snapshots the current article list (filtered by min_centrality)
-    plus IV config into a frozen package row, mints a tbp_<...> handle,
-    and returns a one-click URL the user opens on impact-visualizer.
-    The user signs into IV (if not already), clicks Import on the
-    page that opens; IV server-side fetches /packages/<handle> on
-    Topic Builder to load the snapshot.
+    Snapshots the current article list plus IV config into a frozen
+    package row, mints a tbp_<...> handle, and returns a one-click URL
+    the user opens on impact-visualizer. The user signs into IV (if
+    not already), clicks Import on the page that opens; IV server-side
+    fetches /packages/<handle> on Topic Builder to load the snapshot.
 
     The package is FROZEN at publish time — edits to the topic
     afterward do NOT propagate. Re-publish to mint a fresh handle.
@@ -7945,7 +8012,9 @@ def publish_topic(iv_description: str,
     Give the user only `import_url` and `user_instruction` from the
     response — never show the raw handle as a separate paste step.
 
-    Args: same as prepare_iv_handoff. Call prepare_iv_handoff first
+    Args: same as prepare_iv_handoff (same defaults: editors /
+    full-history dates / window-scaled timepoint cadence /
+    min_centrality=0 sends everything). Call prepare_iv_handoff first
     and show its preview to the user before calling publish_topic.
 
     Returns JSON with handle, import_url, expires_at, article_count,
