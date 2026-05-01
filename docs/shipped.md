@@ -909,3 +909,51 @@ start.
   subcategory members; no clean Cirrus form for "anywhere under X".
 - **COMMON TASK row update** — taxonomy row now lists
   `country-level-list-page-harvest` for cosmopolitan distributions.
+
+## Impact Visualizer handoff — TB side (2026-05-01)
+
+First end-to-end alternative to the CSV-then-rake pipeline. New
+`prepare_iv_handoff` + `publish_topic` MCP tools mint a `tbp_<...>`
+handle that snapshots the article list (with centrality scores) plus
+IV configuration into a frozen package row. New
+`GET /packages/<handle>` Starlette endpoint serves the JSON snapshot
+to Impact Visualizer (server-to-server; auth is handle
+unguessability — the URL is a capability). Two-step flow: AI calls
+`prepare_iv_handoff` to preview the would-be config + first 10
+articles + centrality histogram, shows the user, then calls
+`publish_topic` after confirmation. Returns an `import_url` (path-
+segment style, `https://impact-visualizer.wmcloud.org/imports/<handle>`)
+plus a one-sentence `user_instruction`.
+
+- **DB:** new `iv_packages` table (handle PK, topic_id FK, config_json,
+  articles_json, source_topic, publisher_user, created_at, consumed_at,
+  expires_at, schema_version=1). 30-day TTL; `consumed_at` is set on
+  the first `/packages/<handle>` fetch (multi-use; only the first
+  records `consumed_first_time=true` in the JSONL log).
+- **Helpers in `db.py`:** `mint_iv_handle`, `create_iv_package`,
+  `get_iv_package`, `mark_iv_package_consumed`,
+  `list_iv_packages_for_topic`, `cleanup_expired_iv_packages`,
+  `append_package_event` (writes `${LOG_DIR}/packages.jsonl` parallel
+  to `feedback.jsonl`).
+- **Module:** new `mcp_server/iv_packages.py` registers
+  `GET /packages/{handle}`. 404 protocol returns the same body for
+  unknown / expired / bad-prefix; the reason rides on the JSONL log
+  line, not the response (no enumeration distinction).
+- **nginx:** new `location /packages/` block in `deploy.sh` proxies
+  `/packages/*` to the worker pool with default timeouts.
+- **Verification:** py_compile clean; local smoke (temp DB) +
+  host-side smoke against production both pass — handle roundtrip,
+  consumed-at idempotency, JSON shape, `packages.jsonl` line shape,
+  unknown-handle 404.
+- **Auth:** the new MCP tools use `mode='write'` on `_require_topic`,
+  so under `AUTH_ENFORCEMENT=writes` only the topic owner (or
+  public_edit-tier callers) can publish. The `/packages/<handle>`
+  fetch is intentionally unauthenticated.
+- **Frozen at publish time.** Edits to the topic after `publish_topic`
+  do not propagate. Re-publish to mint a fresh handle. IV becomes
+  source-of-truth post-import; future "atomic edits" tool
+  (`patch_iv_topic`, deferred) would push targeted updates back to a
+  live IV topic via IV's API rather than re-snapshot.
+
+IV-side import UI is greenfield and ships separately. Spec is in
+`docs/backlog/impact-visualizer.md` § "IV side — what to build".

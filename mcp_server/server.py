@@ -272,6 +272,12 @@ _oauth.register(mcp)
 import topics_ui as _topics_ui  # noqa: E402
 _topics_ui.register(mcp)
 
+# Impact Visualizer handoff: GET /packages/<handle> serves a frozen
+# package (config + article list) minted by publish_topic. Public route;
+# auth is handle unguessability.
+import iv_packages as _iv_packages  # noqa: E402
+_iv_packages.register(mcp)
+
 
 def _require_topic(ctx: Context, topic_name: str | None = None, *,
                    mode: str = 'write',
@@ -7701,6 +7707,306 @@ def export_csv(min_score: int = 0, scored_only: bool = False,
             'before re-exporting if you want one.'
         )
     return json.dumps(response, indent=2, ensure_ascii=False)
+
+
+# ── Impact Visualizer handoff ────────────────────────────────────────────
+# prepare_iv_handoff (preview, no DB write) → publish_topic (mints a
+# tbp_<...> handle and writes iv_packages). The user clicks a one-shot
+# import URL on impact-visualizer.wmcloud.org; IV server-side fetches
+# /packages/<handle> on TB to load the snapshot. Frozen-at-publish; IV
+# becomes source of truth post-import. Spec: docs/backlog/impact-visualizer.md.
+
+# Wiki language → IV `wiki_id` advisory hint. IV has its own wikis table
+# and resolves authoritatively on import; this dict only saves IV one
+# lookup when the language matches the common case. Add languages here
+# as they come up; unknown wikis get wiki_id=None and IV resolves from
+# the language string.
+_IV_WIKI_ID: dict[str, int] = {
+    "en": 1, "de": 2, "fr": 3, "es": 4, "pt": 5, "zh": 6, "ja": 7,
+    "ru": 8, "it": 9, "nl": 10, "pl": 11, "ar": 12, "sv": 13,
+}
+
+
+def _summarize_centrality(articles: list[dict]) -> dict[str, int]:
+    """Return a histogram {'unrated': N, '1': N, ..., '10': N} for the
+    given [{title, centrality}] list. Buckets present even when zero so
+    the AI sees the full distribution shape at a glance."""
+    out = {"unrated": 0}
+    for k in range(1, 11):
+        out[str(k)] = 0
+    for a in articles:
+        c = a.get("centrality")
+        if c is None:
+            out["unrated"] += 1
+        elif isinstance(c, int) and 1 <= c <= 10:
+            out[str(c)] += 1
+        else:
+            out["unrated"] += 1
+    return out
+
+
+def _build_iv_config_and_articles(
+    topic_id: int, canonical_name: str, wiki: str, *,
+    iv_name: str | None,
+    iv_slug: str | None,
+    iv_description: str,
+    editor_label: str,
+    start_date: str,
+    end_date: str,
+    timepoint_day_interval: int,
+    min_centrality: int,
+) -> tuple[dict, list[dict], list[str]]:
+    """Apply defaults + validate + compute the would-be config and
+    article list. Pure function — no DB write. Shared by
+    prepare_iv_handoff and publish_topic so previews and commits agree
+    on shape.
+
+    Returns (config, articles, errors). errors is a list of
+    human-readable strings; success when empty.
+    """
+    errors: list[str] = []
+
+    name = (iv_name or "").strip()
+    if not name:
+        # Title-case the canonical topic name as a default. Keep simple —
+        # users override iv_name in the call when capitalization matters.
+        name = canonical_name.strip().title()
+
+    slug = (iv_slug or "").strip()
+    if not slug:
+        slug = db._slugify(name).replace("_", "-")
+    if not slug:
+        errors.append("iv_slug is empty after slugification; pass iv_slug explicitly")
+
+    description = (iv_description or "").strip()
+    if not description:
+        errors.append("iv_description is required (1-3 paragraphs).")
+
+    editor = (editor_label or "").strip()
+    if not editor:
+        errors.append("editor_label is required ('students', 'editors', etc.)")
+
+    # Dates — accept ISO 8601 YYYY-MM-DD. Reject obvious malformed input
+    # but don't try to be smart about timezones; IV is the authority.
+    def _valid_iso_date(s: str) -> bool:
+        try:
+            datetime.date.fromisoformat(s)
+            return True
+        except (ValueError, TypeError):
+            return False
+
+    if not _valid_iso_date(start_date):
+        errors.append(f"start_date must be ISO 8601 YYYY-MM-DD (got {start_date!r})")
+    if not _valid_iso_date(end_date):
+        errors.append(f"end_date must be ISO 8601 YYYY-MM-DD (got {end_date!r})")
+    if (_valid_iso_date(start_date) and _valid_iso_date(end_date)
+            and start_date >= end_date):
+        errors.append(f"start_date ({start_date}) must be before end_date ({end_date})")
+
+    if not (1 <= timepoint_day_interval <= 365):
+        errors.append(
+            f"timepoint_day_interval must be in 1..365 (got {timepoint_day_interval})")
+
+    if not (0 <= min_centrality <= 10):
+        errors.append(
+            f"min_centrality must be in 0..10 (got {min_centrality})")
+
+    config = {
+        "name": name,
+        "slug": slug,
+        "description": description,
+        "editor_label": editor,
+        "start_date": start_date,
+        "end_date": end_date,
+        "timepoint_day_interval": timepoint_day_interval,
+        "wiki": wiki,
+        "wiki_id": _IV_WIKI_ID.get(wiki),
+    }
+
+    # Articles: read the full corpus; filter by centrality. min_centrality=0
+    # keeps everything (including unscored / NULL). min_centrality>=1 drops
+    # NULL — unscored articles aren't promoted into the high-confidence
+    # slice by default.
+    all_articles = db.get_all_articles_dict(topic_id)
+    articles: list[dict] = []
+    for title in sorted(all_articles.keys()):
+        score = all_articles[title].get("score")
+        if min_centrality > 0:
+            if score is None or score < min_centrality:
+                continue
+        articles.append({"title": title, "centrality": score})
+
+    return config, articles, errors
+
+
+@mcp.tool()
+def prepare_iv_handoff(iv_description: str,
+                       editor_label: str,
+                       start_date: str,
+                       end_date: str,
+                       iv_name: str | None = None,
+                       iv_slug: str | None = None,
+                       timepoint_day_interval: int = 30,
+                       min_centrality: int = 0,
+                       note: str = "",
+                       topic: str | None = None,
+                       auth_token: str | None = None,
+                       ctx: Context = None) -> str:
+    """Preview an Impact Visualizer handoff package without committing.
+
+    Use this BEFORE publish_topic to show the user what the IV topic
+    will look like — name, slug, dates, editor label, article count,
+    first 10 articles with centrality. After the user confirms, call
+    publish_topic with the same args to mint the handle and the import
+    URL. Read-only — does not write the DB.
+
+    Args:
+        iv_description: 1-3 paragraph description for IV's topic page.
+            Draft from the centrality rubric and scope discussion;
+            don't ask the user to write from scratch.
+        editor_label: Lowercase word for the editor cohort whose
+            contributions will be visualized — 'students', 'editors',
+            'participants', 'fellows'. Ask the user.
+        start_date / end_date: ISO 8601 YYYY-MM-DD. Analysis window.
+            Ask the user (often a course term or campaign).
+        iv_name: Defaulted from the canonical topic name (title-cased)
+            when omitted.
+        iv_slug: Defaulted from iv_name (slugified). Override on
+            collision.
+        timepoint_day_interval: Snapshot cadence in days. Default 30.
+        min_centrality: Include only articles with centrality >= N.
+            0 (default) keeps everything including unscored (NULL).
+            7 publishes the high-confidence slice only.
+        note: Optional free-text observation for this call's log.
+        topic: Optional topic name for stateless clients.
+    """
+    _start = _start_call()
+    topic_id, wiki, err = _require_topic(ctx, topic, mode='write',
+                                          auth_token=auth_token)
+    if err:
+        return err
+    _, canonical, _ = _get_topic(ctx)
+
+    config, articles, errors = _build_iv_config_and_articles(
+        topic_id, canonical, wiki,
+        iv_name=iv_name, iv_slug=iv_slug,
+        iv_description=iv_description, editor_label=editor_label,
+        start_date=start_date, end_date=end_date,
+        timepoint_day_interval=timepoint_day_interval,
+        min_centrality=min_centrality)
+
+    preview = {
+        "config": config,
+        "article_count": len(articles),
+        "first_articles": articles[:10],
+        "centrality_distribution": _summarize_centrality(articles),
+        "would_be_handle_format": "tbp_<22-char-url-safe>",
+        "expiry_days": 30,
+        "import_url_format": (
+            "https://impact-visualizer.wmcloud.org/imports/<handle>"),
+    }
+    log_usage(ctx, "prepare_iv_handoff",
+              {"article_count": len(articles),
+               "min_centrality": min_centrality, "wiki": wiki},
+              f"preview {len(articles)} articles",
+              start_time=_start, note=note)
+    return json.dumps({
+        "preview": preview,
+        "validation": {"errors": errors, "warnings": []},
+    }, indent=2, ensure_ascii=False)
+
+
+@mcp.tool()
+def publish_topic(iv_description: str,
+                  editor_label: str,
+                  start_date: str,
+                  end_date: str,
+                  iv_name: str | None = None,
+                  iv_slug: str | None = None,
+                  timepoint_day_interval: int = 30,
+                  min_centrality: int = 0,
+                  note: str = "",
+                  topic: str | None = None,
+                  auth_token: str | None = None,
+                  ctx: Context = None) -> str:
+    """Mint an Impact Visualizer handoff handle and return the import URL.
+
+    Snapshots the current article list (filtered by min_centrality)
+    plus IV config into a frozen package row, mints a tbp_<...> handle,
+    and returns a one-click URL the user opens on impact-visualizer.
+    The user signs into IV (if not already), clicks Import on the
+    page that opens; IV server-side fetches /packages/<handle> on
+    Topic Builder to load the snapshot.
+
+    The package is FROZEN at publish time — edits to the topic
+    afterward do NOT propagate. Re-publish to mint a fresh handle.
+    IV is source-of-truth post-import.
+
+    Give the user only `import_url` and `user_instruction` from the
+    response — never show the raw handle as a separate paste step.
+
+    Args: same as prepare_iv_handoff. Call prepare_iv_handoff first
+    and show its preview to the user before calling publish_topic.
+
+    Returns JSON with handle, import_url, expires_at, article_count,
+    and user_instruction. Validation errors return {error, details}.
+    """
+    _start = _start_call()
+    topic_id, wiki, err = _require_topic(ctx, topic, mode='write',
+                                          auth_token=auth_token)
+    if err:
+        return err
+    _, canonical, _ = _get_topic(ctx)
+
+    config, articles, errors = _build_iv_config_and_articles(
+        topic_id, canonical, wiki,
+        iv_name=iv_name, iv_slug=iv_slug,
+        iv_description=iv_description, editor_label=editor_label,
+        start_date=start_date, end_date=end_date,
+        timepoint_day_interval=timepoint_day_interval,
+        min_centrality=min_centrality)
+    if errors:
+        return json.dumps({
+            "error": "validation failed",
+            "details": errors,
+        }, indent=2, ensure_ascii=False)
+
+    publisher = _resolve_caller(ctx, auth_token) if ctx is not None else None
+    handle = db.mint_iv_handle()
+    expires_at = db.create_iv_package(
+        handle=handle, topic_id=topic_id,
+        config=config, articles=articles,
+        source_topic=canonical, publisher_user=publisher)
+
+    db.append_package_event({
+        "event": "publish",
+        "handle": handle,
+        "topic": canonical,
+        "publisher_user": publisher,
+        "article_count": len(articles),
+        "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    })
+
+    import_url = (
+        f"https://impact-visualizer.wmcloud.org/imports/{handle}")
+    user_instruction = (
+        f"To create the Impact Visualizer topic, click this link: "
+        f"{import_url} — you'll need to be signed in to Impact "
+        f"Visualizer; click Import on the page that opens.")
+
+    log_usage(ctx, "publish_topic",
+              {"handle": handle, "article_count": len(articles),
+               "wiki": wiki, "min_centrality": min_centrality},
+              f"published {len(articles)} articles as {handle}",
+              start_time=_start, note=note)
+
+    return json.dumps({
+        "handle": handle,
+        "import_url": import_url,
+        "expires_at": expires_at,
+        "article_count": len(articles),
+        "user_instruction": user_instruction,
+    }, indent=2, ensure_ascii=False)
 
 
 # ── Dogfood / benchmark task entry points ────────────────────────────────

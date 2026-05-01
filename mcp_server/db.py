@@ -109,6 +109,28 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS idx_wp_bot_normalized
             ON wp_bot_projects(normalized_name);
+        -- Frozen Impact Visualizer handoff packages. publish_topic mints a
+        -- handle and snapshots the article list + IV config; IV fetches
+        -- /packages/<handle> server-side after the user clicks Import.
+        -- Auth is handle unguessability — the URL is a capability.
+        CREATE TABLE IF NOT EXISTS iv_packages (
+            handle TEXT PRIMARY KEY,
+            topic_id INTEGER NOT NULL REFERENCES topics(id) ON DELETE CASCADE,
+            config_json TEXT NOT NULL,
+            articles_json TEXT NOT NULL,
+            source_topic TEXT NOT NULL,
+            publisher_user TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            consumed_at TEXT,
+            expires_at TEXT NOT NULL,
+            schema_version INTEGER NOT NULL DEFAULT 1
+        );
+        CREATE INDEX IF NOT EXISTS idx_iv_packages_topic
+            ON iv_packages(topic_id);
+        CREATE INDEX IF NOT EXISTS idx_iv_packages_publisher
+            ON iv_packages(publisher_user);
+        CREATE INDEX IF NOT EXISTS idx_iv_packages_expires
+            ON iv_packages(expires_at);
     """)
     # Migrate existing DBs that predate the description column. NULL means
     # "not fetched yet"; empty string means "fetched, no short-desc on Wikipedia".
@@ -1285,6 +1307,119 @@ def list_topics_for(caller_username):
         d['mine'] = bool(caller and d.get('owner_username') == caller)
         out.append(d)
     return out
+
+
+# ── Impact Visualizer handoff: package + log helpers ───────────────────
+
+
+def mint_iv_handle():
+    """Mint a new handoff handle. Format: tbp_<22 url-safe chars>
+    (~16 bytes entropy). Caller checks the rare PRIMARY KEY collision
+    by retrying."""
+    return "tbp_" + secrets.token_urlsafe(16)
+
+
+def create_iv_package(handle, topic_id, config, articles, source_topic,
+                      publisher_user, ttl_days=30):
+    """Insert a frozen IV package row. config and articles are
+    JSON-serialized here so callers don't have to remember to dump.
+    Returns expires_at (ISO string, in UTC SQLite-default form)."""
+    conn = _connect()
+    conn.execute(
+        "INSERT INTO iv_packages "
+        "(handle, topic_id, config_json, articles_json, source_topic, "
+        " publisher_user, expires_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, datetime('now', ?))",
+        (handle, topic_id,
+         json.dumps(config, ensure_ascii=False),
+         json.dumps(articles, ensure_ascii=False),
+         source_topic,
+         publisher_user,
+         f"+{int(ttl_days)} days"))
+    expires_at = conn.execute(
+        "SELECT expires_at FROM iv_packages WHERE handle = ?",
+        (handle,)).fetchone()['expires_at']
+    conn.commit()
+    conn.close()
+    return expires_at
+
+
+def get_iv_package(handle):
+    """Return the package as a dict with config + articles decoded, or
+    None if missing. Does NOT filter by expiry — caller (the HTTP
+    route) decides expiry behavior."""
+    conn = _connect()
+    row = conn.execute(
+        "SELECT handle, topic_id, config_json, articles_json, source_topic, "
+        "       publisher_user, created_at, consumed_at, expires_at, "
+        "       schema_version "
+        "FROM iv_packages WHERE handle = ?", (handle,)).fetchone()
+    conn.close()
+    if row is None:
+        return None
+    return {
+        'handle': row['handle'],
+        'topic_id': row['topic_id'],
+        'config': json.loads(row['config_json']),
+        'articles': json.loads(row['articles_json']),
+        'source_topic': row['source_topic'],
+        'publisher_user': row['publisher_user'],
+        'created_at': row['created_at'],
+        'consumed_at': row['consumed_at'],
+        'expires_at': row['expires_at'],
+        'schema_version': row['schema_version'],
+    }
+
+
+def mark_iv_package_consumed(handle):
+    """Set consumed_at on first successful fetch. Returns True only on
+    the first call (so the HTTP route's JSONL log line can record
+    'consumed_first_time'). No-op + False on subsequent calls."""
+    conn = _connect()
+    cur = conn.execute(
+        "UPDATE iv_packages SET consumed_at = datetime('now') "
+        "WHERE handle = ? AND consumed_at IS NULL", (handle,))
+    conn.commit()
+    changed = cur.rowcount > 0
+    conn.close()
+    return changed
+
+
+def list_iv_packages_for_topic(topic_id):
+    """List a topic's packages newest-first. For future debug surfaces."""
+    conn = _connect()
+    rows = conn.execute(
+        "SELECT handle, source_topic, publisher_user, created_at, "
+        "       consumed_at, expires_at, schema_version "
+        "FROM iv_packages WHERE topic_id = ? "
+        "ORDER BY created_at DESC", (topic_id,)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def cleanup_expired_iv_packages(grace_days=7):
+    """Delete rows whose expires_at + grace_days has passed. Returns
+    count deleted. Grace period keeps debug forensics for a week past
+    expiry."""
+    conn = _connect()
+    cur = conn.execute(
+        "DELETE FROM iv_packages "
+        "WHERE datetime(expires_at, ?) < datetime('now')",
+        (f"+{int(grace_days)} days",))
+    conn.commit()
+    n = cur.rowcount
+    conn.close()
+    return n
+
+
+def append_package_event(entry):
+    """Append a publish/fetch event as JSON Lines to packages.jsonl.
+    Mirrors append_feedback's shape."""
+    log_dir = os.environ.get("LOG_DIR", "/opt/topic-builder/logs")
+    os.makedirs(log_dir, exist_ok=True)
+    path = os.path.join(log_dir, "packages.jsonl")
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
 # Initialize on import

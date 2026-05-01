@@ -897,11 +897,83 @@ SUBTRACTIVE tools below.
 
 - export_csv with default min_score=0 exports all articles in the working
   list regardless of centrality (including NULL-scored articles). The
-  default two-column CSV (title, description) is Impact-Visualizer-
-  compatible. Pass `enriched=True` for a 5-column CSV with a header row
-  (title, description, score, source_labels, first_added_at) — useful
-  for manual review and future IV centrality-filter support. No need to
+  default single-column CSV (titles only, no header) is the
+  Impact-Visualizer-compatible format. Pass `enriched=True` for a richer
+  CSV with a header row (title, wikidata_qid, description, score,
+  source_labels, first_added_at) — useful for manual review. No need to
   score before export.
+
+## Impact Visualizer handoff (publish_topic)
+
+`publish_topic` is the alternative to `export_csv` when the user wants
+the corpus to land directly in Impact Visualizer instead of a CSV. It
+mints an unguessable handle that snapshots the article list (with
+centrality scores) plus the IV configuration, and returns a one-click
+URL the user opens on impact-visualizer to create the IV topic. There
+is no automated CSV download or rake-task step in this path — IV
+fetches the snapshot server-side.
+
+### When to offer it
+
+Offer the handoff after spot-check / gap-check, when the corpus is in
+an export-ready state. Don't offer mid-build. It complements
+`export_csv`, doesn't replace it: users who don't want to use IV stay
+on the CSV path.
+
+### What TB autofills vs. what to ask the user
+
+- **Autofilled** (you don't ask): `iv_name` (title-cased canonical
+  topic name), `iv_slug` (slugified), `wiki` (topic state),
+  `timepoint_day_interval` (default 30, IV's snapshot cadence).
+- **AI-drafted, user confirms**: `iv_description` — a 1–3 paragraph
+  summary suitable for IV's topic page. Draft it from the centrality
+  rubric and the scope-discussion conversation, show it inline, accept
+  edits.
+- **Always ask the user**: `editor_label` (the lowercase word for the
+  editor cohort whose contributions IV visualizes — 'students',
+  'editors', 'participants', 'fellows'), `start_date`, `end_date`
+  (ISO 8601 YYYY-MM-DD; the analysis window — usually a course term
+  or campaign).
+
+### Conversation chunking
+
+Two turns covers it:
+
+1. "Who's editing, and over what window?" → editor_label + dates.
+2. Draft description from the rubric + scope discussion; show it
+   inline; auto-derive slug; offer to override slug only on collision.
+
+### Two-step flow
+
+Always call `prepare_iv_handoff(...)` first. It returns a preview
+(config block, article count, first 10 articles with centrality, a
+centrality histogram) without writing the DB. Paste the preview into
+chat — e.g.:
+
+> Here's what will be published — 187 articles (4 scored 10, 11
+> scored 9, 92 unrated), dates 2026-01-15 to 2026-05-30,
+> editor_label='students', slug='educational-psychology'. OK to
+> publish?
+
+Only after the user confirms, call `publish_topic(...)` with the same
+args. The package is FROZEN at publish time — edits to the topic
+afterward do NOT propagate to IV. To refresh IV, re-call
+`publish_topic` to mint a fresh handle.
+
+### Handing the URL back to the user
+
+Give the user **only** the `import_url` and the `user_instruction`
+from publish_topic's response. Never present the raw handle as a
+separate paste step — the handle lives inside the URL. After IV
+imports the package, IV becomes the source-of-truth for that topic.
+
+### Min-centrality slice
+
+`min_centrality=0` (the default) publishes everything in the working
+list, including unscored (NULL) articles. Pass `min_centrality=7` to
+publish only the high-confidence slice — useful when the corpus has a
+long unrated tail that you don't want surfacing in IV's filter
+slider's default view.
 
 ## Spot check, gap check, reach extension
 

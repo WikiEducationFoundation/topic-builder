@@ -1,165 +1,373 @@
 # Topic Builder → Impact Visualizer handoff
 
-Deferred design doc. Captures the idea of ending a Topic Builder session with a ready-to-import Impact Visualizer topic package, identified by a short handle the user pastes into IV instead of downloading a CSV and running console commands.
+Spec doc + implementation-status tracker for the TB ↔ IV handoff
+feature. This replaces the original "design doc for a deferred
+feature" version of this file: the TB side has shipped (2026-05-01,
+see `docs/shipped.md`), the IV side is greenfield, and this doc is
+now what each side reads to know what's expected of it.
 
-## Why this is worth doing
+## Implementation status
 
-Today's outcome of a TB session is a CSV the user downloads, then someone (currently Sage, via Rails console) runs IV rake tasks to create the topic, assign the article list, set dates, wire up the wiki, etc. That's a lot of friction between "I have a curated list" and "there's an Impact Visualizer topic users can look at."
+| Side | Component | Status | Notes |
+| ---- | --------- | ------ | ----- |
+| TB   | `iv_packages` table + helpers | ☑ shipped 2026-05-01 | `db.py` |
+| TB   | `prepare_iv_handoff` MCP tool | ☑ shipped 2026-05-01 | preview, no DB write |
+| TB   | `publish_topic` MCP tool | ☑ shipped 2026-05-01 | mints handle, frozen snapshot |
+| TB   | `GET /packages/<handle>` endpoint | ☑ shipped 2026-05-01 | `iv_packages.py`, JSON shape locked |
+| TB   | `packages.jsonl` audit log | ☑ shipped 2026-05-01 | publish + fetch events |
+| TB   | nginx `/packages/` route | ☑ shipped 2026-05-01 | `deploy.sh` |
+| TB   | `server_instructions.md` IV-handoff section | ☑ shipped 2026-05-01 | |
+| TB   | landing.html + CLAUDE.md update | ☑ shipped 2026-05-01 | |
+| IV   | `GET /imports/<handle>` preview page | ☐ not started | greenfield |
+| IV   | `POST /imports/<handle>` import handler | ☐ not started | greenfield |
+| IV   | `ArticleBagArticle.centrality` column | ☐ not started | nullable int 1..10 |
+| IV   | `Topic.tb_handle` column (recommended) | ☐ not started | for audit + future atomic edits |
+| Both | Dogfood task brief + end-to-end run | ☐ blocked on IV | `dogfood/tasks/iv-handoff.md` |
+| Both | Atomic edits (`patch_iv_topic`) | ☐ deferred | post-v1; see § Forward-compat |
 
-Impact Visualizer has no web UI for topic creation. It's Rails Console + Rake. So this integration isn't duplicating an existing path — it's creating IV's first end-to-end topic-creation UX, via Topic Builder as the front door.
+## Locked decisions
 
-## Centrality score — current state and roadmap
+These were settled during the 2026-05-01 plan and are not up for
+re-debate during implementation. Changing one of them is a separate
+plan.
 
-Topic Builder now models two orthogonal axes per article (Stage 4):
-
-- **Inclusion** (binary): presence in the topic's working list. Articles removed / rejected are out; everything else is in.
-- **Centrality** (nullable 1–10 gradient): how central the article is to the topic. 10 is canonical; 1 is distant periphery. NULL is a valid, common state meaning "in-topic, centrality unevaluated" — not every topic needs centrality scoring (pure taxonomies leave it NULL by default).
-
-**Current CSV carriage.** TB's default export is still two-column (`title, description`, no header) — what Impact Visualizer's current CSV import expects. TB also supports `export_csv(enriched=True)`, which emits five columns + header: `title, description, score, source_labels, first_added_at`. Score is blank when NULL. The enriched variant is for manual review today; nothing in IV reads it yet.
-
-**Roadmap: IV filter slider.** Once IV is ready to consume centrality, add:
-
-- **Ingestion** — accept the enriched CSV (or the `publish_topic` JSON payload, which includes centrality natively when it lands). Persist centrality on `ArticleBagArticle` (or `Article`, depending on whether centrality varies across topics; it does — same article can be core in one topic and periphery in another, so the join table is the right home).
-- **UI** — a slider or threshold selector on the topic view: "show articles with centrality ≥ N." Default to showing all (NULL + any score ≥ 1). When the user drags up, NULL articles disappear along with low-scored ones; when dragging down, everything returns. This matches the AI's mental model: *"I rated these 7–10 as core; 4–6 as clearly on-topic but not central; the rest I left NULL."*
-- **Display behavior for NULL** — treat NULL as "included but unrated," show alongside scored articles when the threshold is 0 (the default), fade out or hide when the threshold is ≥ 1. The important property is that NULL never means "exclude from the topic" — that's what removal / rejection means.
-
-**What to do on the IV side before TB ships `publish_topic`.** Nothing required. The enriched CSV carries the column today for anyone who wants to consume it manually; once IV's import accepts the richer shape, TB's side is already producing it. Priority-wise, centrality-aware UI is a legitimate "ship when you have time" — the TB model supports it without IV coordination, and absence of the filter doesn't break anything.
+1. **Manual handoff via clickable link.** No cross-server auth between
+   TB and IV. The MCP session ends with the AI showing the user a URL
+   that opens IV; the user (already signed in to IV) clicks Import on
+   the page that opens; IV server-side then fetches the JSON package
+   from TB.
+2. **Path-segment URL:**
+   `https://impact-visualizer.wmcloud.org/imports/tbp_<handle>`. The
+   AI gives the user only the URL — never asks them to copy/paste a
+   bare handle.
+3. **Two-step config flow on TB side.** `prepare_iv_handoff(...)` is a
+   read-only preview that the AI shows to the user; `publish_topic(...)`
+   commits and mints the handle, called only after user confirmation.
+4. **`/packages/<handle>` payload is config + article titles inline.**
+   No CSV-URL indirection. Centrality scores ride per-article as
+   `{"title": ..., "centrality": int|null}`.
+5. **Frozen at publish time.** publish_topic snapshots the article
+   list + config into the package row. Re-publish mints a new handle.
+   IV becomes source-of-truth post-import.
+6. **Atomic post-import edits are out of scope for v1**, but reserved
+   in shape (see § Forward-compat below) so v1 doesn't paint v2 into
+   a corner.
 
 ## End-to-end user flow
 
-1. User finishes curating an article list in a TB conversation (existing flow).
-2. AI offers to prepare an Impact Visualizer handoff. Asks the user for the IV-specific fields (see below).
-3. AI calls a new `publish_topic(...)` tool. TB writes a package record, returns a handle like `tbp_a1b2c3…`.
-4. AI shows the handle to the user with one-sentence instructions: "Go to impact-visualizer.wmcloud.org/new, paste this handle: `tbp_a1b2c3…`."
-5. User opens IV's new-topic page, pastes handle, clicks Import.
-6. IV calls back to `https://topic-builder.wikiedu.org/packages/tbp_a1b2c3…` (server-to-server, no auth beyond the handle being unguessable), receives a JSON payload with the config + article list, creates the Topic + ArticleBag + ArticleBagArticles, and redirects the user to the new topic view.
+1. User finishes curating the article list in a TB conversation.
+2. AI offers the IV handoff (alongside, not instead of, `export_csv`).
+3. AI elicits the genuinely-unintuitive config fields (`editor_label`,
+   `start_date`, `end_date`) from the user; autofills `iv_name`,
+   `iv_slug`, `wiki`, `timepoint_day_interval`; drafts
+   `iv_description` from the rubric + scope discussion.
+4. AI calls `prepare_iv_handoff(...)`. Pastes the preview into chat;
+   user confirms or asks for edits.
+5. AI calls `publish_topic(...)` with the same args. Returns
+   `{handle, import_url, expires_at, article_count, user_instruction}`.
+6. AI gives the user only `import_url` and `user_instruction`. User
+   opens the URL.
+7. IV (already authenticated; if not, redirected to login) renders a
+   preview page: topic name, article count, first ~10 articles with
+   centrality, dates, editor_label. Single button: **Import**.
+8. User clicks Import. IV server-side fetches
+   `https://topic-builder.wikiedu.org/packages/<handle>`, validates
+   `schema_version == 1`, resolves `wiki_id` against its own wikis
+   table, creates Topic + ArticleBag + ArticleBagArticles in a
+   transaction (with `centrality` populated per row).
+9. IV redirects the user to the new Topic show page.
 
-## What IV needs (from reading the model docs)
+## TB side — what shipped
 
-Required topic fields:
-
-- `name` — title-cased topic name
-- `slug` — URL-safe identifier
-- `description` — topic and participant-group description
-- `editor_label` — lowercase word for "the users whose activity is visualized" (e.g. "students", "editors", "participants")
-- `start_date` — analysis window start
-- `end_date` — analysis window end
-- `timepoint_day_interval` — snapshot cadence
-- `wiki_id` — which Wikipedia (probably enwiki for our cases)
-- `display` — public flag; should stay false until data is ready
-
-Plus an `ArticleBag` with the article list — IV has an `Article` model, an `ArticleBag`, and an `ArticleBagArticle` join table, so the ingestion shape is "one bag per topic, N articles per bag."
-
-TB already has the article list. The new config fields are what the AI needs to elicit.
-
-## Server-side shape (Topic Builder)
-
-### New DB table
+### DB table `iv_packages`
 
 ```sql
-CREATE TABLE iv_packages (
-    handle TEXT PRIMARY KEY,              -- "tbp_" + random; unguessable
+CREATE TABLE IF NOT EXISTS iv_packages (
+    handle TEXT PRIMARY KEY,                 -- 'tbp_' + 22-char url-safe
     topic_id INTEGER NOT NULL REFERENCES topics(id) ON DELETE CASCADE,
-    config_json TEXT NOT NULL,            -- full IV config (name, slug, dates, wiki_id, editor_label, description)
+    config_json TEXT NOT NULL,
+    articles_json TEXT NOT NULL,             -- list of {title, centrality}
+    source_topic TEXT NOT NULL,              -- denormalized canonical name
+    publisher_user TEXT,                     -- OAuth username; NULL when anon
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    consumed_at TEXT,                     -- set when IV first fetches it
-    expires_at TEXT                       -- e.g. 30 days
+    consumed_at TEXT,                        -- first /packages/<handle> hit
+    expires_at TEXT NOT NULL,                -- created_at + 30 days
+    schema_version INTEGER NOT NULL DEFAULT 1
 );
 ```
 
-Topics themselves are unchanged — the package is a snapshot pointer; the article list is read live from the topic at fetch time (or frozen at publish time — see open questions).
+Indexes: `idx_iv_packages_topic`, `idx_iv_packages_publisher`,
+`idx_iv_packages_expires`.
 
-### New MCP tool
+### MCP tools
 
-```
-publish_topic(
-    iv_name: str,
-    iv_slug: str | None,                  # default: slugify(iv_name)
-    iv_description: str,
-    editor_label: str,
-    start_date: str,                      # ISO 8601
-    end_date: str,
-    timepoint_day_interval: int = 30,
-    wiki_id: int = 1,                     # enwiki; look up later if needed
-    min_score: int = 0,                   # what slice of the list to package
-    topic: str | None = None,             # session topic
-    ctx: Context = None,
-) -> str
-```
+- `prepare_iv_handoff(iv_description, editor_label, start_date,
+  end_date, iv_name=None, iv_slug=None, timepoint_day_interval=30,
+  min_centrality=0, ...)` — preview, no DB write. Returns
+  `{preview: {config, article_count, first_articles,
+  centrality_distribution, would_be_handle_format, expiry_days,
+  import_url_format}, validation: {errors, warnings}}`.
+- `publish_topic(...)` — same args. Validates, snapshots, mints
+  handle, writes the row, appends `publish` event to
+  `packages.jsonl`, returns `{handle, import_url, expires_at,
+  article_count, user_instruction}`.
 
-Returns JSON with `handle`, pasteable instructions, expiry, and a preview of the first few articles.
+Both tools are `mode='write'` on `_require_topic`. Under
+`AUTH_ENFORCEMENT=writes` (current production posture), only the
+topic owner (or public_edit-tier callers) can publish.
 
-### New HTTP endpoint (server-to-server, no MCP)
+### HTTP endpoint `GET /packages/<handle>`
 
-```
-GET /packages/<handle>
-```
-
-Returns:
+Lives in `mcp_server/iv_packages.py`. Public route — auth is handle
+unguessability. Response shape (the contract IV consumes):
 
 ```json
 {
   "handle": "tbp_a1b2c3...",
-  "config": { "name": "...", "slug": "...", ... },
+  "schema_version": 1,
+  "config": {
+    "name": "Educational Psychology",
+    "slug": "educational-psychology",
+    "description": "...",
+    "editor_label": "students",
+    "start_date": "2026-01-15",
+    "end_date": "2026-05-30",
+    "timepoint_day_interval": 30,
+    "wiki": "en",
+    "wiki_id": 1
+  },
   "articles": [
-    {"title": "Article title 1", "centrality": 9},
-    {"title": "Article title 2", "centrality": null},
-    ...
+    {"title": "Achievement gap", "centrality": 8},
+    {"title": "Active learning", "centrality": null}
   ],
+  "article_count": 187,
   "source_topic": "educational psychology",
-  "created_at": "2026-04-16T...",
-  "article_count": 929,
-  "schema_version": 1
+  "created_at": "2026-05-01T20:14:00+00:00",
+  "consumed_at": "2026-05-01T20:18:32+00:00"
 }
 ```
 
-`centrality` is `null | 1..10` per article. IV's importer should store it so the topic-view filter slider has a column to drive from. Null means "in-topic, centrality unevaluated" — valid and common; do not treat as exclusion.
+404 protocol: unknown / expired / bad-prefix all return the same
+`{"error": "not found"}` body. The reason rides on the JSONL log
+line, not the response — no enumeration distinction. Sets
+`consumed_at` on the first 200 fetch; subsequent fetches keep
+returning the body but don't change `consumed_at`. The URL is
+multi-use so IV can retry on transient failures.
 
-Records `consumed_at`. Returns 404 once expired. Returns 404 for unknown handles. No auth beyond handle unguessability — the handle is a capability.
+### `wiki_id` advisory hint
 
-## Changes needed in Impact Visualizer
+TB carries an advisory `_IV_WIKI_ID` dict in `server.py`:
+`{"en": 1, "de": 2, "fr": 3, "es": 4, "pt": 5, "zh": 6, "ja": 7,
+"ru": 8, "it": 9, "nl": 10, "pl": 11, "ar": 12, "sv": 13}`. The
+config carries both `wiki: "en"` (string, authoritative) and
+`wiki_id: int | null` (TB's best guess). IV uses its own wikis table
+to resolve; the TB hint is informational. Add languages to the dict
+as new wikis come up.
 
-This is the bigger lift and needs coordination with whoever owns IV:
+### Audit log `${LOG_DIR}/packages.jsonl`
 
-1. **New `/new` (or similar) page.** Single input: paste handle. Submit hits backend.
-2. **New controller action** that fetches `https://topic-builder.wikiedu.org/packages/<handle>`, validates the shape, creates Topic + ArticleBag + ArticleBagArticles in a transaction, redirects to the new topic.
-3. **Auth.** Who is allowed to import? Options: admins only (matches current console-only posture), or authenticated editors (if IV adds editor auth). For first cut, admins only.
-4. **Config validation.** The publish_topic tool may not perfectly match IV's validation (slug uniqueness, date ranges, wiki_id existence). IV should return a clear error the user can act on.
-5. **Article title normalization.** IV resolves titles to its own Article records, which may involve the Wikipedia API. Either IV does this on import (slow but self-contained) or TB pre-resolves (fast import, but TB needs to understand IV's normalization rules).
+Two event shapes, both JSONL:
 
-## Open questions
+```json
+{"event":"publish","handle":"tbp_...","topic":"...","publisher_user":"...","article_count":N,"ts":"..."}
+{"event":"fetch","handle":"tbp_...","ip":"...","user_agent":"...","status":200|404,"consumed_first_time":true|false,"reason":"...","ts":"..."}
+```
 
-- **Frozen snapshot vs. live pull.** When IV calls `/packages/<handle>`, should it get the article list *as it was at publish time* (frozen in the package record), or the *current* state of the TB topic (live — so edits after publish are visible)? Frozen is simpler and more predictable; live lets users keep iterating after publish. Probably frozen; if a user wants to refresh, re-publish.
-- **Who figures out `wiki_id`?** TB knows the user built for Wikipedia but not *which* Wikipedia. Either ask in the publish flow (most users are enwiki; default to that) or resolve from a language hint.
-- **Handle format.** Short+unguessable (`tbp_` + 12 bytes base32 = ~20 chars) for pastability. Single-use vs. multi-use — probably multi-use so IV can retry on network failure, but track `consumed_at` for first successful import.
-- **Auth interaction.** TB has auth now (Phase 1+2 shipped 2026-04-27 — see `docs/shipped.md`). `publish_topic` should record the publishing user. IV could then assert the authenticated user matches, or leave it to IV admins. Separate the two concerns: TB auth is in place; IV import auth is its own policy.
-- **Config elicitation UX.** Asking for 7 fields at once is a lot. Probably chunk it: dates + editor_label together, description after, slug auto-derived with override. Document this in the server instructions so every AI handles it similarly.
-- **Versioning.** If IV's schema changes (new required field), old packages fail to import. The package record should include a `schema_version` from day one.
-- **Error reporting.** If IV rejects a package (bad slug, dates out of range), the user is at IV's UI, not the AI. Either surface a clean error page with "copy this error back to your AI," or make IV's validation lenient-with-editable-form.
+`reason` is set only on 404s (`bad_prefix`, `missing`, `expired`).
+No rotation; tail it to monitor activity.
 
-## Out-of-band prerequisites
+## IV side — what to build (greenfield)
 
-1. **Confirm with the IV owner** that accepting programmatic topic creation from Topic Builder is the right path. There are other shapes — e.g., TB could post directly to IV's API, or IV could be extended with its own topic-creation form that happens to accept a TB CSV URL.
-2. **Get a Wikipedia OAuth / identity story** decided. If IV gets editor auth later, the handoff story simplifies (both apps know the user). For now, assume IV stays admin-only on the import side.
-3. **Spec the JSON shape** and version it. The field list above is a first draft.
+### Routes
 
-## What's already in place that helps
+**`GET /imports/<handle>` — preview page.**
 
-- Topics in TB are persisted and resumable — the package is a thin pointer over existing storage.
-- `submit_feedback` established the pattern of auxiliary JSON-lines logging; a similar `logs/packages.jsonl` would capture publish events for auditing.
-- SQLite migration pattern is trivial for adding `iv_packages`.
-- The landing page already highlights the Impact Visualizer as the destination; this closes that loop.
+- Authenticated route. Unauthenticated users redirect to IV login
+  with `return_to=/imports/<handle>`.
+- Server-side fetches
+  `https://topic-builder.wikiedu.org/packages/<handle>` (timeout 20s,
+  retry once on 5xx).
+- 404 → render error: "This Topic Builder handoff is unknown or has
+  expired. Ask the AI to call `publish_topic` again to mint a fresh
+  handle."
+- 200 → render preview: topic name, article count, first ~10
+  articles with centrality, dates, editor_label, wiki, source_topic,
+  schema_version. Single button: **Import topic** (POSTs the same
+  path with CSRF token, no other form fields).
 
-## Rough effort estimate
+**`POST /imports/<handle>` — import handler.**
 
-Assuming the IV owner green-lights the API shape:
+- Auth-gated to admins (matches the current console-only posture).
+  Future broadening to authenticated editors is a separate item.
+- Re-fetch the package from TB (don't trust GET-side state).
+- Hard-fail on `schema_version != 1` with a clear "update IV or
+  re-publish from TB" error.
+- Resolve `wiki_id` from IV's own `wikis` table by `language`
+  matching `config.wiki`. Ignore TB's advisory hint. If IV has no
+  row for that language → "This handoff is for `<lang>` Wikipedia;
+  IV is not configured for that wiki. Contact an admin."
+- Wrap creation in a DB transaction:
+  1. Create `Topic` (name, slug, description, editor_label,
+     start_date, end_date, timepoint_day_interval, wiki_id,
+     display: false).
+  2. Create the topic's `ArticleBag`.
+  3. For each `{title, centrality}`: find_or_create `Article` by
+     title + wiki, then create `ArticleBagArticle` linking the bag
+     to the article with `centrality` populated.
+- Success → redirect to the new Topic show page with a flash
+  confirming N articles imported.
+- Failure (slug collision, validation error) → actionable error
+  page with a "back to handoff preview" link. No auto-retry.
 
-- TB side (schema, `publish_topic`, `/packages/<handle>` endpoint, docs): ~1 day.
-- IV side (new-topic page, import controller, article ingestion, admin auth): ~1-2 days for someone who knows the IV codebase.
-- Integration testing: ~half a day.
+### Article ingestion strategy
 
-Total: 2-3 days once both sides are ready.
+- Topics ≤ 500 articles: synchronous resolution inside the
+  transaction.
+- Topics > 500 articles: background job (Sidekiq or whatever IV
+  uses). Create Topic + empty ArticleBag synchronously; return user
+  to a "processing N articles" page that polls; job populates
+  ArticleBagArticles row-by-row.
 
-## Naming decision to make
+The 500-article cutoff is a tunable default — adjust based on IV's
+Wikipedia-API latency budget. The TB package shape supports either
+path.
 
-- `publish_topic` (proposed) vs. `prepare_for_impact_visualizer` vs. `export_to_iv`. Shorter is better; `publish_topic` is close but ambiguous ("publish where?"). Leaning toward `prepare_iv_package` or just making the tool very clear about IV in its description.
+### Model changes
+
+- **`ArticleBagArticle.centrality`** — new nullable integer column,
+  range 1..10. Migration:
+  `add_column :article_bag_articles, :centrality, :integer`.
+  Required day one even if IV doesn't expose centrality in the UI
+  yet — TB is already emitting it, and re-imports must persist it
+  cleanly. UI for the centrality threshold-slider filter is a
+  separate IV roadmap item.
+- **`Topic.tb_handle`** (recommended) — nullable string, records
+  which TB handle created the topic. Useful for audit and for the
+  future atomic-edits feature. Populate from `params[:handle]` in
+  the import handler.
+
+### Auth posture
+
+Admin-only on the import endpoint for v1 (matches the current
+console-only state). When IV adds editor auth (separate roadmap
+item), the auth gate can broaden to "any authenticated editor."
+
+### Schema version handling
+
+```ruby
+unless package["schema_version"] == 1
+  return render_error(
+    "This handoff was minted for an unknown schema version " \
+    "(#{package['schema_version']}). Update Impact Visualizer or " \
+    "ask Topic Builder to mint a fresh handle.")
+end
+```
+
+This means TB bumping `schema_version` (to add new required fields)
+is an explicitly-coordinated change: IV must update first, or TB
+ships behind a feature flag.
+
+### Error UX
+
+The import page is the only place the user lands after the AI.
+Errors here can't bounce back to the AI cleanly:
+
+- Validation errors render with a "copy this error to your AI"
+  textarea pre-filled with the error message + handle, plus a "Try
+  a different slug?" or "Re-publish from TB?" suggestion.
+- Network errors render with a "TB might be down — try again in a
+  minute" message.
+
+## Forward-compat (post-v1, deferred)
+
+Documented so v1 doesn't paint v2 into corners. None of these are
+built yet; they describe what *could* be built once a real signal
+arrives.
+
+### Atomic edits — `patch_iv_topic(...)` MCP tool
+
+Future TB tool for pushing targeted edits to a live IV topic without
+re-publishing the whole package:
+
+```python
+@mcp.tool()
+def patch_iv_topic(
+    iv_topic_slug: str,
+    add: list[str] = None,
+    remove: list[str] = None,
+    centrality_updates: dict[str, int | None] = None,
+    ...
+) -> str:
+    """Push add/remove/score-update edits to a live IV topic."""
+```
+
+Requires:
+- A TB→IV admin API token (separate from user OAuth — server-to-
+  server, operator-owned). New env var `IV_API_TOKEN`.
+- IV-side `PATCH /api/v1/topics/<slug>/article_bag` accepting
+  `{add, remove, centrality_updates}` with bearer-token auth.
+- Linkage so TB knows which IV topic a TB topic maps to.
+
+### What v1 reserves
+
+- **`iv_packages.iv_topic_slug TEXT`** — set by IV calling back to
+  TB on successful import (or set manually by an admin tool). Future
+  ALTER TABLE.
+- **`topics.iv_topic_slug TEXT`** — per-topic IV linkage so atomic
+  edits don't have to look up the most-recent package row each
+  time. Future ALTER TABLE.
+- **Naming reserved**: `patch_iv_topic` is reserved for the
+  atomic-edits tool; don't reuse the name.
+- **Schema version bump path**: when atomic-edits ship, the package
+  schema may grow new fields (e.g., the IV topic slug). That bumps
+  `schema_version` to 2; TB+IV coordinate.
+
+### Why atomic edits aren't v1
+
+The current friction story is "admin runs rake tasks once per
+topic." That's solved by publish-once-handoff. Atomic edits solve
+"user wants to refine after IV has the topic" — no current bleeding
+case. Re-publishing a fresh handle is a perfectly fine v1 fallback.
+
+## Verification recipes
+
+### Pre-deploy syntax (TB)
+
+```
+python3 -m py_compile mcp_server/server.py mcp_server/iv_packages.py mcp_server/db.py
+```
+
+### Live integration smoke (TB-only, post-deploy)
+
+```
+curl -i https://topic-builder.wikiedu.org/packages/tbp_does-not-exist
+# expect 404, JSON body {"error": "not found"}
+```
+
+Then in a Claude session:
+1. Build a small topic (10 articles, mixed centrality).
+2. `prepare_iv_handoff(...)` — inspect preview.
+3. `publish_topic(...)` — capture handle.
+4. `curl https://topic-builder.wikiedu.org/packages/<handle> | jq .` —
+   confirm article list, centrality, config block, schema_version=1.
+5. Curl again — confirm `consumed_at` populated and unchanged on
+   second fetch.
+6. Tail `logs/packages.jsonl` — confirm one publish + two fetch
+   events.
+
+### End-to-end (after IV ships)
+
+1. Repeat above to get a handle.
+2. Open the import URL in a browser (signed in to IV as admin).
+3. Confirm the preview page renders correctly.
+4. Click Import. Confirm redirect to the new IV topic page.
+5. Verify the IV topic has correct name/dates/editor_label/
+   article_count and that ArticleBagArticles carry centrality.
+6. Re-publish from TB; confirm a second handle works.
+
+## Rough effort estimate (residual)
+
+- IV side (preview page, import controller, model migrations,
+  admin auth): ~1-2 days for someone who knows the IV codebase.
+- Integration testing once IV ships: half a day.
+- Total: ~2 days of IV-side work + ~half day cross-system QA.
