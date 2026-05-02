@@ -87,6 +87,7 @@ from wikipedia_api import (
         as _wikidata_entities_by_property_titles_only,
     wikidata_search_entity as _wikidata_search_entity,
     WIKIDATA_API as _WIKIDATA_API,
+    petscan_query as _petscan_query,
 )
 import db
 import csv_export
@@ -4627,6 +4628,202 @@ def get_wikiproject_articles(project_name: str, max_articles: int = 50000,
             f"search_articles instead."
         )
     return json.dumps(result, indent=2, ensure_ascii=False)
+
+
+@mcp.tool()
+def petscan(params: dict | None = None,
+            psid: str | None = None,
+            commit: bool = False,
+            source_label: str | None = None,
+            max_results: int = 10000,
+            sample_size: int = 20,
+            note: str = "",
+            topic: str | None = None,
+            auth_token: str | None = None,
+            ctx: Context = None) -> str:
+    """Run a PetScan compound query in one HTTP call. Far more efficient
+    than multi-step alternatives for intersection-shaped questions.
+
+    PetScan (https://petscan.wmcloud.org/) executes the query server-side
+    and returns matching titles in a single round-trip, regardless of
+    how many categories / templates / sitelinks the query combines. Use
+    when you need:
+
+    - **Cat ∩ WikiProject (the common case).** Articles in Category:X
+      whose talk page transcludes Template:WikiProject Y — without
+      ingesting all of WikiProject Y first. Pass:
+        params = {
+          "language": "en", "project": "wikipedia",
+          "categories": "Apollo 11", "depth": "0", "ns[0]": "1",
+          "templates_yes": "WikiProject Spaceflight",
+          "templates_use_talk_yes": "1",
+        }
+      The `templates_use_talk_yes=1` flag makes templates_yes match
+      against TALK-page transclusions. Without it, templates_yes only
+      matches article-namespace transclusions (which won't find
+      WikiProject tags — those live on talk pages).
+
+    - **Multi-category intersection.** `categories` accepts multiple
+      values separated by `\\n` (newline). With `combination=subset`
+      (the PetScan default), pages must be in ALL listed categories.
+      With `combination=union`, ANY of them.
+
+    - **Negative categories.** `negcats` (newline-separated) excludes
+      pages that ARE in those categories.
+
+    - **Replay a saved PetScan query.** Pass `psid="<id>"` to run a
+      saved query verbatim. Useful for replaying baselines (the
+      hispanic-latino-stem-us org baseline is psid=32906566). When
+      psid is set, params is ignored.
+
+    Most-used params:
+      - language: 'en' (default), 'de', 'es', 'ja', etc.
+      - project: 'wikipedia' (default), 'wikidata', 'commons', etc.
+      - categories: category name(s); multiple separated by '\\n'.
+        Do NOT include the 'Category:' prefix.
+      - depth: '0' (just listed cats) or higher for sub-cat traversal.
+      - combination: 'subset' (AND, default) or 'union' (OR).
+      - negcats: categories to exclude (newline-separated).
+      - templates_yes / templates_no / templates_any: template name(s)
+        the page must / must not / may transclude. WITHOUT the
+        'Template:' prefix.
+      - templates_use_talk_yes / _no / _any: '1' to apply the
+        corresponding templates_* filter to TALK-page transclusions
+        instead of the article itself. Required for WikiProject
+        membership checks.
+      - 'ns[0]': '1' for mainspace results (default). 'ns[14]': '1'
+        for category-namespace results. Both can be set.
+      - sparql: a SPARQL query whose ?item bindings are intersected
+        with the category/template result set.
+      - sortby: 'incoming_links' / 'size' / 'date' / etc. — server-
+        side sort order.
+
+    Args:
+        params: Dict of PetScan URL parameters. See above for menu.
+        psid: Saved-query ID shortcut. Overrides params when set.
+        commit: If True, add results to the working list with
+                source_label. Default False (preview only).
+        source_label: Required when commit=True. Convention:
+                'cat∩wp:<cat>:<wp>' for the common case, or
+                'petscan:<short-name>' for ad-hoc queries.
+        max_results: Cap on returned/added titles (default 10000).
+                Note PetScan also has its own server-side limits.
+        sample_size: Titles to include in the response sample
+                (default 20, max 100).
+        note: Optional free-text observation for this call's log entry.
+        topic: Optional topic name. Pass if your client doesn't
+               maintain an MCP session.
+
+    Returns:
+        JSON with `count`, `sample` (first N titles), `wiki`,
+        `query_echo` / `querytime_sec` from PetScan, and — when
+        commit=True — `source_label`, `new_articles_added`,
+        `existing_updated`, `total_in_working_list`, plus an undo hint.
+
+    Cost: One HTTP round-trip (counts as one wikipedia_api_calls
+    entry). PetScan has its own rate limits; if a query times out,
+    refine it (lower depth, narrower categories, smaller wiki).
+    """
+    _start = _start_call()
+    topic_id, wiki, err = _require_topic(ctx, topic, auth_token=auth_token,
+                                         mode='write' if commit else 'read')
+    if err:
+        return err
+
+    if commit and not source_label:
+        return json.dumps({
+            "error": (
+                "commit=True requires source_label. Convention: "
+                "'cat∩wp:<cat>:<wp>' for category-WikiProject "
+                "intersections, or 'petscan:<short-name>' for ad-hoc "
+                "queries."
+            ),
+        }, indent=2, ensure_ascii=False)
+
+    if psid:
+        query_params = {"psid": str(psid)}
+    elif params:
+        query_params = dict(params)
+    else:
+        return json.dumps({
+            "error": "Provide either `params` (dict) or `psid` (saved-query ID).",
+        }, indent=2, ensure_ascii=False)
+
+    try:
+        rows, meta = _petscan_query(query_params, timeout=60)
+    except Exception as exc:
+        log_usage(ctx, "petscan",
+                  {"params": query_params, "commit": commit},
+                  f"error: {exc}", start_time=_start, note=note)
+        return json.dumps({
+            "error": f"PetScan call failed: {exc}",
+            "params": query_params,
+        }, indent=2, ensure_ascii=False)
+
+    titles: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        # Mainspace only when committing — the topic working list is
+        # article titles, not category/file/talk pages. Preview includes
+        # everything PetScan returned so the AI can tell when their
+        # namespace filter is wrong.
+        if commit and row.get('namespace', 0) != 0:
+            continue
+        raw = row.get('title', '')
+        if not raw:
+            continue
+        title = normalize_title(raw)
+        if title in seen:
+            continue
+        seen.add(title)
+        titles.append(title)
+        if len(titles) >= max_results:
+            break
+
+    sample_size = max(0, min(int(sample_size), 100))
+    response: dict = {
+        'wiki': wiki,
+        'count': len(titles),
+        'sample': titles[:sample_size],
+        'querytime_sec': meta.get('querytime_sec'),
+    }
+    if psid:
+        response['psid'] = str(psid)
+
+    if commit:
+        kept, rejected_skipped, rejected_sample = _apply_rejections(
+            topic_id, titles)
+        batch = [(t, source_label, None) for t in kept]
+        added, updated = db.add_articles(topic_id, batch)
+        response.update({
+            'committed': True,
+            'source_label': source_label,
+            'rejected_skipped': rejected_skipped,
+            'rejected_sample': rejected_sample,
+            'new_articles_added': added,
+            'existing_updated': updated,
+            'total_in_working_list': db.get_status(topic_id)['total_articles'],
+            'undo': f'To undo this pull, use: remove_by_source("{source_label}")',
+        })
+    else:
+        response['committed'] = False
+        response['next_step_hint'] = (
+            'Re-call with commit=True and source_label="<your-label>" '
+            'to add these to the working list. Pick a label that names '
+            'the query (e.g. "cat∩wp:Apollo 11:Spaceflight").'
+        )
+
+    response['cost'] = _cost_report(_start)
+    log_usage(ctx, "petscan",
+              {"params": query_params, "commit": commit,
+               "source_label": source_label if commit else None,
+               "psid": str(psid) if psid else None},
+              f"{len(titles)} titles"
+              + (f", added {response.get('new_articles_added', 0)}" if commit else " (preview)"),
+              start_time=_start, note=note)
+    return json.dumps(response, indent=2, ensure_ascii=False)
 
 
 def _cost_report(start_time: float) -> dict:

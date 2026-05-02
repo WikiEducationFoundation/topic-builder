@@ -957,3 +957,63 @@ plus a one-sentence `user_instruction`.
 
 IV-side import UI is greenfield and ships separately. Spec is in
 `docs/backlog/impact-visualizer.md` § "IV side — what to build".
+
+## PetScan compound-query primitive (2026-05-02)
+
+General PetScan wrapper. Subsumes both the Tier-1 "at-pull-time
+category × WikiProject intersection" item AND the Tier-3
+"PetScan-style intersection" item — single tool surface, broader
+leverage than either narrow primitive would have given.
+
+- **Helper:** new `petscan_query(params, timeout=60) → (rows, meta)`
+  in `wikipedia_api.py`. Reuses `api_get` so PetScan calls inherit
+  User-Agent + rate-limit backoff + per-call counters. One PetScan
+  call counts as one `wikipedia_api_calls` entry — fair from a
+  network-cost POV even though one call substitutes for many
+  MediaWiki round-trips. JSON envelope `data["*"][0]["a"]["*"]` is
+  the row list; titles come underscored and are normalized via
+  `normalize_title`.
+- **MCP tool:** `petscan(params=…, psid=…, commit=False,
+  source_label=…, max_results=10000, sample_size=20)`. Single tool
+  with a commit flag — matches the smallest-primitive principle.
+  `commit=False` returns count + sample for preview; `commit=True`
+  requires explicit `source_label` (no auto-derivation; AI is the
+  right judge of label) and writes mainspace results to the working
+  list with the standard `_apply_rejections` + cost report + undo
+  hint pattern. `psid` shortcut runs a saved PetScan query (e.g.,
+  `psid=32906566` is the hispanic-latino-stem-us baseline).
+- **Sharp edge documented:** `templates_yes` matches the article
+  namespace by default. WikiProject tags live on talk pages, so the
+  cat ∩ wp pattern requires `templates_use_talk_yes: "1"` paired
+  with `templates_yes: "WikiProject <X>"`. The `projects[]` /
+  `wpiu` form fields you'd guess at are silently ignored (verified
+  via probe: bogus and real values both returned the unfiltered
+  count). Documented in server_instructions.md sharp-edges section.
+- **Strategy move:** new `category-intersect-wikiproject` in
+  `strategy_moves.md` — the pull-time alternative to the existing
+  `wp-intersect-category` (which ingests both sides as full topics
+  before intersecting). Use the new move when the broader WP is
+  too big to ingest (Spaceflight, Plants, Biography); use the
+  existing move when both sides fit. Cross-references between the
+  two.
+- **Instructions update:** COMMON TASK → TOOL row for "compound
+  category query / intersection of categories" now points at
+  `petscan` instead of saying it's not yet built. GAP CHECK guidance
+  shifted: PetScan-style compound queries move from "capture in
+  missed_strategies" to "act on directly via petscan."
+- **Surface:** new entry in `landing.html` Available tools section,
+  positioned next to `wikidata_query` (the other compound-query
+  primitive).
+- **Verification:** two-stage smoke before implementation —
+  `/tmp/probe_petscan.py` locked the JSON shape; `/tmp/probe_petscan2.py`
+  disambiguated the WikiProject filter (proved `projects[]` was
+  silently ignored, confirmed `templates_use_talk_yes=1` is the real
+  primitive). Apollo 11 cat depth=0 ∩ talk:WikiProject Spaceflight
+  returned 30 of 58 candidates — the high-confidence core the
+  Apollo-11 ChatGPT autonomous run (2026-04-27) explicitly
+  asked for.
+
+Backlog items removed: Tier 1 "At-pull-time category × WikiProject
+intersection" (multi-session signal from Apollo 11 + climate-change),
+Tier 3 "PetScan-style intersection." Both subsumed by the general
+wrapper.

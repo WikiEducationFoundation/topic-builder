@@ -249,7 +249,14 @@ rescue:        if subtle bleed survives: description-fetch-then-pattern-clean
 
 ```
 preconditions: structural-primitives.dedicated-wp=broader-only AND
-               structural-primitives.canonical-category=yes
+               structural-primitives.canonical-category=yes AND
+               broader WP small enough to pull in full
+                 (≤ a few thousand articles). When the broader WP
+                 is too big to safely ingest (e.g., WikiProject
+                 Spaceflight, WikiProject Plants), use
+                 category-intersect-wikiproject instead — it does
+                 the intersection at pull-time via PetScan without
+                 ingesting either side.
 sequence:      get_wikiproject_articles(<WP name>) +
                get_category_articles(<topic category>) →
                get_articles(sources_all=[wikiproject:<WP>,
@@ -265,6 +272,41 @@ rescue:        if recall too low: union-add the WP-only or
                  category-only sets and review tail (often the
                  WP captures recent additions the category hasn't
                  caught up to)
+```
+
+## category-intersect-wikiproject
+
+```
+preconditions: a narrow on-topic category (depth 0–2 yields ≤2K
+                 candidates) AND a relevant but broader WikiProject
+                 you DON'T want to ingest in full (overpull risk
+                 on WP Spaceflight, WP Plants, WP Biography, etc.).
+                 The pull-time alternative to wp-intersect-category
+                 when ingesting the WP would be wasteful.
+sequence:      petscan(params={
+                 "language": <wiki>, "project": "wikipedia",
+                 "categories": <category>, "depth": "<0–2>",
+                 "ns[0]": "1",
+                 "templates_yes": "WikiProject <name>",
+                 "templates_use_talk_yes": "1",
+               }, commit=False) →
+               review count + sample →
+               petscan(<same params>, commit=True,
+                       source_label="cat∩wp:<cat>:<wp>")
+expected:      high-confidence on-topic core (typically 30-70%
+                 of the category, depending on how scoped the
+                 category is). One HTTP round-trip; far cheaper
+                 than ingesting the WP.
+rescue:        if intersection is empty: the WP probably doesn't
+                 tag this subtopic (check find_wikiprojects for
+                 a more specific WP), OR the category is mis-
+                 chosen, OR templates_use_talk_yes was forgotten
+                 (the most common bug — without it, templates_yes
+                 checks article ns instead of talk and silently
+                 returns 0).
+WARNING:       templates_yes alone (without templates_use_talk_yes=1)
+                 returns 0 for WikiProject membership checks.
+                 WikiProject tags live on talk pages.
 ```
 
 ## founder-navbox-cascade

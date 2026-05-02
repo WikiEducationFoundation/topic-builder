@@ -23,18 +23,6 @@ Add new items here as signals come in; promote items to
 
 ## Tier 1 — small, high-leverage
 
-### ☐ At-pull-time category × WikiProject intersection `[NEW — 2026-04-27, multi-session signal carried over from the shipped topic_diff parent item]`
-
-**What.** A primitive that performs `category:X ∩ wikiproject:Y` (or `cat ∩ cat`) AT PULL TIME — without first ingesting all of WikiProject Y. Closer to PetScan than to a corpus diff. Sibling to the shipped `topic_diff` (which compares two already-ingested topics).
-
-**Why.** The Apollo 11 ChatGPT autonomous run (2026-04-27) flagged this as the #1 missed strategy: *"A true WikiProject intersection tool would help: WikiProject Moon or Spaceflight intersected with Category:Apollo 11 or Apollo11series would likely improve triangulation without broad overpull."* The AI's mental model is "category narrows, WikiProject corroborates" — the answer it wanted is `category:Apollo 11 ∩ wikiproject:Spaceflight` returning the high-confidence core. That's already expressible via `get_articles(sources_all=[...])` IF both have been pulled — but the AI didn't pull WikiProject Spaceflight because it was scared of overpull. A primitive that performs the intersection before either side is fully ingested would be the unlock.
-
-Climate-change (2026-04-26) feedback also flagged WikiProject ∩ category-tree intersection as an explicit unmet need. So the signal is multi-session, not just Apollo.
-
-**Shape.** Adjacent to the deferred PetScan-style intersection (Tier 3) but narrower (just two-set cases). Could either share that tool surface or land as a sibling. Ratchet-plan currently nominates this as the strongest live signal to work on next.
-
-**Sequencing note.** Promote to active build slot. Adjacent to PetScan-style intersection (Tier 3) — design call when implementation starts is whether to ship a narrow two-set tool or fold into a more general intersection primitive.
-
 ### ☑ Validate `<slug>-exploratory` format on a second topic `[NEW — 2026-04-28; satisfied 2026-04-28 same-day by orchids exploratory id=72]`
 
 **What.** Run `dogfood/kickoffs/exploratory-calibration.md` against one differently-shaped benchmark topic before promoting the brief to a seeded `<slug>-exploratory` task variant in `dogfood_tasks`. If the Phase-2 calibration report structure holds under a different shape, collapse the kickoff to "call fetch_task_brief and follow its instructions" and move the brief body into `dogfood/tasks/<slug>-exploratory.md`.
@@ -271,14 +259,6 @@ Items worth keeping on the roadmap but not committing to pre-build. Revisit afte
 - Stack with or replace sticky rejection list? Stack — rejection is "specific title"; policy is "class of title".
 
 **Sequencing note.** Single-session evidence so far (Phenomenology) but the pattern ("scope is stable across iterations; re-judging is wasted") is structural. Revisit when (a) a second session demands it, or (b) the self-administered spot-check loop encounters repeat-miss-classes the policy would have caught.
-
-### ☐ PetScan-style intersection `[formerly 5.4, backlog:#4]`
-
-**What.** Compound category queries. "Articles in Category:Orchidaceae genera AND Category:Plants described in 1834."
-
-**Shape.** Could wrap the existing `petscan.wmcloud.org` HTTP API, or build natively using `categorymembers` API with intersection logic.
-
-**Sequencing note.** Arguably subsumed by SPARQL via `wikidata_query` (Wikidata supports category intersection queries). Decide after testing whether SPARQL covers the common intersection shapes — if so, drop this; if not, keep.
 
 ### ☐ `get_category_articles_bulk(categories=[...])` batch variant `[formerly 6.1]`
 

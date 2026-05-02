@@ -123,6 +123,61 @@ def api_query(params, wiki='en'):
     return api_get(wiki_api_url(wiki), params)
 
 
+def petscan_query(params: dict, timeout: int = 60) -> tuple[list[dict], dict]:
+    """Run a PetScan compound query. Returns (rows, meta).
+
+    PetScan (https://petscan.wmcloud.org/) is a Wikimedia Cloud Services
+    tool that performs compound category/template/sitelinks/SPARQL queries
+    in a single HTTP call. One round-trip regardless of query complexity.
+
+    `params` is a dict of PetScan URL parameters (see the petscan() MCP
+    tool's docstring for the parameter menu). `format=json` and `doit=1`
+    are added automatically.
+
+    Each row in the returned list has at minimum:
+      - `title`: page title (with underscores; normalize before use)
+      - `id`: page ID
+      - `len`: byte length
+      - `namespace`: numeric namespace ID
+      - `nstext`: namespace name
+      - `metadata.wikidata`: QID when present (often blank for non-articles)
+      - `touched`: last-touched timestamp YYYYMMDDHHMMSS
+
+    `meta` carries the query echo + querytime_sec from PetScan's response
+    envelope, useful for diagnostics.
+
+    Reuses `api_get` so PetScan calls inherit User-Agent, rate-limit
+    backoff, and per-call counters. Each PetScan call counts as one
+    `wikipedia_api_calls` entry — fair from a network-cost POV even
+    though one PetScan call substitutes for many MediaWiki round-trips.
+    """
+    qp = dict(params)
+    qp.setdefault('format', 'json')
+    qp.setdefault('doit', '1')
+    data = api_get(PETSCAN_URL, qp, timeout=timeout)
+    if not isinstance(data, dict):
+        return [], {}
+    # PetScan envelope: {"*": [{"a": {"*": [<rows>], "type": "..."}, "n": "..."}], ...}
+    rows: list[dict] = []
+    meta: dict = {}
+    outer_list = data.get('*', [])
+    if isinstance(outer_list, list) and outer_list:
+        first = outer_list[0]
+        if isinstance(first, dict):
+            inner = first.get('a', {})
+            if isinstance(inner, dict):
+                rows_raw = inner.get('*', [])
+                if isinstance(rows_raw, list):
+                    rows = rows_raw
+    inner_meta = data.get('a', {})
+    if isinstance(inner_meta, dict):
+        meta = {
+            'query_echo': inner_meta.get('query', {}),
+            'querytime_sec': inner_meta.get('querytime_sec'),
+        }
+    return rows, meta
+
+
 def api_query_all(params, result_key, max_items=50000, wiki='en'):
     params = dict(params)
     params['action'] = 'query'

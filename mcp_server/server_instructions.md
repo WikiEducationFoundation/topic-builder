@@ -127,7 +127,7 @@ closest current primitive.
 | "this shortdesc looks misleading / too thin to judge" | `fetch_article_leads(titles=[...], sentences=3)` — fetches the first N sentences of each article's body. Non-persistent; use for disambiguation before scoring or rejecting. |
 | "normalize corpus titles / collapse redirect duplicates" | `resolve_redirects` — rewrites every title to its canonical Wikipedia form; merges duplicates; safe (no drops). Run once mid-build, again before export. |
 | "topic build is saved? can I come back?" | `resume_topic(name)` |
-| "compound category query" / "intersection of categories" | *`petscan_*` not yet built — closest current: two `get_category_articles` calls plus `get_articles(sources_all=...)` for intersection* |
+| "compound category query" / "intersection of categories" / "category ∩ WikiProject without ingesting all of either side" | `petscan(params={...})` — one HTTP round-trip executes any combination of categories (AND/OR/NOT), template membership (article-namespace OR talk-namespace), namespace filters, and SPARQL constraints. For cat ∩ WikiProject pass `templates_yes` + `templates_use_talk_yes=1`. See move: `category-intersect-wikiproject`. |
 | "cross-wiki comparison" / "what's on zhwiki but not enwiki" | *`cross_wiki_diff` not yet built — manual flow: parallel topic on the other wiki + per-article `preview_search` walk-back* |
 | "is this topic complete?" | *`completeness_check` not yet built — closest: spot check + `browse_edges` from edge seeds* |
 | "what does the canonical article actually say?" / "RTFA" | `get_article_content(title, max_chars=30000)` — plain-text extract of the article. Use as planning context before drawing the rubric, or as a cross-check during cleanup. |
@@ -592,6 +592,14 @@ SUBTRACTIVE tools below.
       `{qid, title, sitelink_count}` per row sorted by sitelink count
       desc, fits well under the cap, and pairs with `wikidata_get_entity`
       for follow-up on specific picks.
+    - **`petscan` `templates_yes` matches the article namespace by
+      default.** WikiProject tags live on TALK pages, not articles, so a
+      naive `params={"templates_yes": "WikiProject Spaceflight", ...}`
+      returns 0. Pair it with `templates_use_talk_yes: "1"` to flip the
+      check to talk-namespace. Same for `templates_no` / `templates_any`
+      (`templates_use_talk_no` / `templates_use_talk_any`). The
+      `projects[]` / `wpiu` form fields you might guess at do nothing on
+      the URL; use the templates+use_talk pattern.
     - **`filter_articles` refuses to drop >10% of the corpus as "missing
       on Wikipedia" without `force=True`.** Guardrail against silent
       mass-drops. If you hit a refusal, read the `sample_would_drop` in
@@ -1055,15 +1063,18 @@ where corpus-state pattern-matching can't reach.
 
 - GAP CHECK: after the SPOT CHECK, explicitly ask the user what OTHER
   angles might find articles you both missed. Prompt them with concrete
-  categories: Wikidata properties or SPARQL queries, PetScan-style
-  compound queries, reading lists, awards and honors, bibliographies of
-  key figures, non-English Wikipedias, academic databases, professional
+  categories: Wikidata properties or SPARQL queries, compound
+  category/template intersections (act on those directly via
+  `petscan`), reading lists, awards and honors, bibliographies of key
+  figures, non-English Wikipedias, academic databases, professional
   society memberships. Some suggestions you can act on directly with
-  search_articles or add_articles (e.g. the user names a book whose
-  subjects should all be included — you can search for them). Suggestions
-  you can't act on — especially Wikidata / SPARQL / PetScan — should be
-  captured verbatim in submit_feedback's missed_strategies field so we
-  know what tools to build next.
+  `search_articles` / `add_articles` / `petscan` / `wikidata_query`
+  (e.g. the user names a book whose subjects should all be included —
+  you can search for them; or describes a category × WikiProject core
+  — you can `petscan` it). Suggestions you can't act on (academic
+  databases without an API, society memberships) should be captured
+  verbatim in submit_feedback's missed_strategies field so we know
+  what tools to build next.
 
 - REACH EXTENSION — when the obvious gather strategies have been used
   and the corpus feels settled, but you suspect on-topic articles

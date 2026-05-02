@@ -88,21 +88,17 @@ is just the "what I'd pick up next" opinion.
 
 ## What I'd work on next (opinion)
 
-The strongest live signal is the **`topic_diff` at-pull-time
-intersection** sub-item (still ◐ on the backlog). The Apollo 11
-ChatGPT autonomous run on 2026-04-27 explicitly flagged its absence
-as the #1 missed strategy — wanting WikiProject × Category
-intersection without a full WikiProject ingest first ("would likely
-improve triangulation without broad overpull"). The corpus-diff
-sibling shipped same day, so half the surface is built; this adds
-the at-pull-time variant. Bounded scope, recent multi-source signal,
-ratchetable.
+Top priority shipped 2026-05-02: the at-pull-time intersection landed
+as a general PetScan wrapper (`petscan` tool) rather than a narrow
+cat ∩ wp primitive. Subsumed both the Tier-1 backlog item and the
+Tier-3 PetScan-style intersection item. See `docs/shipped.md`.
 
-Adjacent small ship: **type-hinted annotation on `harvest_list_page`**
+Next live signal: **type-hinted annotation on `harvest_list_page`**
 (Tier 1, multi-session evidence — AA-STEM and orchids flagged the
 same shape from opposite directions, bio lists leaking non-bios vs
 taxonomy lists leaking bios). Annotation rather than hard-filter
-avoids the silent-drop trap.
+avoids the silent-drop trap. Bounded scope, recent multi-source
+signal, ratchetable.
 
 Bigger Tier 2 lever, when a multi-day slot opens:
 **`cross_wiki_diff`**. Most directly unlocks orchids / phenomenology /
