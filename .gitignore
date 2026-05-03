@@ -28,3 +28,8 @@ benchmarks/*/apply_*_resolutions.py
 benchmarks/*/audit.py
 # Per-run scoreboard archives (contain named reach/missed/OUT samples)
 benchmarks/*/runs/
+
+# Agent-matrix harness output: per-cell logs include the auth token
+# (the agent echoes its authenticate(token=...) call into the transcript)
+# and the full session output. Keep out of version control.
+dogfood/matrix-runs/

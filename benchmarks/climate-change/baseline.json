@@ -14,15 +14,15 @@
   "multi_sourced_pct": 32.2,
   "ai_self_rating": 8,
   "ai_coverage_confidence": 0.85,
-  "precision_vs_gold_v1": 0.9317,
-  "recall_vs_gold_v1": 0.8091,
+  "precision_vs_gold_v1": 0.9314,
+  "recall_vs_gold_v1": 0.7128,
   "reach_beyond_prior_gold": 0,
-  "gold_in_count": 1820,
-  "gold_peripheral_count": 5737,
-  "gold_out_count": 560,
+  "gold_in_count": 1968,
+  "gold_peripheral_count": 6572,
+  "gold_out_count": 578,
   "gold_pending_audit_count": 0,
-  "gold_uncertain_count": 0,
-  "gold_size": 7557,
+  "gold_uncertain_count": 300,
+  "gold_size": 9467,
   "source_variant": "autonomous-rebuild",
-  "baseline_note": "Baseline corpus = 6,562 articles from the 2026-04-25 bootstrap run. Grown gold = 8117 rows (1820 in / 5737 peripheral / 560 out / 0 uncertain) after the 2026-04-26 reach audit added 1,555 classified rows. Precision and recall here are computed as if the baseline corpus were a fresh run scored against the post-growth gold (audit.py reproducibly classifies; reach growth was applied via the audit re-run + manual sweep)."
+  "baseline_note": "Baseline corpus = 6562 titles from the original 2026-04-25 bootstrap run (source_run empty in gold.csv). Grown gold = 9467 rows (1968 in / 6572 peripheral / 578 out / 300 uncertain / 37 redirect / 12 redlink) after the 2026-05-02 5-cell agent matrix added 1,350 audited rows on top of the prior 1,555 from 2026-04-26. Precision/recall recomputed as: of baseline titles with an audited verdict in current gold, fraction that are in/peripheral (precision); of all in/peripheral titles in current gold, fraction in baseline corpus (recall)."
 }

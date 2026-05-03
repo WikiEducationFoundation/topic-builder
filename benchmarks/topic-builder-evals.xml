@@ -1,0 +1,46 @@
+<evaluation>
+   <!--
+     MCP-builder skill evaluation harness inputs.
+
+     Each <qa_pair> tests a specific recon-cluster tool path. Mix of
+     Wikidata-stable (Q1-Q4) and Wikipedia-drift-acceptable (Q5-Q7);
+     drift questions answer correctly today but may shift over months,
+     consistent with the audit plan's "±5% drift over a year is fine
+     for tool-quality benchmark" stance.
+
+     Authored 2026-05-03 against the climate-change topic surface.
+     Verify answers via:
+       python ~/.claude/skills/mcp-builder/scripts/evaluation.py \
+         -t http -u https://topic-builder.wikiedu.org/mcp \
+         -m claude-sonnet-4-6 -o benchmarks/topic-builder-evals-report-YYYY-MM-DD.md \
+         benchmarks/topic-builder-evals.xml
+   -->
+   <qa_pair>
+      <question>On Wikidata, find the entity for the Swedish climate activist Greta Thunberg, then look up her date of birth (property P569). Answer in YYYY-MM-DD format and nothing else.</question>
+      <answer>2003-01-03</answer>
+   </qa_pair>
+   <qa_pair>
+      <question>What is the Wikidata QID for the international agreement signed on 12 December 2015 within the United Nations Framework Convention on Climate Change, commonly called the "Paris Agreement"? Distinguish it from the 1954 post-conference Paris Agreements and the 1864 treaty. Answer with the QID string only (e.g., "Q12345").</question>
+      <answer>Q21707860</answer>
+   </qa_pair>
+   <qa_pair>
+      <question>Locate the Wikidata entity for the United Nations body responsible for assessing climate-change science (commonly abbreviated IPCC), then read its inception date (P571). In what year was it founded? Answer with the four-digit year and nothing else.</question>
+      <answer>1988</answer>
+   </qa_pair>
+   <qa_pair>
+      <question>Using SPARQL on Wikidata, count the distinct items whose "parent taxon" (P171) is the orchid genus Cattleya (Q133733) AND that have an en.wikipedia article. Answer with a single integer.</question>
+      <answer>55</answer>
+   </qa_pair>
+   <qa_pair>
+      <question>On en.wikipedia, two WikiProjects worth comparing for breadth are WikiProject Climate change and WikiProject Environment. Using a read-only WikiProject preview tool, determine which has the larger total article count. Answer with the project name, omitting the "WikiProject " prefix (e.g., "Environment" or "Climate change").</question>
+      <answer>Environment</answer>
+   </qa_pair>
+   <qa_pair>
+      <question>The talk page of an en.wikipedia article reveals which WikiProjects claim it. For the article "Climate change" on en.wikipedia, how many WikiProject-shaped templates does the appropriate read-only tool return when filtered to wikiprojects? Answer with a single integer (count exactly what the tool returns, including any utility wrappers it surfaces).</question>
+      <answer>14</answer>
+   </qa_pair>
+   <qa_pair>
+      <question>The "See also" section of an en.wikipedia article lists editor-curated related articles. For the article "Carbon footprint" on en.wikipedia, how many entries does its "See also" section contain? Use a read-only tool that fetches see-also content without modifying topic state. Answer with a single integer.</question>
+      <answer>10</answer>
+   </qa_pair>
+</evaluation>

@@ -71,6 +71,7 @@ import urllib.parse
 from pathlib import Path
 from mcp.server.fastmcp import FastMCP, Context
 from mcp.server.fastmcp.server import TransportSecuritySettings
+from mcp.types import ToolAnnotations
 
 from wikipedia_api import (
     api_query, api_query_all, api_get, normalize_title, wiki_api_url,
@@ -251,6 +252,15 @@ mcp = FastMCP(
         allowed_hosts=_ALLOWED_HOSTS,
     ),
 )
+
+# Tool annotation buckets. See docs/backlog/server-audit.md for taxonomy.
+# Defaults (per MCP spec) are: readOnlyHint=False, destructiveHint=True,
+# idempotentHint=False, openWorldHint=True — so unsetting hints assumes
+# "writes, may destroy, hits external world."
+READ_ONLY = ToolAnnotations(readOnlyHint=True)
+WRITE_ADDITIVE = ToolAnnotations(readOnlyHint=False, destructiveHint=False)
+WRITE_IDEMPOTENT = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True)
+WRITE_DESTRUCTIVE = ToolAnnotations(readOnlyHint=False, destructiveHint=True)
 
 # Multi-worker setup: each worker process runs on a distinct port
 # behind nginx, with sticky session-header routing so MCP session
@@ -451,7 +461,7 @@ def _resolve_wiki(ctx: Context, wiki: str | None = None, topic_name: str | None 
 
 # ── Topic management ───────────────────────────────────────────────────────
 
-@mcp.tool()
+@mcp.tool(annotations=WRITE_ADDITIVE)
 def start_topic(name: str, wiki: str = "en", fresh: bool = False,
                 note: str = "",
                 auth_token: str | None = None,
@@ -545,7 +555,7 @@ def start_topic(name: str, wiki: str = "en", fresh: bool = False,
             f"with fresh=True).{wiki_mismatch_note}")
 
 
-@mcp.tool()
+@mcp.tool(annotations=WRITE_DESTRUCTIVE)
 def reset_topic(note: str = "", topic: str | None = None, auth_token: str | None = None, ctx: Context = None) -> str:
     """Clear all articles from the current topic and start over.
     The topic itself is kept (so the name is preserved), but all articles,
@@ -742,7 +752,7 @@ def _strategy_recommendations(profile: dict) -> dict:
     }
 
 
-@mcp.tool()
+@mcp.tool(annotations=WRITE_IDEMPOTENT)
 def set_topic_rubric(rubric: str, topic_profile: dict | None = None,
                      note: str = "",
                      topic: str | None = None, auth_token: str | None = None, ctx: Context = None) -> str:
@@ -851,7 +861,7 @@ def set_topic_rubric(rubric: str, topic_profile: dict | None = None,
     return json.dumps(response, indent=2, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def get_topic_rubric(topic: str | None = None, auth_token: str | None = None, ctx: Context = None) -> str:
     """Read the centrality rubric for the active topic. Returns empty
     string if no rubric has been set yet.
@@ -885,7 +895,7 @@ def get_topic_rubric(topic: str | None = None, auth_token: str | None = None, ct
     }, indent=2, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def list_topics(auth_token: str | None = None,
                 ctx: Context = None) -> str:
     """List existing topics that can be resumed.
@@ -923,7 +933,7 @@ def list_topics(auth_token: str | None = None,
     return json.dumps(topics, indent=2, default=str)
 
 
-@mcp.tool()
+@mcp.tool(annotations=WRITE_ADDITIVE)
 def authenticate(token: str, ctx: Context = None) -> str:
     """Bind a Wikimedia OAuth token to this MCP session. Call this once
     after the user pastes a token from
@@ -973,7 +983,7 @@ def authenticate(token: str, ctx: Context = None) -> str:
     }, indent=2, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=WRITE_DESTRUCTIVE)
 def revoke_my_token(token: str, ctx: Context = None) -> str:
     """Revoke a Topic Builder bearer token (`tb_<hex>`).
 
@@ -1017,7 +1027,7 @@ def revoke_my_token(token: str, ctx: Context = None) -> str:
     }, indent=2, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def whoami(auth_token: str | None = None, ctx: Context = None) -> str:
     """Return the authenticated Wikipedia username for this session.
 
@@ -1043,7 +1053,7 @@ def whoami(auth_token: str | None = None, ctx: Context = None) -> str:
     }, indent=2, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def get_topic_visibility(topic: str | None = None,
                          auth_token: str | None = None,
                          ctx: Context = None) -> str:
@@ -1068,7 +1078,7 @@ def get_topic_visibility(topic: str | None = None,
     }, indent=2, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=WRITE_IDEMPOTENT)
 def set_topic_visibility(visibility: str,
                          topic: str | None = None,
                          auth_token: str | None = None,
@@ -1187,7 +1197,7 @@ def _feedback_nudge_for_resume(topic_name: str,
     )
 
 
-@mcp.tool()
+@mcp.tool(annotations=WRITE_ADDITIVE)
 def resume_topic(name: str,
                  auth_token: str | None = None,
                  ctx: Context = None) -> str:
@@ -1822,7 +1832,7 @@ def _topic_cost_summary(topic_name: str, max_lines: int = 20000) -> dict | None:
     }
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def get_status(topic: str | None = None, auth_token: str | None = None, ctx: Context = None) -> str:
     """Get current status of the topic build: article count, score
     distribution, source breakdown, and a per-topic cost summary
@@ -1848,7 +1858,7 @@ def get_status(topic: str | None = None, auth_token: str | None = None, ctx: Con
     return json.dumps(status, indent=2, default=str)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def describe_topic(top_first_words_limit: int = 20,
                    note: str = "",
                    topic: str | None = None, auth_token: str | None = None, ctx: Context = None) -> str:
@@ -2345,7 +2355,7 @@ def _synthesize_audit_recommendation(corpus_size: int,
     return " ".join(parts)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def audit_progress(note: str = "",
                    topic: str | None = None, auth_token: str | None = None, ctx: Context = None) -> str:
     """Read-only diagnostic that synthesizes corpus state + usage log
@@ -2466,7 +2476,7 @@ def audit_progress(note: str = "",
     return json.dumps(response, indent=2, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def topic_diff(topic_a: str, topic_b: str,
                sample_size: int = 20,
                by_source: bool = False,
@@ -2579,10 +2589,10 @@ def topic_diff(topic_a: str, topic_b: str,
 
 # ── Reconnaissance tools ──────────────────────────────────────────────────
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def survey_categories(category: str, depth: int = 2, count_articles: bool = False,
                       wiki: str | None = None, note: str = "",
-                      topic: str | None = None, ctx: Context = None) -> str:
+                      topic: str | None = None, auth_token: str | None = None, ctx: Context = None) -> str:
     """Survey the subcategory tree of a Wikipedia category WITHOUT collecting articles.
     Use this first to understand how Wikipedia organizes a topic before committing to a pull.
 
@@ -2667,10 +2677,10 @@ def survey_categories(category: str, depth: int = 2, count_articles: bool = Fals
     return json.dumps(result, indent=2, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def check_wikiproject(project_name: str, wiki: str | None = None,
                       note: str = "",
-                      topic: str | None = None, ctx: Context = None) -> str:
+                      topic: str | None = None, auth_token: str | None = None, ctx: Context = None) -> str:
     """Check whether a given WikiProject exists on Wikipedia. WikiProjects
     tag articles with assessment banners — if one exists for the topic, it's
     usually the best single source of tagged articles.
@@ -2852,10 +2862,11 @@ def _size_band(total: int) -> tuple[str, str]:
             "specific sub-WikiProject.")
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def preview_wikiproject(project_name: str, wiki: str | None = None,
                         note: str = "",
                         topic: str | None = None,
+                        auth_token: str | None = None,
                         ctx: Context = None) -> str:
     """Cheap metadata about a WikiProject — total article count and an
     importance breakdown — WITHOUT enumerating its members. Use BEFORE
@@ -2980,10 +2991,10 @@ def preview_wikiproject(project_name: str, wiki: str | None = None,
     }, indent=2, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def find_wikiprojects(keywords: list[str], limit: int = 20,
                       note: str = "",
-                      topic: str | None = None, ctx: Context = None) -> str:
+                      topic: str | None = None, auth_token: str | None = None, ctx: Context = None) -> str:
     """Discover enwiki WikiProjects whose names contain any of the given
     keywords. Use this BEFORE `check_wikiproject` when you're not sure of
     the exact project name — avoids the "I tried WikiProject Plants, it
@@ -3080,7 +3091,7 @@ def _extract_topic_qualifier(topic_name: str | None) -> str:
     return m.group(1).strip() if m else ''
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def find_list_pages(subject: str, wiki: str | None = None,
                     relax_disambiguation_filter: bool = False,
                     note: str = "",
@@ -3287,12 +3298,13 @@ def _default_wiki(ctx, topic):
     return 'en'
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def get_article_links(title: str, wiki: str | None = None,
                       limit: int = 500, namespace: int = 0,
                       continue_token: str | None = None,
                       note: str = "",
                       topic: str | None = None,
+                      auth_token: str | None = None,
                       ctx: Context = None) -> str:
     """Return mainspace internal links FROM the given article (outgoing).
 
@@ -3404,13 +3416,14 @@ def get_article_links(title: str, wiki: str | None = None,
     }, indent=2, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def get_article_backlinks(title: str, wiki: str | None = None,
                           limit: int = 500, namespace: int = 0,
                           filter_redirects: str = "all",
                           continue_token: str | None = None,
                           note: str = "",
                           topic: str | None = None,
+                          auth_token: str | None = None,
                           ctx: Context = None) -> str:
     """Return mainspace articles that link TO the given article ("what
     links here", incoming links).
@@ -3535,11 +3548,12 @@ def get_article_backlinks(title: str, wiki: str | None = None,
     }, indent=2, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def get_article_categories(title: str, wiki: str | None = None,
                            include_hidden: bool = False,
                            note: str = "",
                            topic: str | None = None,
+                           auth_token: str | None = None,
                            ctx: Context = None) -> str:
     """Return the categories the given article belongs to.
 
@@ -3617,12 +3631,13 @@ def get_article_categories(title: str, wiki: str | None = None,
     }, indent=2, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def get_article_templates(title: str, wiki: str | None = None,
                           filter: str | None = None,
                           limit: int = 500,
                           note: str = "",
                           topic: str | None = None,
+                          auth_token: str | None = None,
                           ctx: Context = None) -> str:
     """Return the templates used on the given article (or its talk page,
     for the wikiproject filter).
@@ -3793,11 +3808,12 @@ def get_article_templates(title: str, wiki: str | None = None,
     }, indent=2, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def wikidata_get_entity(qid: str, properties: list[str] | None = None,
                         languages: list[str] | None = None,
                         note: str = "",
                         topic: str | None = None,
+                        auth_token: str | None = None,
                         ctx: Context = None) -> str:
     """Return the Wikidata entity's full property dump and sitelinks.
 
@@ -3908,11 +3924,12 @@ def wikidata_get_entity(qid: str, properties: list[str] | None = None,
     }, indent=2, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def get_article_content(title: str, wiki: str | None = None,
                         max_chars: int = 30000,
                         note: str = "",
                         topic: str | None = None,
+                        auth_token: str | None = None,
                         ctx: Context = None) -> str:
     """Return the canonical article's plain-text content (no markup,
     no infoboxes, no references) — the RTFA move.
@@ -4005,11 +4022,12 @@ def get_article_content(title: str, wiki: str | None = None,
     }, indent=2, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def get_article_see_also(title: str, wiki: str | None = None,
                          section_name: str = "See also",
                          note: str = "",
                          topic: str | None = None,
+                         auth_token: str | None = None,
                          ctx: Context = None) -> str:
     """Return the link list from an article's `==See also==` section.
 
@@ -4151,11 +4169,12 @@ def get_article_see_also(title: str, wiki: str | None = None,
 
 # ── Wikidata ──────────────────────────────────────────────────────────────
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def wikidata_search_entity(term: str, entity_type: str = "item",
                            language: str = "en", limit: int = 10,
                            note: str = "",
                            topic: str | None = None,
+                           auth_token: str | None = None,
                            ctx: Context = None) -> str:
     """Search Wikidata for candidate entities (or properties) matching a
     label or description. **Call this FIRST** when you need a QID for a
@@ -4226,12 +4245,13 @@ def _json_size(obj) -> int:
     return len(json.dumps(obj, separators=(',', ':'), ensure_ascii=False))
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def wikidata_entities_by_property(property_id: str, value_qid: str,
                                   wiki: str | None = None,
                                   limit: int = 500,
                                   note: str = "",
                                   topic: str | None = None,
+                                  auth_token: str | None = None,
                                   ctx: Context = None) -> str:
     """Find Wikidata entities whose `property_id` links to `value_qid`, and
     return each one's QID, label, sitelink title in the requested wiki,
@@ -4341,12 +4361,13 @@ def wikidata_entities_by_property(property_id: str, value_qid: str,
     return json.dumps(response, indent=2, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def preview_wikidata_property(property_id: str, value_qid: str,
                               wiki: str | None = None,
                               limit: int = 500,
                               note: str = "",
                               topic: str | None = None,
+                              auth_token: str | None = None,
                               ctx: Context = None) -> str:
     """Titles-only sibling of `wikidata_entities_by_property`. Returns just
     `{qid, title, sitelink_count}` per row — no Wikidata label, no
@@ -4397,9 +4418,9 @@ def preview_wikidata_property(property_id: str, value_qid: str,
     return json.dumps(response, indent=2, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def wikidata_query(sparql: str, note: str = "",
-                   topic: str | None = None, ctx: Context = None) -> str:
+                   topic: str | None = None, auth_token: str | None = None, ctx: Context = None) -> str:
     """Run a raw SPARQL query against query.wikidata.org. Use this only
     when `wikidata_entities_by_property` can't express what you need —
     compound joins, property paths, aggregates, literal-valued
@@ -4489,7 +4510,7 @@ def wikidata_query(sparql: str, note: str = "",
     return json.dumps(response, indent=2, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=WRITE_ADDITIVE)
 def resolve_qids(limit: int = 2000, time_budget_s: int = 60,
                  note: str = "",
                  topic: str | None = None, auth_token: str | None = None, ctx: Context = None) -> str:
@@ -4566,7 +4587,7 @@ def resolve_qids(limit: int = 2000, time_budget_s: int = 60,
 
 # ── Gathering tools ───────────────────────────────────────────────────────
 
-@mcp.tool()
+@mcp.tool(annotations=WRITE_ADDITIVE)
 def get_wikiproject_articles(project_name: str, max_articles: int = 50000,
                               note: str = "",
                               topic: str | None = None, auth_token: str | None = None, ctx: Context = None) -> str:
@@ -4630,7 +4651,7 @@ def get_wikiproject_articles(project_name: str, max_articles: int = 50000,
     return json.dumps(result, indent=2, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=WRITE_ADDITIVE)
 def petscan(params: dict | None = None,
             psid: str | None = None,
             commit: bool = False,
@@ -5007,7 +5028,7 @@ def _scope_drift_warning(category: str, topic_name: str,
     return None
 
 
-@mcp.tool()
+@mcp.tool(annotations=WRITE_ADDITIVE)
 def get_category_articles(category: str, depth: int = 3, exclude: list[str] | None = None,
                           max_articles: int = 50000,
                           time_budget_s: int = 240,
@@ -5109,7 +5130,7 @@ def get_category_articles(category: str, depth: int = 3, exclude: list[str] | No
     return json.dumps(result, indent=2, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def preview_category_pull(category: str, depth: int = 3,
                           exclude: list[str] | None = None,
                           max_articles: int = 50000,
@@ -5397,7 +5418,7 @@ def _fetch_list_page_links(title: str, wiki: str,
     return links, False, timed_out
 
 
-@mcp.tool()
+@mcp.tool(annotations=WRITE_ADDITIVE)
 def harvest_list_page(title: str, main_content_only: bool = True,
                       time_budget_s: int = 240,
                       annotate_types: bool = False,
@@ -5517,7 +5538,7 @@ def harvest_list_page(title: str, main_content_only: bool = True,
     return json.dumps(result, indent=2, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def preview_harvest_list_page(title: str, sample_size: int = 50,
                               main_content_only: bool = True,
                               time_budget_s: int = 240,
@@ -5675,7 +5696,7 @@ class _AllMainspaceLinkExtractor(html.parser.HTMLParser):
         self.links.append(link_title)
 
 
-@mcp.tool()
+@mcp.tool(annotations=WRITE_ADDITIVE)
 def harvest_navbox(template: str, note: str = "",
                    topic: str | None = None, auth_token: str | None = None, ctx: Context = None) -> str:
     """Extract mainspace article links from a Wikipedia navbox template.
@@ -5886,7 +5907,7 @@ def _run_cirrus_search(query: str, within_category: str | None,
     return titles, note
 
 
-@mcp.tool()
+@mcp.tool(annotations=WRITE_ADDITIVE)
 def search_articles(query: str, limit: int = 500,
                     within_category: str | None = None,
                     note: str = "",
@@ -5944,7 +5965,7 @@ def search_articles(query: str, limit: int = 500,
     }, indent=2, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=WRITE_ADDITIVE)
 def search_similar(seed_article: str, limit: int = 50, note: str = "",
                    topic: str | None = None,
                    auth_token: str | None = None,
@@ -5964,7 +5985,7 @@ def search_similar(seed_article: str, limit: int = 50, note: str = "",
                            topic=topic, auth_token=auth_token, ctx=ctx)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def preview_search(query: str, limit: int = 50,
                    within_category: str | None = None,
                    note: str = "",
@@ -6043,7 +6064,7 @@ def preview_search(query: str, limit: int = 50,
     }, indent=2, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def preview_similar(seed_article: str, limit: int = 50, note: str = "",
                     topic: str | None = None,
                     auth_token: str | None = None,
@@ -6076,7 +6097,7 @@ def preview_similar(seed_article: str, limit: int = 50, note: str = "",
 
 # ── Review aids ───────────────────────────────────────────────────────────
 
-@mcp.tool()
+@mcp.tool(annotations=WRITE_ADDITIVE)
 def fetch_descriptions(limit: int = 2000, time_budget_s: int = 60,
                        note: str = "",
                        topic: str | None = None, auth_token: str | None = None, ctx: Context = None) -> str:
@@ -6186,10 +6207,10 @@ def fetch_descriptions(limit: int = 2000, time_budget_s: int = 60,
     }, indent=2, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def fetch_article_leads(titles: list[str], sentences: int = 3,
                         wiki: str | None = None, note: str = "",
-                        topic: str | None = None, ctx: Context = None) -> str:
+                        topic: str | None = None, auth_token: str | None = None, ctx: Context = None) -> str:
     """Fetch the first N sentences of each article's body (the article's
     *lead*, not the Wikidata shortdesc). Use when a shortdesc looks thin
     or misleading and you need a richer read before scoring, rejecting,
@@ -6254,7 +6275,7 @@ def fetch_article_leads(titles: list[str], sentences: int = 3,
 
 # ── Scoring tools ─────────────────────────────────────────────────────────
 
-@mcp.tool()
+@mcp.tool(annotations=WRITE_ADDITIVE)
 def score_by_extract(titles: list[str] | None = None, unscored_batch: bool = False,
                      batch_size: int = 50, note: str = "",
                      topic: str | None = None, auth_token: str | None = None, ctx: Context = None) -> str:
@@ -6325,7 +6346,7 @@ def score_by_extract(titles: list[str] | None = None, unscored_batch: bool = Fal
     }, indent=2, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=WRITE_IDEMPOTENT)
 def set_scores(scores: dict[str, int], note: str = "",
                topic: str | None = None, auth_token: str | None = None, ctx: Context = None) -> str:
     """Set relevance scores for articles. Scores should be 1-10.
@@ -6347,7 +6368,7 @@ def set_scores(scores: dict[str, int], note: str = "",
     return f"Updated scores for {updated} articles."
 
 
-@mcp.tool()
+@mcp.tool(annotations=WRITE_ADDITIVE)
 def auto_score_by_keyword(keywords: list[str], score: int = 9,
                           match_description: bool = False,
                           overwrite_scored: bool = False,
@@ -6437,7 +6458,7 @@ def auto_score_by_keyword(keywords: list[str], score: int = 9,
     }, indent=2, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=WRITE_ADDITIVE)
 def auto_score_by_description(
     required_any: dict[str, list[str]],
     disqualifying: list[str] | None = None,
@@ -6658,7 +6679,7 @@ def auto_score_by_description(
     return json.dumps(result, indent=2, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=WRITE_ADDITIVE)
 def score_all_unscored(score: int = 8, note: str = "",
                        topic: str | None = None, auth_token: str | None = None, ctx: Context = None) -> str:
     """Set a score for ALL currently unscored articles in one operation.
@@ -6707,7 +6728,7 @@ def score_all_unscored(score: int = 8, note: str = "",
 
 # ── Edge browsing ─────────────────────────────────────────────────────────
 
-@mcp.tool()
+@mcp.tool(annotations=WRITE_ADDITIVE)
 def browse_edges(seed_titles: list[str], min_links: int = 3, note: str = "",
                  topic: str | None = None, auth_token: str | None = None, ctx: Context = None) -> str:
     """Browse outgoing links from seed articles to find related articles not yet
@@ -6766,7 +6787,7 @@ def browse_edges(seed_titles: list[str], min_links: int = 3, note: str = "",
 
 # ── List management ───────────────────────────────────────────────────────
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def list_sources(note: str = "", topic: str | None = None, auth_token: str | None = None, ctx: Context = None) -> str:
     """List every source label currently attached to articles in the working list,
     with counts. Call this before remove_by_source to see exactly what labels
@@ -6804,7 +6825,7 @@ def list_sources(note: str = "", topic: str | None = None, auth_token: str | Non
     }, indent=2, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=WRITE_ADDITIVE)
 def add_articles(titles: list[str], source: str = "manual", score: int | None = None,
                  note: str = "",
                  topic: str | None = None, auth_token: str | None = None, ctx: Context = None) -> str:
@@ -6870,7 +6891,7 @@ def add_articles(titles: list[str], source: str = "manual", score: int | None = 
     return json.dumps(result, indent=2, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def get_articles_by_source(source: str, exclude_sources: list[str] | None = None,
                            prefix_match: bool = False, only_source: bool = False,
                            limit: int = 100, offset: int = 0, note: str = "",
@@ -6984,7 +7005,7 @@ def get_articles_by_source(source: str, exclude_sources: list[str] | None = None
     }, indent=2, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=WRITE_ADDITIVE)
 def reject_articles(titles: list[str], reason: str = "",
                     also_remove: bool = True, note: str = "",
                     topic: str | None = None, auth_token: str | None = None, ctx: Context = None) -> str:
@@ -7038,7 +7059,7 @@ def reject_articles(titles: list[str], reason: str = "",
     }, indent=2, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def list_rejections(note: str = "", topic: str | None = None,
                     auth_token: str | None = None,
                     ctx: Context = None) -> str:
@@ -7064,7 +7085,7 @@ def list_rejections(note: str = "", topic: str | None = None,
     }, indent=2, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=WRITE_ADDITIVE)
 def unreject_articles(titles: list[str], note: str = "",
                       topic: str | None = None, auth_token: str | None = None, ctx: Context = None) -> str:
     """Remove titles from this topic's rejection list. Does NOT add them
@@ -7093,7 +7114,7 @@ def unreject_articles(titles: list[str], note: str = "",
     }, indent=2, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=WRITE_DESTRUCTIVE)
 def remove_articles(titles: list[str], note: str = "",
                     topic: str | None = None, auth_token: str | None = None, ctx: Context = None) -> str:
     """Remove articles from the working list.
@@ -7132,7 +7153,7 @@ def remove_articles(titles: list[str], note: str = "",
     return f"Removed {removed} articles. Total: {total}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=WRITE_DESTRUCTIVE)
 def remove_by_source(source: str, keep_if_other_sources: bool = True,
                      prefix_match: bool = False, dry_run: bool = True,
                      note: str = "",
@@ -7220,7 +7241,7 @@ def remove_by_source(source: str, keep_if_other_sources: bool = True,
     return f"Removed {removed} articles from {desc} (kept {len(to_keep)} that had other sources). Total: {total}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=WRITE_DESTRUCTIVE)
 def remove_by_pattern(pattern: str, below_score: int | None = None, source: str | None = None,
                       match_description: bool = False,
                       dry_run: bool = True, note: str = "",
@@ -7305,7 +7326,7 @@ def remove_by_pattern(pattern: str, below_score: int | None = None, source: str 
     return f"Removed {removed} articles matching '{pattern}'. Total: {total}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def get_articles(min_score: int | None = None, max_score: int | None = None,
                  source: str | None = None,
                  sources_all: list[str] | None = None,
@@ -7382,7 +7403,7 @@ def get_articles(min_score: int | None = None, max_score: int | None = None,
 
 # ── Cleanup and export ────────────────────────────────────────────────────
 
-@mcp.tool()
+@mcp.tool(annotations=WRITE_ADDITIVE)
 def resolve_redirects(dry_run: bool = False, note: str = "",
                       topic: str | None = None, auth_token: str | None = None, ctx: Context = None) -> str:
     """Normalize every article title in the current topic to its canonical
@@ -7509,7 +7530,7 @@ def resolve_redirects(dry_run: bool = False, note: str = "",
     return json.dumps(result, indent=2, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=WRITE_DESTRUCTIVE)
 def filter_articles(resolve_redirects: bool = True, remove_disambig: bool = True,
                     remove_lists: bool = True,
                     time_budget_s: int = 240,
@@ -7767,7 +7788,7 @@ def filter_articles(resolve_redirects: bool = True, remove_disambig: bool = True
     return json.dumps(stats, indent=2)
 
 
-@mcp.tool()
+@mcp.tool(annotations=WRITE_ADDITIVE)
 def export_csv(min_score: int = 0, scored_only: bool = False,
                enriched: bool = False,
                note: str = "",
@@ -8086,7 +8107,7 @@ def _build_iv_config_and_articles(
     return config, articles, errors
 
 
-@mcp.tool()
+@mcp.tool(annotations=WRITE_ADDITIVE)
 def prepare_iv_handoff(iv_description: str,
                        editor_label: str = "editors",
                        start_date: str | None = None,
@@ -8181,7 +8202,7 @@ def prepare_iv_handoff(iv_description: str,
     }, indent=2, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=WRITE_ADDITIVE)
 def publish_topic(iv_description: str,
                   editor_label: str = "editors",
                   start_date: str | None = None,
@@ -8284,7 +8305,7 @@ def _render_task_template(template: str, ts: str) -> str:
     return template.replace("{ts}", ts)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def fetch_task_brief(task_id: str | None = None,
                      variant: str = "thin",
                      ctx: Context = None) -> str:
@@ -8410,7 +8431,7 @@ def fetch_task_brief(task_id: str | None = None,
     }, indent=2, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def list_tasks(variant: str | None = None,
                benchmark_slug: str | None = None,
                ctx: Context = None) -> str:
@@ -8477,8 +8498,8 @@ def _split_exemplar_body(body: str):
     return menu, case
 
 
-@mcp.tool()
-def list_exemplars(topic: str, ctx: Context = None) -> str:
+@mcp.tool(annotations=READ_ONLY)
+def list_exemplars(topic: str, auth_token: str | None = None, ctx: Context = None) -> str:
     """List authored worked-example exemplars from analogous benchmark
     topics. Returns the menu-card section of each exemplar (shape axes,
     summary, headline numbers, high-leverage move teasers, "doesn't apply
@@ -8530,8 +8551,8 @@ def list_exemplars(topic: str, ctx: Context = None) -> str:
     }, indent=2, ensure_ascii=False)
 
 
-@mcp.tool()
-def get_exemplar(slug: str, topic: str,
+@mcp.tool(annotations=READ_ONLY)
+def get_exemplar(slug: str, topic: str, auth_token: str | None = None,
                  allow_own: bool = False, ctx: Context = None) -> str:
     """Fetch the full case study for one exemplar by slug. Returns the
     detailed tool-call sequence + numeric results + lessons + anti-
@@ -8591,7 +8612,7 @@ def get_exemplar(slug: str, topic: str,
 
 # ── Feedback ──────────────────────────────────────────────────────────────
 
-@mcp.tool()
+@mcp.tool(annotations=WRITE_ADDITIVE)
 def submit_feedback(summary: str, what_worked: str = "", what_didnt: str = "",
                     missed_strategies: str = "",
                     rating: int | None = None, note: str = "",
