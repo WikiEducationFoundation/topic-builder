@@ -23,6 +23,60 @@ Add new items here as signals come in; promote items to
 
 ## Tier 1 — small, high-leverage
 
+### ☐ Fix `get_article_content` `auth_token` unbound error `[NEW — 2026-05-08, climate-change IV-handoff session]`
+
+**What.** `get_article_content` errors with `name 'auth_token' is not defined` when the `auth_token` parameter is passed; works when omitted. Schema-vs-body mismatch — the param is in the FastMCP-published schema but the function body doesn't reference it.
+
+**Why.** Surfaced 2026-05-08 in the climate-change IV-handoff session. Any caller that defensively passes `auth_token` (which is in every tool's schema) gets an opaque NameError. Easy fix and worth auditing the other read-only tools for the same pattern while there — exactly the "AI may find N-1 of N places" failure mode the testing-plan backlog item names.
+
+**Shape.** Locate the unbound reference in `server.py:get_article_content`, fix. Sweep adjacent read tools for the same shape. ~5 minutes.
+
+**Sequencing.** Tier 1 — bug; ship in next bundle.
+
+### ☐ `add_articles` silent re-score on the "updated" path: document or opt-in `[NEW — 2026-05-08, climate-change IV-handoff session]`
+
+**What.** When `add_articles(score=N)` includes titles that already exist in the topic, the existing articles' scores are silently overwritten to N. The tool docstring doesn't mention this. The response shows "added X, updated Y" but the count of *score* updates inside Y is invisible.
+
+**Why.** 2026-05-08 climate-change: a bulk-add at score=9 silently promoted ~290 climate-scientist articles from score=4 → score=9. By the rubric this was probably correct, but it was unintentional, irreversible from the response, and only visible at the next status check. The score-9 bucket grew from 907 → 1,345 over the session; only ~146 of that +438 was new adds. Score drift like this is exactly the invisible-state-change pattern the testing-plan backlog item names.
+
+**Shape.** Two options:
+- **Option A** — document the behavior in the docstring + server_instructions.md, and split the response so it distinguishes "added N, score-updated M, unchanged K" instead of just "added N, updated Y". Zero behavior change.
+- **Option B** — change default to `update_score=False`; require explicit opt-in via `update_score=True`. Backwards-incompatible but safer.
+
+**Open question.** A vs B — Sage's call. B is the durable safer answer; A is zero-risk.
+
+**Sequencing.** Tier 1 — small fix; design choice is the only friction.
+
+### ☐ "No approval received" opaque error on topic-session mismatch `[NEW — 2026-05-08, climate-change IV-handoff session]`
+
+**What.** Tool calls fail with `No approval received` when the session's active topic doesn't match the `topic=` parameter passed. The error string doesn't name the mismatch or suggest a fix.
+
+**Why.** 2026-05-08 climate-change: several tool calls failed this way; the AI had to call `resume_topic` blindly to reset session state. Diagnosis was trial-and-error.
+
+**Shape.** Either (a) eliminate session topic-state and require explicit `topic=` on every call; or (b) when the mismatch is detected, raise an actionable error like "session topic is X; you passed topic=Y. Call `resume_topic(Y)` first or pass `topic=X`." (b) is much smaller. Also worth adding the active session topic to `whoami` output for self-debug.
+
+**Sequencing.** Tier 1 — small UX fix.
+
+### ☐ Document `diff-merge-from-parallel-builds` as a named move `[NEW — 2026-05-08, climate-change IV-handoff session]`
+
+**What.** Add `diff-merge-from-parallel-builds` to `mcp_server/strategy_moves.md` with the worked example from the 2026-05-08 climate-change session. Pattern: when parallel automated builds exist on the same topic, run `topic_diff(by_source=True)` between the curated topic and each automated topic; partition `only_a` per source by predicted yield; for high-yield sources, call `get_articles_by_source` on the other topic and triage; bulk-add kept titles with `manual:<context>-triaged` source labels for clean provenance.
+
+**Why.** The session's confabulation checker correctly flagged "strategies_used: diff_merge_from_parallel_builds → no mapping registered" — that's the system telling us a real strategy isn't yet in the move catalog. End-to-end yield in this session: 153 net-new articles into a 6,562-article curated topic, with diff predictions matching post-add reality *exactly* on every source (e.g., P106=Q61048378 predicted 27 only_a → 27 added; P106=Q1113838 predicted 24 → 24 added). That precision is itself part of the move's value: the source-level prediction is the sanity check that the diff math + source labels are aligned before commit.
+
+**Shape.** One named-move entry per the existing format: preconditions (parallel automated builds exist on same topic), sequence (the four-step pattern above), expected yield/noise, rescue paths, cross-references to `topic_diff` and `get_articles_by_source`. Update the evidence map in submit_feedback's confabulation checker so the flag stops firing for legitimate uses.
+
+**Sequencing.** Tier 1 — substrate addition; the worked example is already in this session's tool-call log.
+
+### ☐ Recommend systematic Wikidata P101 / P106 enumeration in instructions `[NEW — 2026-05-08, climate-change IV-handoff session]`
+
+**What.** Add a short bullet under the existing Wikidata section of `server_instructions.md` recommending that STEM / policy / movement / biography-heavy topics systematically probe *several* Wikidata P106 (occupation) and P101 (field of work) QIDs related to the rubric, not just one or two. The recommendation is method-level; specific QIDs are topic-specific.
+
+**Why.** 2026-05-08 climate-change diff-merge contributed 79+ net-new climate-scientist/activist biographies via Wikidata occupation/field-of-work probes the curated build hadn't run (P106=Q61048378 climate activist, P106=Q1113838 environmentalist, P101=Q125928 climate change, P101=adaptation+mitigation). Current instructions cover Wikidata as additive but don't push for *breadth* across multiple P-codes — the breadth is what made the session's reach axis productive.
+
+**Shape.** One bullet, ~3-5 lines, with concrete QID examples for one topic shape (climate / STEM) so the AI can pattern-match.
+
+**Sequencing.** Tier 1 — instruction tweak.
+
 ### ☑ Validate `<slug>-exploratory` format on a second topic `[NEW — 2026-04-28; satisfied 2026-04-28 same-day by orchids exploratory id=72]`
 
 **What.** Run `dogfood/kickoffs/exploratory-calibration.md` against one differently-shaped benchmark topic before promoting the brief to a seeded `<slug>-exploratory` task variant in `dogfood_tasks`. If the Phase-2 calibration report structure holds under a different shape, collapse the kickoff to "call fetch_task_brief and follow its instructions" and move the brief body into `dogfood/tasks/<slug>-exploratory.md`.
@@ -46,6 +100,32 @@ Add new items here as signals come in; promote items to
 ---
 
 ## Tier 2 — medium effort, multi-session-validated
+
+### ☐ `validate_titles(titles=[...])` — pre-flight Wikipedia existence check `[NEW — 2026-05-08; LLM-fabrication is now multi-session]`
+
+**What.** Standalone read-only tool: takes a titles list, returns `{title: {status: exists|redirects_to|missing, target: <if redirect>}}`. No mutation, no per-topic gating.
+
+**Why.** LLM hallucination of plausible-but-non-existent titles is now multi-session. 2026-05-08 climate-change: the `exploratory:llm-fabricate-and-verify` strategy produced "Climate change in agriculture" and "Coal phase-out by country" — fake titles for real concepts that exist under different canonical names ("Effects of climate change on agriculture", "Coal phase-out") and were already in the corpus. Currently the only validators are `add_articles` (mutates the working list) or `resolve_redirects` (post-hoc cleanup). A pre-flight standalone catches fabrications *before* they enter the working list, which is what "verify" was supposed to do in the first place.
+
+Pairs with the spot-check support primitives cluster's `check_article_presence` (which checks corpus-presence rather than Wikipedia-existence — they're complementary, not duplicative).
+
+**Shape.** Wraps MediaWiki `prop=info&redirects` (batches up to 50 titles per call, supports normalization). Returns the structured map. Reusable across spot-check, gather-time validation, and the self-administered fabricate-and-verify loop.
+
+**Open questions.**
+- Does it need a `wiki` parameter, or is the topic's wiki implicit? Probably explicit `wiki=`, since this is read-only and isn't tied to a topic session.
+- Output shape for redirects: just the target title, or also a `near_match` flag for case/diacritic variants? Probably mirror `check_article_presence`'s shape so the AI doesn't have to remember two conventions.
+
+**Sequencing.** Tier 2 — multi-session signal; could ship in the same deploy as the spot-check support primitives cluster.
+
+### ☐ `intitle:` high-prefix-family-concentration warning `[NEW — 2026-05-08; multi-session signal]`
+
+**What.** When a `search_articles` / `preview_search` call with `intitle:` returns results where >40% of titles share a common 2-3-word prefix (e.g., "Geography of …", "Outline of …", "List of …"), emit a structured `prefix_concentration_warning: {prefix, count, pct}` field in the response so the AI can pre-filter before commit.
+
+**Why.** Multi-session structural noise pattern. 2026-05-08 climate-change: the "Geography of X" cluster surfaced from TWO independent agentic strategies in one session (exploratory category/intitle sweep + thin `intitle:climate-deforestation-or-redd-or-land-use-change`) — and from earlier 2026-04-25 sessions. The triggering keywords don't appear in "Geography of [country]" titles; CirrusSearch is over-matching on something else (probably category-bag membership). Removing the noise after the fact is currently a per-topic firefight (`remove_by_pattern("Geography of ")` + sticky-rejection); a tool-level warning catches the cluster generically before commit.
+
+**Shape.** In the search-tool response handler, scan returned titles for the most-common 2-3-word leading prefix; if >40% share one prefix, attach the warning. Pure response-side; no API change to the call signature. Generalizes beyond climate — same shape would catch "List of …" floods from list-page-anchored searches and "Outline of …" floods from outline-anchored searches.
+
+**Sequencing.** Tier 2 — multi-session signal; small implementation.
 
 ### ☐ `cross_wiki_diff(source_wiki, target_wiki)` `[formerly 5.2]`
 
@@ -359,5 +439,11 @@ One-liners that have been considered and deliberately deferred. Promote to a tie
 - **Surface Wikidata time-literal precision.** P569/P571/other date claims return values like `+1988-00-00T00:00:00Z` or `+2003-01-03T00:00:00Z` — caller has to infer year-only vs day-level precision from the `00-00` substring pattern. Add a `precision` field (year/month/day) and/or a parsed `year` / `date` convenience alongside the raw value. Two-agent evidence from 2026-05-03 evals. `[NEW — 2026-05-03, server-audit Tier 2.2]`
 - **Add `auth_token` docstring note to read-only tools.** The parameter appears in every tool's schema (FastMCP picks it up from the signature), but most tool docstrings don't mention it. Read-only tools should explicitly say "not required for read-only calls" so naive agents don't waste tokens guessing. One-line doc addition × ~37 read tools — mechanical pass. Two-agent evidence from 2026-05-03 evals (Q6 get_article_templates, Q7 get_article_see_also). `[NEW — 2026-05-03, server-audit Tier 2.2]`
 - **Pilot Pydantic input models on 3 underspecified tool inputs.** The mcp-builder skill recommends Pydantic input models for 71-tool en-masse adoption; the server audit rejected the en-masse pass but flagged 3 tools whose input shape is currently underspecified: `petscan` (free-form `params: dict`), `set_topic_rubric` (`topic_profile: dict` has a documented schema but no enforcement), `set_scores` (dict-of-dicts shape). Pilot one of the three; if Pydantic gives us cleaner client-side errors and lets us remove tool-body validation, expand selectively (not en masse); if churn outweighs payoff, document divergence in CLAUDE.md. Single-skill-flag evidence, no matrix-run signal — pilot itself IS the evidence-gathering step. `[NEW — 2026-05-03, server-audit Tier 1.1.c]`
+- **`describe_topic` same-score-cluster signal.** Add a flag in `describe_topic` output when any single non-null score holds >50% of corpus articles. 2026-05-08 climate-change: topic shipped to IV with 3,882 / 6,674 articles (58%) at score=4 — a latent calibration issue from prior batched scoring rather than per-article rubric application. Currently you have to eyeball score_distribution and notice the imbalance. A structured warning surfaces it as something to budget for. Single-session evidence but the failure mode is structural — any topic that went through batched scoring will exhibit it. `[NEW — 2026-05-08]`
+- **`add_articles` rejected-section returns reason + rejected_at per blocked title.** When sticky-rejection blocks an add, the response should include the `reason` text and `rejected_at` timestamp per blocked title (not just an aggregate count). Bonus signal: warn at session level when ≥5 rejections share identical reason text — strong indicator of a batched LLM cleanup pass that didn't reason per-article. 2026-05-08 climate-change: 18 sticky rejections all timestamped 2026-04-25 22:45:45 with identical boilerplate ("Clearly off-topic: cars, films, political parties, religious figures, generic terms…"); two of those overlapped with hand-curated additions where the boilerplate didn't apply on individual reading. Without per-title context the AI can't decide whether to invoke unreject + retry. `[NEW — 2026-05-08]`
+- **`add_articles(override_rejections=True)`.** Optional flag that skips the sticky-rejection filter for a single call; replaces the unreject + add 2-step pattern when the rejection's reason text is irrelevant boilerplate that doesn't apply to the title being added. 2026-05-08 climate-change session evidence; pairs naturally with the per-title-rejection-context item above (you'd want to see *why* something was rejected before deciding to override, then have a one-call way to do it). Single-session, but the friction is structural any time hand-curated additions overlap with batched rejections. `[NEW — 2026-05-08]`
+- **`topic_diff` 3-way comparison.** Variant that takes 3 topics and returns the 8-cell Venn (in-A-only, in-B-only, in-C-only, in A∩B-not-C, etc.) with per-source breakdowns. 2026-05-08 climate-change had to run topic_diff twice (curated vs thin, curated vs exploratory) and reason about the union mentally — the natural shape for the cross-validation pattern that emerged is 3-way. Single-session evidence; promote if the diff-merge-from-parallel-builds named move (Tier 1) sees use across more topics. `[NEW — 2026-05-08]`
+- **Cross-topic score-divergence diagnostic.** Tool that flags articles where the same title has different scores across two or more topics (e.g., 2026-05-08 climate-change: Greta Thunberg at score=4 in curated, score=9 in thin — same article, different rubric application). Strong calibration signal that none of the existing diff/cross-topic tools surface. Could also be a column in `topic_diff(by_source=True)` rather than its own tool. `[NEW — 2026-05-08]`
+- **`exploratory:llm-fabricate-and-verify` strategy lacks a real verify step.** The strategy as currently practiced fabricates plausible titles, then "verifies" them via something soft (preview_search?) that misses titles that exist under different canonical names. 2026-05-08 climate-change: "Climate change in agriculture" and "Coal phase-out by country" got past the verify step despite being canonical-redirects-to-different-articles already in the corpus. Pairs with the Tier 2 `validate_titles` tool (which would BE the verify primitive); also worth a server_instructions.md note tightening the recipe — "fabricate, then validate_titles, then preview_search the misses to find the canonical name." `[NEW — 2026-05-08]`
 
 ---

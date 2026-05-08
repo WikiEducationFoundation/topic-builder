@@ -1,10 +1,14 @@
 # Topic Builder → Impact Visualizer handoff
 
 Spec doc + implementation-status tracker for the TB ↔ IV handoff
-feature. This replaces the original "design doc for a deferred
-feature" version of this file: the TB side has shipped (2026-05-01,
-see `docs/shipped.md`), the IV side is greenfield, and this doc is
-now what each side reads to know what's expected of it.
+feature. The TB side shipped 2026-05-01; the IV side shipped
+2026-05-08 (IV PR #55, plus a 6562-article climate-change end-to-end
+dogfood the same day against wmcloud + wiki-ed prod). The v1 loop is
+now end-to-end. What remains is forward-compat (atomic edits, schema
+version coordination) and breadth (TB → IV user list, broadening
+the IV-side admin gate).
+
+Source for the IV-side status: `impact-visualizer/docs/topic-builder-handoff-status.md`.
 
 ## Implementation status
 
@@ -18,12 +22,33 @@ now what each side reads to know what's expected of it.
 | TB   | nginx `/packages/` route | ☑ shipped 2026-05-01 | `deploy.sh` |
 | TB   | `server_instructions.md` IV-handoff section | ☑ shipped 2026-05-01 | |
 | TB   | landing.html + CLAUDE.md update | ☑ shipped 2026-05-01 | |
-| IV   | `GET /imports/<handle>` preview page | ☐ not started | greenfield |
-| IV   | `POST /imports/<handle>` import handler | ☐ not started | greenfield |
-| IV   | `ArticleBagArticle.centrality` column | ☐ not started | nullable int 1..10 |
-| IV   | `Topic.tb_handle` column (recommended) | ☐ not started | for audit + future atomic edits |
-| Both | Dogfood task brief + end-to-end run | ☐ blocked on IV | `dogfood/tasks/iv-handoff.md` |
+| IV   | `GET /imports/<handle>` preview page | ☑ shipped 2026-05-08 | IV PR #55 |
+| IV   | `POST /imports/<handle>` import handler | ☑ shipped 2026-05-08 | IV PR #55; admin-only |
+| IV   | `ArticleBagArticle.centrality` column | ☑ shipped 2026-05-08 | IV PR #55; nullable int |
+| IV   | `Topic.tb_handle` column | ☑ shipped 2026-05-08 | IV PR #55 |
+| Both | End-to-end dogfood run | ☑ shipped 2026-05-08 | 6562-article climate-change topic, wmcloud + wiki-ed prod |
+| IV   | Schema-version bump coordination story | ☐ not started | needed before TB ships `schema_version=2` |
+| IV   | Broaden import gate beyond admin-only | ☐ deferred | `TopicBuilderImportService` already accepts a `topic_editor` |
+| TB   | TB → IV user list (parallel users CSV / package field) | ☐ deferred | IV's TB-topic UI hides Users panel; symmetric ingest straightforward once TB emits |
 | Both | Atomic edits (`patch_iv_topic`) | ☐ deferred | post-v1; see § Forward-compat |
+
+## Adjacent IV-side work that landed alongside
+
+Not on the spec table but visible in the IV repo's status doc — useful
+context if you're tracing why the climate-change end-to-end run
+worked at 6562-article scale:
+
+- Parallelized `GenerateArticleAnalyticsJob` (3 threads) + Wikimedia
+  OAuth 2 bearer auth on Action + REST APIs + 429 retry jitter
+  widened 0–0.5s → 0–3s (IV PR #56).
+- Sequential chain: analytics → incremental timepoint build (IV PR #56).
+- `TopicTimepointStatsService` N+1 fixes: eager-load
+  `article_timepoint`, read `attributed_creator_id` directly,
+  drop redundant `update_details_for_article`, memoize revision
+  lookups, swap to `prop=contributors` for editor counts (IV branch
+  `eager-load-article-timepoints`).
+- `TopicsController#topic_article_analytics` nil-bag guard (Sentry
+  IMPACT-VISUALIZER-1K) (IV branch `topic-article-analytics-nil-bag-fix`).
 
 ## Locked decisions
 
@@ -176,7 +201,12 @@ Two event shapes, both JSONL:
 `reason` is set only on 404s (`bad_prefix`, `missing`, `expired`).
 No rotation; tail it to monitor activity.
 
-## IV side — what to build (greenfield)
+## IV side — what shipped
+
+The spec below describes the contract IV implements; it shipped per
+spec in IV PR #55 (2026-05-08). Kept here because the contract still
+governs both sides — TB writes packages assuming this shape, IV reads
+them assuming this shape.
 
 ### Routes
 
@@ -367,7 +397,8 @@ Then in a Claude session:
 
 ## Rough effort estimate (residual)
 
-- IV side (preview page, import controller, model migrations,
-  admin auth): ~1-2 days for someone who knows the IV codebase.
-- Integration testing once IV ships: half a day.
-- Total: ~2 days of IV-side work + ~half day cross-system QA.
+Original estimate: ~2 days IV-side + ~half day cross-system QA. Actuals
+from the IV-side rollup: IV PR #55 covered the spec; IV PR #56 added
+parallelism + OAuth + retry jitter to make 6000+-article topics finish
+in a reasonable wall time; the 2026-05-08 climate-change run was the
+cross-system QA.

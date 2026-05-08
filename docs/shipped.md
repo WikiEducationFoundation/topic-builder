@@ -955,8 +955,49 @@ plus a one-sentence `user_instruction`.
   (`patch_iv_topic`, deferred) would push targeted updates back to a
   live IV topic via IV's API rather than re-snapshot.
 
-IV-side import UI is greenfield and ships separately. Spec is in
-`docs/backlog/impact-visualizer.md` § "IV side — what to build".
+IV-side import UI ships separately (landed 2026-05-08; see next entry).
+
+## Impact Visualizer handoff — IV side + first end-to-end (2026-05-08)
+
+Closes the loop opened on 2026-05-01: a `tbp_<handle>` minted on TB
+now imports cleanly into Impact Visualizer. Tracked from the IV side
+in `impact-visualizer/docs/topic-builder-handoff-status.md`; the TB
+spec doc at `docs/backlog/impact-visualizer.md` flips its IV-side
+rows to ☑ shipped.
+
+- **IV PR #55** — `GET /imports/<handle>` preview page,
+  `POST /imports/<handle>` import handler (admin-gated, server-side
+  re-fetches the package, hard-fails on `schema_version != 1`,
+  resolves `wiki_id` from IV's own wikis table),
+  `ArticleBagArticle.centrality` nullable column,
+  `Topic.tb_handle` nullable column.
+- **End-to-end run, 2026-05-08** — 6562-article climate-change topic
+  imported from TB prod (topic-builder.wikiedu.org) into IV on
+  wmcloud and wiki-ed prod. First feature run at production scale.
+- **IV PR #56 (scaling support)** — parallelized
+  `GenerateArticleAnalyticsJob` (3 threads), Wikimedia OAuth 2 bearer
+  auth on Action + REST APIs, 429 retry jitter widened 0–0.5s → 0–3s,
+  sequential analytics → incremental timepoint chain. Made the 6562-
+  article run finish in a reasonable window; not strictly on the
+  handoff spec but load-bearing for any topic of meaningful size.
+- **IV branch `eager-load-article-timepoints`** —
+  `TopicTimepointStatsService` N+1 fixes (eager-load
+  `article_timepoint`, read `attributed_creator_id` directly, drop
+  redundant `update_details_for_article`, memoize revision lookups,
+  swap to `prop=contributors`).
+- **IV branch `topic-article-analytics-nil-bag-fix`** —
+  `TopicsController#topic_article_analytics` nil-bag guard (Sentry
+  IMPACT-VISUALIZER-1K).
+
+Open from the IV-side rollup, all tracked on the spec doc:
+- TB → IV user list (TB doesn't emit users yet; IV's TB-topic UI
+  hides the Users panel rather than carrying a placeholder).
+- Schema-version bump path (IV hard-fails on `schema_version != 1`;
+  coordination story needed before TB ships v2, likely paired with
+  atomic edits).
+- Non-admin (authenticated editor) imports — v1 is admin-only on
+  POST; broadening is straightforward.
+- Atomic edits (`patch_iv_topic`) — still deferred.
 
 ## PetScan compound-query primitive (2026-05-02)
 

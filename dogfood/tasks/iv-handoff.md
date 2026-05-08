@@ -9,10 +9,13 @@ run_topic_name_template: tide-pools-iv-handoff {ts}
 You're testing a recently-shipped feature on the Topic Builder MCP
 server: the Impact Visualizer handoff (`prepare_iv_handoff` +
 `publish_topic` tools, with `GET /packages/<handle>` serving the
-snapshot to Impact Visualizer server-side). The IV side is greenfield
-— end-to-end import to Impact Visualizer is NOT possible yet. The
-test is whether the TB-side elicitation flow, the preview's
-legibility, and the URL-handoff ergonomics work in practice.
+snapshot to Impact Visualizer server-side). The IV side shipped
+2026-05-08 (IV PR #55), and a 6562-article end-to-end run landed the
+same day, so the import URL now leads to a working IV preview page.
+Even so, this dogfood ends at the URL — the test is whether the
+TB-side elicitation flow, the preview's legibility, and the URL-handoff
+ergonomics work in practice; clicking through to IV is not part of
+the harness.
 
 This is a **feature dogfood**, not a benchmark. There is no scoring
 script. The goal is surfacing friction in: the conversation flow, the
@@ -107,8 +110,9 @@ Impact Visualizer for a fall course they're running.
 
 - Not a measurement run. No precision/recall scoring applies; don't
   overbuild for coverage.
-- Not an end-to-end IV test. The published import URL won't lead to
-  a working IV import page yet (greenfield on IV side). This dogfood
-  ends at the URL.
+- Not an end-to-end IV test. The IV-side import page does work as
+  of 2026-05-08, but exercising it isn't part of this harness — this
+  dogfood ends at the URL. A separate end-to-end exercise can come
+  later if we want to dogfood the IV import surface itself.
 - Not an exemplar source. Don't read or write benchmark exemplars
   for this run.
