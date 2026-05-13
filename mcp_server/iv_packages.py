@@ -75,6 +75,7 @@ async def get_package(request: Request) -> Response:
         "articles": pkg["articles"],
         "article_count": len(pkg["articles"]),
         "source_topic": pkg["source_topic"],
+        "source_topic_id": pkg["source_topic_id"],
         "created_at": pkg["created_at"],
         "consumed_at": pkg["consumed_at"] or sqlite_now,
     }

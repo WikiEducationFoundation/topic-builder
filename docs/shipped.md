@@ -1058,3 +1058,31 @@ Backlog items removed: Tier 1 "At-pull-time category × WikiProject
 intersection" (multi-session signal from Apollo 11 + climate-change),
 Tier 3 "PetScan-style intersection." Both subsumed by the general
 wrapper.
+
+## IV package: stable `source_topic_id` for republish detection (2026-05-08)
+
+Additive field on the `/packages/<handle>` JSON so Impact Visualizer
+can recognize "this is a republish of an already-imported topic"
+without falling back to fragile name-matching (two TB topics can
+share a canonical name).
+
+- **Schema:** `iv_packages.source_topic_id INTEGER NOT NULL` on fresh
+  DBs; existing prod DBs get an additive `ALTER TABLE ... ADD COLUMN`
+  + backfill from `topic_id` (SQLite can't add NOT NULL via ALTER, so
+  the column is nullable on legacy rows but every code path inserts a
+  real value going forward). Denormalized alongside `source_topic` so
+  the package can outlive a deleted TB topic.
+- **Package payload:** `source_topic_id` appears top-level next to
+  `source_topic` in the `/packages/<handle>` response. `schema_version`
+  unchanged (=1) — IV treats absent-on-legacy as "fall through to
+  create path."
+- **Publish event log:** `source_topic_id` added to the publish-event
+  line in `packages.jsonl` (next to `topic`); makes "find every
+  republish of TB topic 42" a one-grep.
+- **No client-visible change:** `prepare_iv_handoff` preview and
+  `landing.html` are unaffected; this is internal plumbing for the IV
+  republish-sync work happening on the IV side.
+- **ID stability verified:** `reset_topic` / `start_topic(fresh=True)`
+  clear articles but preserve `topics.id`; no rename/rebuild path
+  re-IDs a topic. Topic deletion cascades to `iv_packages` via the
+  existing FK.

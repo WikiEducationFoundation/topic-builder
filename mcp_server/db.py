@@ -119,6 +119,7 @@ def init_db():
             config_json TEXT NOT NULL,
             articles_json TEXT NOT NULL,
             source_topic TEXT NOT NULL,
+            source_topic_id INTEGER NOT NULL,
             publisher_user TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             consumed_at TEXT,
@@ -207,6 +208,21 @@ def init_db():
             "UPDATE topics SET owner_username = ? "
             "WHERE owner_username IS NULL",
             (default_owner,))
+    # Migrate existing DBs that predate iv_packages.source_topic_id (the
+    # denormalized stable TB topics.id IV uses to recognize republishes of
+    # an already-imported topic). The column is NOT NULL on fresh schemas;
+    # SQLite can't ALTER-add NOT NULL, so we add it nullable and backfill
+    # from topic_id. Inserts always provide it going forward.
+    iv_pkg_cols = []
+    try:
+        iv_pkg_cols = [r[1] for r in conn.execute("PRAGMA table_info(iv_packages)")]
+    except sqlite3.OperationalError:
+        pass
+    if iv_pkg_cols and 'source_topic_id' not in iv_pkg_cols:
+        conn.execute("ALTER TABLE iv_packages ADD COLUMN source_topic_id INTEGER")
+        conn.execute(
+            "UPDATE iv_packages SET source_topic_id = topic_id "
+            "WHERE source_topic_id IS NULL")
     conn.commit()
     conn.close()
 
@@ -1320,20 +1336,25 @@ def mint_iv_handle():
 
 
 def create_iv_package(handle, topic_id, config, articles, source_topic,
-                      publisher_user, ttl_days=30):
+                      source_topic_id, publisher_user, ttl_days=30):
     """Insert a frozen IV package row. config and articles are
     JSON-serialized here so callers don't have to remember to dump.
-    Returns expires_at (ISO string, in UTC SQLite-default form)."""
+    Returns expires_at (ISO string, in UTC SQLite-default form).
+
+    source_topic_id is denormalized alongside source_topic so the
+    package can outlive a deleted TB topic — IV uses it to recognize
+    republishes of an already-imported topic."""
     conn = _connect()
     conn.execute(
         "INSERT INTO iv_packages "
         "(handle, topic_id, config_json, articles_json, source_topic, "
-        " publisher_user, expires_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, datetime('now', ?))",
+        " source_topic_id, publisher_user, expires_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now', ?))",
         (handle, topic_id,
          json.dumps(config, ensure_ascii=False),
          json.dumps(articles, ensure_ascii=False),
          source_topic,
+         source_topic_id,
          publisher_user,
          f"+{int(ttl_days)} days"))
     expires_at = conn.execute(
@@ -1351,8 +1372,8 @@ def get_iv_package(handle):
     conn = _connect()
     row = conn.execute(
         "SELECT handle, topic_id, config_json, articles_json, source_topic, "
-        "       publisher_user, created_at, consumed_at, expires_at, "
-        "       schema_version "
+        "       source_topic_id, publisher_user, created_at, consumed_at, "
+        "       expires_at, schema_version "
         "FROM iv_packages WHERE handle = ?", (handle,)).fetchone()
     conn.close()
     if row is None:
@@ -1363,6 +1384,7 @@ def get_iv_package(handle):
         'config': json.loads(row['config_json']),
         'articles': json.loads(row['articles_json']),
         'source_topic': row['source_topic'],
+        'source_topic_id': row['source_topic_id'],
         'publisher_user': row['publisher_user'],
         'created_at': row['created_at'],
         'consumed_at': row['consumed_at'],
@@ -1389,8 +1411,8 @@ def list_iv_packages_for_topic(topic_id):
     """List a topic's packages newest-first. For future debug surfaces."""
     conn = _connect()
     rows = conn.execute(
-        "SELECT handle, source_topic, publisher_user, created_at, "
-        "       consumed_at, expires_at, schema_version "
+        "SELECT handle, source_topic, source_topic_id, publisher_user, "
+        "       created_at, consumed_at, expires_at, schema_version "
         "FROM iv_packages WHERE topic_id = ? "
         "ORDER BY created_at DESC", (topic_id,)).fetchall()
     conn.close()

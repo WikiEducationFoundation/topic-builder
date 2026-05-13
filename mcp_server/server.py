@@ -8263,12 +8263,14 @@ def publish_topic(iv_description: str,
     expires_at = db.create_iv_package(
         handle=handle, topic_id=topic_id,
         config=config, articles=articles,
-        source_topic=canonical, publisher_user=publisher)
+        source_topic=canonical, source_topic_id=topic_id,
+        publisher_user=publisher)
 
     db.append_package_event({
         "event": "publish",
         "handle": handle,
         "topic": canonical,
+        "source_topic_id": topic_id,
         "publisher_user": publisher,
         "article_count": len(articles),
         "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
