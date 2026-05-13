@@ -7,6 +7,7 @@ this doc.
 
 Sibling docs in this directory hold larger deferred plans:
 - `impact-visualizer.md` — publish_topic handle → Impact Visualizer import.
+- `article-tags.md` — flexible per-topic tag feature for IV stratification (first sketch, refine before building).
 
 Add new items here as signals come in; promote items to
 `../shipped.md` when they land.
