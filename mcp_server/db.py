@@ -109,6 +109,25 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS idx_wp_bot_normalized
             ON wp_bot_projects(normalized_name);
+        -- Cross-wiki WikiProject equivalents, derived from Wikidata
+        -- sitelinks on each enwiki WikiProject's Wikidata item. One row
+        -- per (en_project, target_wiki) pair. Lets check_wikiproject /
+        -- get_wikiproject_articles answer "what does this WP look like
+        -- on fr/de/es/..." without per-call HTTP — refreshed lazily,
+        -- same pattern as wp_bot_projects.
+        CREATE TABLE IF NOT EXISTS wp_crosswiki (
+            en_project TEXT NOT NULL,
+            normalized_en TEXT NOT NULL,
+            qid TEXT NOT NULL,
+            wiki TEXT NOT NULL,
+            page_title TEXT NOT NULL,
+            fetched_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (en_project, wiki)
+        );
+        CREATE INDEX IF NOT EXISTS idx_wp_crosswiki_norm
+            ON wp_crosswiki(normalized_en);
+        CREATE INDEX IF NOT EXISTS idx_wp_crosswiki_qid
+            ON wp_crosswiki(qid);
         -- Frozen Impact Visualizer handoff packages. publish_topic mints a
         -- handle and snapshots the article list + IV config; IV fetches
         -- /packages/<handle> server-side after the user clicks Import.
@@ -1191,6 +1210,121 @@ def replace_wp_bot_index(canonical_names):
             "VALUES (?, ?)", rows)
         conn.commit()
         return len(rows)
+    finally:
+        conn.close()
+
+
+def wp_crosswiki_index_age_seconds():
+    """Age of the most recent wp_crosswiki row in seconds, or None if
+    the table is empty. Used to decide when to refresh."""
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT (strftime('%s','now') - strftime('%s', MAX(fetched_at))) "
+            "AS age FROM wp_crosswiki").fetchone()
+        if row is None or row['age'] is None:
+            return None
+        return int(row['age'])
+    finally:
+        conn.close()
+
+
+def replace_wp_crosswiki(edges):
+    """Atomically replace the wp_crosswiki index. `edges` is an iterable
+    of (en_project, qid, wiki, page_title) tuples — one per cross-wiki
+    sitelink. Returns the number of rows written."""
+    conn = _connect()
+    try:
+        conn.execute("BEGIN")
+        conn.execute("DELETE FROM wp_crosswiki")
+        rows = [
+            (en, normalize_wp_project_name(en), qid, wiki, title)
+            for (en, qid, wiki, title) in edges
+            if en and qid and wiki and title]
+        conn.executemany(
+            "INSERT OR REPLACE INTO wp_crosswiki "
+            "(en_project, normalized_en, qid, wiki, page_title) "
+            "VALUES (?, ?, ?, ?, ?)", rows)
+        conn.commit()
+        return len(rows)
+    finally:
+        conn.close()
+
+
+def lookup_wp_crosswiki(en_project, wiki):
+    """Return the local project-page title on `wiki` for the given
+    enwiki WikiProject name (canonical, without the
+    "Wikipedia:WikiProject " prefix), or None.
+
+    Resolution: exact en_project match first, then normalized match
+    (handles case/whitespace drift)."""
+    if not en_project or not wiki:
+        return None
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT page_title FROM wp_crosswiki "
+            "WHERE en_project = ? AND wiki = ?",
+            (en_project, wiki)).fetchone()
+        if row:
+            return row['page_title']
+        norm = normalize_wp_project_name(en_project)
+        if not norm:
+            return None
+        row = conn.execute(
+            "SELECT page_title FROM wp_crosswiki "
+            "WHERE normalized_en = ? AND wiki = ? LIMIT 1",
+            (norm, wiki)).fetchone()
+        return row['page_title'] if row else None
+    finally:
+        conn.close()
+
+
+def list_wp_crosswiki(en_project):
+    """Return [(wiki, page_title, qid), ...] for every wiki that has a
+    cross-wiki equivalent for the given enwiki WikiProject."""
+    if not en_project:
+        return []
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            "SELECT wiki, page_title, qid FROM wp_crosswiki "
+            "WHERE en_project = ? ORDER BY wiki", (en_project,)).fetchall()
+        if rows:
+            return [(r['wiki'], r['page_title'], r['qid']) for r in rows]
+        norm = normalize_wp_project_name(en_project)
+        if not norm:
+            return []
+        rows = conn.execute(
+            "SELECT wiki, page_title, qid FROM wp_crosswiki "
+            "WHERE normalized_en = ? ORDER BY wiki", (norm,)).fetchall()
+        return [(r['wiki'], r['page_title'], r['qid']) for r in rows]
+    finally:
+        conn.close()
+
+
+def search_wp_crosswiki(keyword, limit=50):
+    """Search the cross-wiki index by normalized substring match on
+    en_project. Returns [(en_project, [(wiki, page_title), ...]), ...]
+    distinct en_projects, capped at `limit`."""
+    if not keyword:
+        return []
+    norm_kw = normalize_wp_project_name(keyword)
+    if not norm_kw:
+        return []
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            "SELECT en_project, wiki, page_title FROM wp_crosswiki "
+            "WHERE normalized_en LIKE ? ORDER BY en_project, wiki",
+            (f"%{norm_kw}%",)).fetchall()
+        by_project = {}
+        for r in rows:
+            by_project.setdefault(r['en_project'], []).append(
+                (r['wiki'], r['page_title']))
+            if len(by_project) > limit and r['en_project'] not in by_project:
+                break
+        return [(p, sl) for p, sl in by_project.items()][:limit]
     finally:
         conn.close()
 

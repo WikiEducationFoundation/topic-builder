@@ -77,8 +77,9 @@ rescue:        if survey returns 0 articles on an existing category,
 ```
 preconditions: any topic; especially before committing to gather order
 sequence:      find_wikiprojects(keywords=[topic, parent-discipline,
-                                           sibling-discipline]) →
-               check_wikiproject(<best candidate>) →
+                                           sibling-discipline],
+                                 wiki=<topic-wiki>) →
+               check_wikiproject(<best candidate>, wiki=<topic-wiki>) →
                (Ship 2: count_wikiproject_articles before pulling)
 expected:      classifies the WP into one of three states —
                (a) dedicated WP that tags many articles (rare;
@@ -87,6 +88,12 @@ expected:      classifies the WP into one of three states —
                    instead of pulling outright),
                (c) registered-but-empty (skip; rely on category +
                    list + search)
+               On non-en wikis, check_wikiproject also returns a
+               `tagging_mechanism` field. parameterized_banner wikis
+               (fr/es/it/pt) enumerate via backlinks; no_banner_system
+               wikis (ja/pl/sv) can't enumerate members at all —
+               WP-recon there is for human navigation only, fall
+               through to category + search.
 rescue:        if dedicated and broader both exist, pull dedicated
                  only and treat broader as recon
 ```

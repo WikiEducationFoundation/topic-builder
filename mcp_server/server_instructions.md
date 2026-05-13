@@ -306,9 +306,22 @@ SUBTRACTIVE tools below.
   calling start_topic.
 
   On non-English wikis, expect these differences:
-    - WikiProjects are essentially absent — `check_wikiproject` and
-      `get_wikiproject_articles` will report no results. Skip the
-      reconnaissance step for them.
+    - WikiProjects exist on many non-en wikis under localized names
+      (`Projet:` on fr, `Wikiproyecto:` on es, `Progetto:` on it,
+      `Wikipedia:WikiProjekt ` on de, `Проект:` on ru, etc.). Coverage
+      and tagging mechanism vary by wiki. `find_wikiprojects(wiki=X)`
+      and `check_wikiproject(..., wiki=X)` consult a cached Wikidata
+      cross-wiki index (~18% of enwiki projects have a linked
+      counterpart on at least one non-en wiki) plus a per-wiki
+      conventions table — they DO work cross-wiki and return a
+      `tagging_mechanism` field telling you whether
+      `get_wikiproject_articles` can enumerate members on this wiki.
+      Three mechanism families: per-project banner (en, de, ru —
+      `embeddedin`-based), parameterized banner (fr, es, it, pt —
+      `backlinks`-from-Talk-based), and no banner system (ja, pl, sv
+      — enumeration not supported; fall back to categories /
+      Portals). `preview_wikiproject` is enwiki-only (WP1.0 bot data
+      doesn't exist elsewhere) and will return an error on non-en.
     - `find_list_pages` looks for "List of …", "Index of …" prefixes that
       are English-specific. On dewiki use `search_articles` with
       `intitle:"Liste der"`, on eswiki `intitle:"Anexo:Lista de"`, etc.

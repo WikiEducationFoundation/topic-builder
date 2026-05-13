@@ -104,6 +104,11 @@ usage_handler = logging.FileHandler(os.path.join(LOG_DIR, "usage.jsonl"))
 usage_handler.setFormatter(logging.Formatter("%(message)s"))
 usage_logger.addHandler(usage_handler)
 
+# General module logger for server-side warnings (refresh failures,
+# unexpected upstream behavior). Goes to systemd journal via stderr —
+# kept separate from usage_logger which writes JSON lines.
+logger = logging.getLogger(__name__)
+
 # Per-session current topic. Each MCP session (one client connection) has its
 # own "current topic" so concurrent clients don't clobber each other's state.
 # Keyed by id(ctx.session); value is (topic_id, topic_name, wiki).
@@ -2681,86 +2686,177 @@ def survey_categories(category: str, depth: int = 2, count_articles: bool = Fals
 def check_wikiproject(project_name: str, wiki: str | None = None,
                       note: str = "",
                       topic: str | None = None, auth_token: str | None = None, ctx: Context = None) -> str:
-    """Check whether a given WikiProject exists on Wikipedia. WikiProjects
-    tag articles with assessment banners — if one exists for the topic, it's
-    usually the best single source of tagged articles.
+    """Check whether a given WikiProject exists on Wikipedia. If one
+    exists for the topic, its tagged-article membership is usually the
+    best single source of relevant articles.
 
-    WikiProjects are an English-Wikipedia convention. Most other language
-    editions don't maintain them in the same form (no Template:WikiProject
-    namespace), so on non-enwiki topics this tool will almost always report
-    exists=False — fall back to category and search strategies instead.
+    Cross-wiki support: on non-en wikis, resolves `project_name` to the
+    local project page via the Wikidata cross-wiki cache (refreshed
+    weekly) and falls back to a per-wiki convention table for projects
+    not in the cache. Returns `tagging_mechanism` so callers know what
+    to expect from get_wikiproject_articles: per_project_banner,
+    parameterized_banner, or no_banner_system.
 
     Args:
-        project_name: the WikiProject's own name, which is often not identical
-            to the topic name. For the topic "Climate change" the project
-            happens to also be "Climate change", but for "Hispanic and Latino
-            people in STEM" it might be "Latino and Hispanic Americans" or
-            "Science". Guess likely names and probe.
-        wiki: Wikipedia language code to query. Defaults to the active topic's
+        project_name: the WikiProject's own name. Accepts three forms:
+            (a) bare en-canonical name ("Climate change", "Plants"),
+            (b) full en title ("Wikipedia:WikiProject Plants"),
+            (c) full local title ("Projet:Propriété intellectuelle"
+                when wiki="fr").
+        wiki: Wikipedia language code. Defaults to the active topic's
               wiki, or "en" if no topic is active.
-        note: Optional free-text observation for this call's log entry.
-              Use for mid-flow reflection; empty by default.
-        topic: Optional topic name to infer the wiki from.
+        note: Optional free-text observation for the log.
+        topic: Optional topic name (for log + wiki resolution).
     """
     _start = _start_call()
     wiki = _resolve_wiki(ctx, wiki, topic)
-    template_title = f"Template:WikiProject {project_name}"
-    project_page_title = f"Wikipedia:WikiProject {project_name}"
-    # Probe both the template namespace AND the Wikipedia: namespace page —
-    # `find_wikiprojects` uses prefixsearch on the Wikipedia: namespace so
-    # it can report a project candidate whose template never existed (or
-    # was merged/renamed). Returning both signals lets the AI tell "truly
-    # no WikiProject" from "project page exists but template is missing".
-    params = {'titles': f'{template_title}|{project_page_title}',
-              'prop': 'info'}
-    data = api_query(params, wiki=wiki)
-    template_exists = False
+    conv = WIKI_WP_CONVENTIONS.get(wiki, {})
+
+    if wiki == "en":
+        # En path: same behavior as before. project_name is treated as
+        # the bare project name; we probe both Template: and Wikipedia:
+        # namespace pages.
+        if project_name.startswith("Wikipedia:WikiProject "):
+            bare = project_name[len("Wikipedia:WikiProject "):]
+        else:
+            bare = project_name
+        template_title = f"Template:WikiProject {bare}"
+        project_page_title = f"Wikipedia:WikiProject {bare}"
+        data = api_query({'titles': f'{template_title}|{project_page_title}',
+                          'prop': 'info'}, wiki=wiki)
+        template_exists = False
+        project_page_exists = False
+        if 'query' in data and 'pages' in data['query']:
+            for page in data['query']['pages']:
+                if page.get('missing', False):
+                    continue
+                t = page.get('title', '')
+                if t == template_title:
+                    template_exists = True
+                elif t == project_page_title:
+                    project_page_exists = True
+        result = {
+            'wiki': 'en',
+            'project': bare,
+            'template': template_title,
+            'template_exists': template_exists,
+            'project_page': project_page_title,
+            'project_page_exists': project_page_exists,
+            'exists': template_exists,
+            'tagging_mechanism': 'per_project_banner',
+        }
+        if template_exists:
+            result['note'] = ('Use get_wikiproject_articles to fetch all '
+                              'tagged articles.')
+        elif project_page_exists:
+            result['note'] = (
+                'Project PAGE exists but the template does not — '
+                'get_wikiproject_articles will return nothing because '
+                'there are no template-tagged articles. Try a renamed / '
+                'merged variant of the project name, or fall back to '
+                'categories + search.')
+        else:
+            result['note'] = 'No WikiProject found.'
+        log_usage(ctx, "check_wikiproject",
+                  {"project": bare, "wiki": wiki},
+                  f"template_exists={template_exists} "
+                  f"project_page_exists={project_page_exists}",
+                  start_time=_start, note=note)
+        return json.dumps(result, indent=2, ensure_ascii=False)
+
+    # Non-en path. Resolve project_name → local project page title via
+    # cache + conventions, then probe page existence.
+    project_page_title = _resolve_project_page_title(project_name, wiki)
+    if project_page_title is None:
+        log_usage(ctx, "check_wikiproject",
+                  {"project": project_name, "wiki": wiki},
+                  "no_conventions_for_wiki", start_time=_start, note=note)
+        return json.dumps({
+            'wiki': wiki,
+            'queried': project_name,
+            'project_page': None,
+            'project_page_exists': False,
+            'exists': False,
+            'tagging_mechanism': None,
+            'note': (f"No conventions encoded for {wiki}.wikipedia.org "
+                     f"and no Wikidata cross-wiki sitelink found for "
+                     f"{project_name!r}. Probe manually via "
+                     f"search_articles or fall back to categories."),
+        }, indent=2, ensure_ascii=False)
+
+    data = api_query({'titles': project_page_title, 'prop': 'info'},
+                     wiki=wiki)
     project_page_exists = False
     if 'query' in data and 'pages' in data['query']:
         for page in data['query']['pages']:
-            if page.get('missing', False):
-                continue
-            t = page.get('title', '')
-            if t == template_title:
-                template_exists = True
-            elif t == project_page_title:
+            if not page.get('missing', False):
                 project_page_exists = True
 
-    # `exists` stays as the practical "can I call get_wikiproject_articles
-    # on this project?" signal — which needs the template to be tagging
-    # articles. Historical callers that just read `exists` keep working.
-    exists = template_exists
+    # For per-project-banner wikis, also probe the per-project banner
+    # template — same shape as enwiki.
+    template_exists = False
+    template_title = None
+    if conv.get('tagging') == 'per_project_banner':
+        local_prefix = conv.get('project_ns_prefix', '')
+        if project_page_title.startswith(local_prefix):
+            bare = project_page_title[len(local_prefix):]
+        else:
+            bare = project_page_title
+        template_title = (
+            f"{conv['template_ns']}:"
+            f"{conv['banner_template_fmt'].format(project=bare)}")
+        tdata = api_query({'titles': template_title, 'prop': 'info'},
+                          wiki=wiki)
+        if 'query' in tdata and 'pages' in tdata['query']:
+            for page in tdata['query']['pages']:
+                if not page.get('missing', False):
+                    template_exists = True
+
+    # `exists` is true if the *project page* exists (anchor for any
+    # cross-wiki strategy). Membership enumeration depends on the
+    # tagging mechanism — captured separately.
+    tagging = conv.get('tagging')
     result = {
         'wiki': wiki,
-        'project': project_name,
-        'template': template_title,
-        'template_exists': template_exists,
+        'queried': project_name,
         'project_page': project_page_title,
         'project_page_exists': project_page_exists,
-        'exists': exists,
+        'template': template_title,
+        'template_exists': template_exists,
+        'exists': project_page_exists,
+        'tagging_mechanism': tagging,
+        'tagging_hint': _convention_hint_for_tagging(wiki, conv),
     }
-    if template_exists:
-        result['note'] = 'Use get_wikiproject_articles to fetch all tagged articles'
-    elif project_page_exists:
-        result['note'] = (
-            'Project PAGE exists but the template does not — `find_wikiprojects` '
-            'may list this as a candidate, but `get_wikiproject_articles` will '
-            'return nothing because there are no template-tagged articles. Try '
-            'a renamed / merged variant of the project name, or fall back to '
-            'categories + search.'
-        )
-    else:
-        result['note'] = 'No WikiProject found'
-    if wiki != 'en':
-        result['warning'] = (
-            f"WikiProjects are an enwiki convention and rarely exist on "
-            f"{wiki}.wikipedia.org. This check is likely uninformative — "
-            f"rely on categories and search instead."
-        )
-    log_usage(ctx, "check_wikiproject", {"project": project_name, "wiki": wiki},
-              f"template_exists={template_exists} project_page_exists={project_page_exists}",
+    if project_page_exists and tagging == 'per_project_banner':
+        if template_exists:
+            result['note'] = ('Project + banner template both present — '
+                              'get_wikiproject_articles will enumerate '
+                              'tagged articles via embeddedin.')
+        else:
+            result['note'] = ('Project page exists but the expected '
+                              'per-project banner template was not '
+                              'found at the conventional name. Article '
+                              'membership may not be enumerable.')
+    elif project_page_exists and tagging == 'parameterized_banner':
+        result['note'] = ('Project page exists. '
+                          'get_wikiproject_articles will enumerate '
+                          'members via talk-namespace backlinks to '
+                          'this project page.')
+    elif project_page_exists and tagging == 'no_banner_system':
+        result['note'] = ('Project page exists but this wiki does not '
+                          'tag article talk pages with project banners. '
+                          'get_wikiproject_articles cannot enumerate '
+                          'members here.')
+    elif not project_page_exists:
+        result['note'] = ('No project page found at the resolved title. '
+                          'Try a different name or use find_wikiprojects '
+                          'with broader keywords.')
+    log_usage(ctx, "check_wikiproject",
+              {"project": project_name, "wiki": wiki},
+              f"page_exists={project_page_exists} "
+              f"template_exists={template_exists} tagging={tagging}",
               start_time=_start, note=note)
-    return json.dumps(result)
+    return json.dumps(result, indent=2, ensure_ascii=False)
 
 
 # ── preview_wikiproject helpers ──────────────────────────────────────
@@ -2774,6 +2870,179 @@ def check_wikiproject(project_name: str, wiki: str | None = None,
 _WP_BOT_INDEX_PREFIX = "WP 1.0 bot/Tables/Project/"
 _WP_BOT_INDEX_REFRESH_AGE_S = 7 * 24 * 3600  # one week
 _WP_BOT_TABLE_TITLE = "User:WP 1.0 bot/Tables/Project/{}"
+
+
+# ── Per-wiki WikiProject conventions ─────────────────────────────────
+#
+# Empirical, derived from a 2026-05-13 cross-wiki Wikidata-sitelink
+# probe + talk-page banner inspection. Each entry encodes:
+#
+#   project_ns_prefix     : prefix to derive a candidate project-page
+#                           title from a bare project name when the
+#                           Wikidata sitelink cache misses (e.g.
+#                           "Projet:" on fr). Includes the colon /
+#                           trailing space exactly as it appears.
+#   template_ns           : the wiki's Template-namespace prefix
+#                           (without colon) — used to build banner
+#                           template titles.
+#   tagging               : tagging mechanism, one of
+#                            - per_project_banner   (en, de, ru, zh)
+#                            - parameterized_banner (fr, es, it, pt)
+#                            - no_banner_system     (ja, pl, sv) —
+#                              article membership not enumerable via
+#                              talk-page transclusions on this wiki
+#   banner_template_fmt   : format string with {project} for per-project
+#                           banner template names. Set only when
+#                           tagging == per_project_banner.
+#   parameterized_banner  : the single banner template name (no NS)
+#                           used by parameterized_banner wikis. The
+#                           project name appears as the banner's first
+#                           positional parameter.
+#
+# When the cache has a Wikidata-derived sitelink for a project, that
+# overrides the prefix-based heuristic (the sitelink names the local
+# page exactly). The conventions table is the fallback for the long
+# tail of projects without Wikidata items.
+
+WIKI_WP_CONVENTIONS = {
+    "en": {
+        "project_ns_prefix": "Wikipedia:WikiProject ",
+        "template_ns": "Template",
+        "tagging": "per_project_banner",
+        "banner_template_fmt": "WikiProject {project}",
+    },
+    "de": {
+        "project_ns_prefix": "Wikipedia:WikiProjekt ",
+        "template_ns": "Vorlage",
+        "tagging": "per_project_banner",
+        "banner_template_fmt": "Projekt {project}",
+    },
+    "ru": {
+        "project_ns_prefix": "Проект:",
+        "template_ns": "Шаблон",
+        "tagging": "per_project_banner",
+        "banner_template_fmt": "Статья проекта {project}",
+    },
+    "fr": {
+        "project_ns_prefix": "Projet:",
+        "template_ns": "Modèle",
+        "tagging": "parameterized_banner",
+        "parameterized_banner": "Wikiprojet",
+    },
+    "es": {
+        "project_ns_prefix": "Wikiproyecto:",
+        "template_ns": "Plantilla",
+        "tagging": "parameterized_banner",
+        "parameterized_banner": "PR",
+    },
+    "it": {
+        "project_ns_prefix": "Progetto:",
+        "template_ns": "Template",
+        "tagging": "parameterized_banner",
+        "parameterized_banner": "Progetti interessati",
+    },
+    "pt": {
+        "project_ns_prefix": "Wikipédia:",
+        "template_ns": "Predefinição",
+        "tagging": "parameterized_banner",
+        "parameterized_banner": "Marca de projeto",
+    },
+    "ja": {
+        "project_ns_prefix": "プロジェクト:",
+        "template_ns": "Template",
+        "tagging": "no_banner_system",
+    },
+    "pl": {
+        "project_ns_prefix": "Wikiprojekt:",
+        "template_ns": "Szablon",
+        "tagging": "no_banner_system",
+    },
+    "sv": {
+        "project_ns_prefix": "Wikipedia:Projekt ",
+        "template_ns": "Mall",
+        "tagging": "no_banner_system",
+    },
+}
+
+
+def _resolve_project_page_title(project_name: str, wiki: str) -> str | None:
+    """Translate a user/AI-supplied project_name into the candidate
+    local project-page title on `wiki`.
+
+    Accepts three forms:
+      1. Bare project name ("Intellectual property", "Plants") — bare
+         names are looked up in the Wikidata cache; falls back to the
+         conventions prefix on cache miss.
+      2. Enwiki canonical title ("Wikipedia:WikiProject Plants") —
+         prefix is stripped, then resolved as #1.
+      3. Local title with this wiki's prefix already attached
+         ("Projet:Propriété intellectuelle" with wiki="fr") — passed
+         through unchanged.
+
+    Returns None only if the wiki is unknown to the conventions table
+    AND the cache has no entry — in that case we have no way to
+    construct a candidate title."""
+    conv = WIKI_WP_CONVENTIONS.get(wiki, {})
+
+    # Form 3: already a local title for this wiki
+    local_prefix = conv.get("project_ns_prefix", "")
+    if local_prefix and project_name.startswith(local_prefix):
+        return project_name
+
+    # Form 2: en-canonical title
+    en_prefix = "Wikipedia:WikiProject "
+    if project_name.startswith(en_prefix):
+        bare = project_name[len(en_prefix):]
+    else:
+        bare = project_name
+
+    if wiki == "en":
+        return f"{en_prefix}{bare}"
+
+    # Cross-wiki cache first
+    local = db.lookup_wp_crosswiki(bare, wiki)
+    if local:
+        return local
+
+    # Conventions fallback
+    if local_prefix:
+        return f"{local_prefix}{bare}"
+    return None
+
+
+def _convention_hint_for_tagging(wiki: str, conv: dict) -> str | None:
+    """Stable human-readable hint about how article membership works on
+    this wiki, derived from the conventions table. Returns None for
+    wikis we don't have empirical data for — callers should not invent
+    advice without evidence."""
+    if not conv:
+        return None
+    tagging = conv.get("tagging")
+    if tagging == "no_banner_system":
+        return (f"On {wiki}.wikipedia.org, article talk pages do not "
+                f"appear to carry per-project banner templates the way "
+                f"enwiki does; get_wikiproject_articles cannot enumerate "
+                f"members here.")
+    if tagging == "parameterized_banner":
+        param = conv.get("parameterized_banner", "")
+        tns = conv.get("template_ns", "Template")
+        return (f"On {wiki}.wikipedia.org, project tagging uses a "
+                f"single parameterized banner ({tns}:{param}) with the "
+                f"project name as the first positional argument. "
+                f"get_wikiproject_articles enumerates members via "
+                f"talk-namespace backlinks to the project page — the "
+                f"rendered banner links to the project, so tagged "
+                f"Talk pages link there too. Expect mild noise from "
+                f"non-banner mentions in discussion text.")
+    if tagging == "per_project_banner":
+        tns = conv.get("template_ns", "Template")
+        fmt = conv.get("banner_template_fmt", "")
+        sample = fmt.format(project="<name>")
+        return (f"On {wiki}.wikipedia.org, each project has its own "
+                f"banner template ({tns}:{sample}); "
+                f"get_wikiproject_articles enumerates members directly "
+                f"via embeddedin on that template.")
+    return None
 
 # Total row in the bot's wikitable: the row whose first cell is
 # '''Total''', and whose subsequent cells link to wp1.openzim.org with
@@ -2804,6 +3073,125 @@ def _refresh_wp_bot_index() -> int:
         if title.startswith(prefix):
             canonicals.append(title[len(prefix):])
     return db.replace_wp_bot_index(canonicals)
+
+
+# ── Cross-wiki WikiProject index ─────────────────────────────────────
+#
+# Cross-wiki equivalence between WikiProjects is sparse but real: about
+# 18% of enwiki projects have a Wikidata-linked counterpart on another
+# Wikipedia (fr/zh/es/it/de/ru lead). For those, the Wikidata item
+# carries sitelinks naming the local project page directly — much more
+# reliable than guessing per-wiki conventions from the project name.
+#
+# Refresh: enumerate enwiki WikiProject root pages, resolve each to its
+# Wikidata QID via pageprops, then batch-fetch sitelinks via
+# wbgetentities. Lazy weekly refresh, same TTL as wp_bot_projects.
+
+_WP_CROSSWIKI_REFRESH_AGE_S = 7 * 24 * 3600  # one week
+_WP_EN_PROJECT_PREFIX = "Wikipedia:WikiProject "
+
+# Wikimedia projects that share the *wiki site-id pattern but aren't
+# Wikipedia language editions. Excluded from cross-wiki harvest.
+_NON_WIKIPEDIA_WIKIS = frozenset({
+    "commonswiki", "wikidatawiki", "metawiki", "mediawikiwiki",
+    "specieswiki", "incubatorwiki", "wikimaniawiki", "donatewiki",
+    "outreachwiki", "foundationwiki", "loginwiki",
+})
+
+
+def _is_wikipedia_sitelink(site_id: str) -> bool:
+    """True iff site_id names a Wikipedia language edition (e.g.,
+    'frwiki'). The Wikimedia sister projects (Wiktionary, Wikisource,
+    Wikibooks, ...) all use different suffixes so endswith('wiki')
+    already rejects them; we explicitly exclude the handful of
+    *wiki-suffixed non-Wikipedia projects."""
+    if not site_id.endswith("wiki"):
+        return False
+    return site_id not in _NON_WIKIPEDIA_WIKIS
+
+
+def _refresh_wp_crosswiki_index() -> int:
+    """Enumerate enwiki WikiProject root pages, resolve each to a
+    Wikidata QID, fetch sitelinks per QID, and atomically rewrite
+    db.wp_crosswiki. Returns the number of cross-wiki edges written.
+
+    Cost: ~60-120 API calls total (enumeration + two batched lookups).
+    Takes ~1-3 minutes; called lazily by find_wikiprojects /
+    check_wikiproject when the cache is empty or > 1 week old."""
+
+    # 1. Enumerate enwiki WikiProject root pages — skip subpages
+    # ("WikiProject Plants/Tasks", "/Assessment", etc.) which aren't
+    # standalone projects. The Wikipedia: namespace under WikiProject
+    # has a heavy subpage tail (~100x roots in some sections — large
+    # WPs accumulate task forces, archives, /Articles, etc.). Cap
+    # generously: ~3K root projects + a long subpage tail fits well
+    # under 500K. Roughly 1000 paginated API calls at the max.
+    projects = []
+    params = {
+        "action": "query", "list": "allpages",
+        "apnamespace": "4",  # Wikipedia:
+        "apprefix": "WikiProject ",
+        "aplimit": "max",
+    }
+    for item in api_query_all(params, "allpages",
+                              max_items=500_000, wiki="en"):
+        title = item.get("title", "")
+        if "/" in title:
+            continue
+        projects.append(title)
+
+    # 2. Resolve each project to its Wikidata QID via pageprops
+    # (batched 50 titles per call).
+    qid_by_title = {}
+    for i in range(0, len(projects), 50):
+        batch = projects[i:i+50]
+        data = api_query({
+            "titles": "|".join(batch),
+            "prop": "pageprops",
+            "ppprop": "wikibase_item",
+        }, wiki="en") or {}
+        for page in ((data.get("query") or {}).get("pages") or []):
+            title = page.get("title", "")
+            qid = (page.get("pageprops") or {}).get("wikibase_item")
+            if qid and title:
+                qid_by_title[title] = qid
+
+    # 3. Fetch sitelinks per QID (batched 50 via wbgetentities). One
+    # QID can map back to multiple enwiki titles only if there's a
+    # redirect; build the reverse index defensively.
+    titles_by_qid = {}
+    for title, qid in qid_by_title.items():
+        titles_by_qid.setdefault(qid, []).append(title)
+
+    edges = []
+    qids = list(titles_by_qid.keys())
+    for i in range(0, len(qids), 50):
+        batch = qids[i:i+50]
+        data = api_get(_WIKIDATA_API, {
+            "action": "wbgetentities",
+            "ids": "|".join(batch),
+            "props": "sitelinks",
+            "format": "json", "formatversion": "2",
+        }) or {}
+        entities = data.get("entities") or {}
+        for qid, ent in entities.items():
+            sitelinks = ent.get("sitelinks") or {}
+            for en_title in titles_by_qid.get(qid, []):
+                if not en_title.startswith(_WP_EN_PROJECT_PREFIX):
+                    continue
+                en_project = en_title[len(_WP_EN_PROJECT_PREFIX):]
+                for site_id, info in sitelinks.items():
+                    if not _is_wikipedia_sitelink(site_id):
+                        continue
+                    wiki_code = site_id[:-len("wiki")].replace("_", "-")
+                    if wiki_code == "en":
+                        continue
+                    page_title = info.get("title") or ""
+                    if not page_title:
+                        continue
+                    edges.append((en_project, qid, wiki_code, page_title))
+
+    return db.replace_wp_crosswiki(edges)
 
 
 def _parse_wp_bot_table(wikitext: str) -> dict | None:
@@ -2993,81 +3381,137 @@ def preview_wikiproject(project_name: str, wiki: str | None = None,
 
 @mcp.tool(annotations=READ_ONLY)
 def find_wikiprojects(keywords: list[str], limit: int = 20,
+                      wiki: str | None = None,
                       note: str = "",
-                      topic: str | None = None, auth_token: str | None = None, ctx: Context = None) -> str:
-    """Discover enwiki WikiProjects whose names contain any of the given
-    keywords. Use this BEFORE `check_wikiproject` when you're not sure of
-    the exact project name — avoids the "I tried WikiProject Plants, it
-    was too broad, so I skipped WikiProjects" failure mode. (Some topics
-    have a dedicated WikiProject — climate change has WikiProject Climate
-    change, for example. Many don't: orchids has no dedicated project,
-    only the broader WikiProject Plants and WikiProject Tree of Life.)
+                      topic: str | None = None,
+                      auth_token: str | None = None,
+                      ctx: Context = None) -> str:
+    """Discover WikiProjects whose names contain any of the given
+    keywords. Use this BEFORE `check_wikiproject` when you're not sure
+    of the exact project name — avoids the "I tried WikiProject Plants,
+    it was too broad, so I skipped WikiProjects" failure mode.
 
-    Enwiki-only by design. WikiProjects are a Wikipedia-English convention
-    and rarely exist on other wikis — on non-en topics, skip this tool
-    entirely and rely on categories + search_articles.
+    Cross-wiki support: on non-en wikis, the tool consults a cached
+    index of Wikidata-derived cross-wiki sitelinks (refreshed weekly)
+    that maps enwiki WikiProjects to their equivalents on fr, de, es,
+    it, pt, ru, zh, ja, ... — so an English keyword can surface a
+    project named in the local language. Coverage is partial (~18% of
+    enwiki projects have a Wikidata-linked counterpart on at least one
+    other wiki); when coverage is thin, also try local-language
+    keywords or fall back to category-based discovery.
 
     Args:
-        keywords: List of keyword strings. For each, the tool prefix-
-                  searches the Wikipedia: namespace for "WikiProject <kw>"
-                  (e.g. ["Climate", "Energy", "Environment"] → finds
-                  WikiProject Climate change, WikiProject Energy,
-                  WikiProject Environment).
-        limit: Max results per keyword (default 20, hard-capped at 50).
-        note: Optional free-text observation for this call's log entry.
-              Use for mid-flow reflection; empty by default.
-        topic: Optional topic name (used only to log context; the tool
-               always queries enwiki regardless of the topic's wiki).
+        keywords: List of keyword strings. For enwiki the tool prefix-
+                  searches the Wikipedia: namespace for "WikiProject
+                  <kw>". For non-en wikis it matches against the cached
+                  cross-wiki index by enwiki project name.
+        limit:    Max results per keyword (default 20, hard-capped 50).
+        wiki:     Wikipedia language code to search. Defaults to the
+                  active topic's wiki, or "en" if no topic is active.
+        note:     Optional free-text observation for the log.
+        topic:    Optional topic name (for log + wiki resolution).
     """
     _start = _start_call()
+    wiki = _resolve_wiki(ctx, wiki, topic)
     if not keywords:
         return json.dumps({
             'error': 'Pass at least one keyword. Try broad terms from the '
                      'topic name plus domain-specific guesses.',
         })
-    limit = min(limit, 50)
+    limit = min(int(limit), 50)
 
-    found: dict[str, set[str]] = {}
+    if wiki == "en":
+        found: dict[str, set[str]] = {}
+        for kw in keywords:
+            params = {
+                'list': 'prefixsearch',
+                'pssearch': f'WikiProject {kw}',
+                'psnamespace': '4',  # Wikipedia: namespace
+                'pslimit': str(limit),
+            }
+            data = api_query(params, wiki='en')
+            for item in data.get('query', {}).get('prefixsearch', []):
+                title = item.get('title', '')
+                if title.startswith('Wikipedia:WikiProject '):
+                    proj_name = title[len('Wikipedia:WikiProject '):]
+                    # Skip task-force / subpage noise — project subpages
+                    # have slashes ("WikiProject Orchids/Tasks").
+                    if '/' in proj_name:
+                        continue
+                    found.setdefault(proj_name, set()).add(kw)
+
+        projects = [
+            {
+                'project': name,
+                'local_title': f'Wikipedia:WikiProject {name}',
+                'matched_keywords': sorted(kws),
+                'template': f'Template:WikiProject {name}',
+            }
+            for name, kws in sorted(found.items())
+        ]
+        log_usage(ctx, "find_wikiprojects",
+                  {"keywords": keywords, "wiki": wiki, "limit": limit},
+                  f"{len(projects)} projects",
+                  start_time=_start, note=note)
+        return json.dumps({
+            'wiki': 'en',
+            'keywords': keywords,
+            'found': len(projects),
+            'projects': projects,
+            'note': (
+                'Call check_wikiproject(<project>) to confirm the template '
+                'exists, or get_wikiproject_articles(<project>) to pull '
+                'every tagged article. If this returned nothing, broaden '
+                'the keywords — include domain synonyms and adjacent '
+                'concepts.'
+            ),
+        }, indent=2, ensure_ascii=False)
+
+    # Non-en path: lazy-refresh the cross-wiki index if empty, then
+    # match keywords against cached enwiki project names.
+    if db.wp_crosswiki_index_age_seconds() is None:
+        try:
+            _refresh_wp_crosswiki_index()
+        except Exception as e:
+            logger.warning(f"wp_crosswiki refresh failed: {e}")
+
+    deduped: dict[str, dict] = {}
     for kw in keywords:
-        params = {
-            'list': 'prefixsearch',
-            'pssearch': f'WikiProject {kw}',
-            'psnamespace': '4',  # Wikipedia: namespace
-            'pslimit': str(limit),
-        }
-        data = api_query(params, wiki='en')
-        for item in data.get('query', {}).get('prefixsearch', []):
-            title = item.get('title', '')
-            if title.startswith('Wikipedia:WikiProject '):
-                proj_name = title[len('Wikipedia:WikiProject '):]
-                # Skip task-force / subpage noise — project subpages have
-                # slashes in their titles (e.g. "WikiProject Orchids/Tasks").
-                if '/' in proj_name:
+        for en_project, sitelinks in db.search_wp_crosswiki(kw, limit=limit):
+            for w, local_title in sitelinks:
+                if w != wiki:
                     continue
-                found.setdefault(proj_name, set()).add(kw)
+                existing = deduped.get(local_title)
+                if existing:
+                    if kw not in existing['matched_keywords']:
+                        existing['matched_keywords'].append(kw)
+                else:
+                    deduped[local_title] = {
+                        'local_title': local_title,
+                        'en_project': en_project,
+                        'matched_keywords': [kw],
+                        'source': 'wikidata_index',
+                    }
+    projects = sorted(deduped.values(), key=lambda p: p['local_title'])[:limit]
 
-    projects = [
-        {
-            'project': name,
-            'matched_keywords': sorted(kws),
-            'template': f'Template:WikiProject {name}',
-        }
-        for name, kws in sorted(found.items())
-    ]
-
-    log_usage(ctx, "find_wikiprojects", {"keywords": keywords, "limit": limit},
-              f"{len(projects)} projects", start_time=_start, note=note)
+    conv = WIKI_WP_CONVENTIONS.get(wiki, {})
+    log_usage(ctx, "find_wikiprojects",
+              {"keywords": keywords, "wiki": wiki, "limit": limit},
+              f"{len(projects)} projects (via cross-wiki index)",
+              start_time=_start, note=note)
     return json.dumps({
-        'wiki': 'en',
+        'wiki': wiki,
         'keywords': keywords,
         'found': len(projects),
         'projects': projects,
+        'convention_hint': _convention_hint_for_tagging(wiki, conv),
         'note': (
-            'Call check_wikiproject(<project>) to confirm the template '
-            'exists, or get_wikiproject_articles(<project>) to pull every '
-            'tagged article. If this returned nothing, broaden the '
-            'keywords — include domain synonyms and adjacent concepts '
-            '(e.g. for "orchids" try also "Plants", "Botany", "Gardening").'
+            f'Call check_wikiproject(<en_project or local_title>, '
+            f'wiki={wiki!r}) to confirm, or get_wikiproject_articles to '
+            f'pull tagged articles where the wiki supports it. The cache '
+            f'only covers projects linked via Wikidata (~18% of enwiki '
+            f'projects); for thin results, try local-language keywords '
+            f'or category-based discovery.'
         ),
     }, indent=2, ensure_ascii=False)
 
@@ -4587,53 +5031,188 @@ def resolve_qids(limit: int = 2000, time_budget_s: int = 60,
 
 # ── Gathering tools ───────────────────────────────────────────────────────
 
+def _strip_talk_prefix(title: str) -> str:
+    """Strip the localized Talk: prefix to recover the subject-page
+    title. MediaWiki's Talk namespace prefix varies per wiki
+    ('Discussion:' on fr, 'Diskussion:' on de, etc.) but the first
+    colon always terminates it."""
+    idx = title.find(":")
+    if idx == -1:
+        return title
+    return title[idx + 1:]
+
+
 @mcp.tool(annotations=WRITE_ADDITIVE)
 def get_wikiproject_articles(project_name: str, max_articles: int = 50000,
                               note: str = "",
                               topic: str | None = None, auth_token: str | None = None, ctx: Context = None) -> str:
-    """Get all articles tagged by a WikiProject. Adds them to the working list
-    with source 'wikiproject'. WikiProjects are an enwiki convention — this
-    tool returns few/no articles on non-English wikis.
+    """Get all articles tagged by a WikiProject. Adds them to the
+    working list with source `wikiproject:<project>`.
+
+    Dispatches by per-wiki tagging mechanism:
+
+    - per_project_banner (en, de, ru, zh): article talk pages
+      transclude a per-project banner; enumerated via embeddedin on
+      the banner template in Talk namespace.
+    - parameterized_banner (fr, es, it, pt): a single banner template
+      tags every project, with the project name as its first
+      parameter. Enumerated via backlinks to the project page from
+      the Talk namespace — banners render a link to the project, so
+      Talk pages that link to the project page are the tagged set.
+    - no_banner_system (ja, pl, sv): article talk pages do not carry
+      project banners on this wiki; returns 0 articles + a structured
+      note. No alternative is prescribed.
 
     Args:
-        project_name: WikiProject name (e.g., "Climate change")
-        max_articles: Maximum articles to fetch (default 50000)
-        note: Optional free-text observation for this call's log entry.
-              Use for mid-flow reflection; empty by default.
-        topic: Optional topic name. Pass if your client doesn't maintain an MCP session.
+        project_name: WikiProject name. Accepts bare name ("Climate
+            change"), enwiki canonical ("Wikipedia:WikiProject Climate
+            change"), or local title ("Projet:Climat" when the topic
+            is on fr).
+        max_articles: Maximum articles to fetch (default 50000).
+        note: Optional free-text observation for the log.
+        topic: Optional topic name. Pass for stateless clients.
     """
     _start = _start_call()
     topic_id, wiki, err = _require_topic(ctx, topic, auth_token=auth_token)
     if err:
         return err
 
-    template_title = f"Template:WikiProject {project_name}"
-    params = {
-        'list': 'embeddedin',
-        'eititle': template_title,
-        'einamespace': '1',
-        'eilimit': '500',
-    }
+    conv = WIKI_WP_CONVENTIONS.get(wiki, {})
+    tagging = conv.get('tagging') if conv else 'per_project_banner'
 
-    articles = []
-    for item in api_query_all(params, 'embeddedin', max_items=max_articles, wiki=wiki):
-        title = item['title']
-        if title.startswith('Talk:'):
-            title = title[len('Talk:'):]
-        title = normalize_title(title)
-        articles.append(title)
+    # Resolve the project name into both (a) a candidate local project-
+    # page title and (b) the "bare" project name (no namespace prefix)
+    # used for banner-template construction.
+    if wiki == "en":
+        if project_name.startswith("Wikipedia:WikiProject "):
+            bare = project_name[len("Wikipedia:WikiProject "):]
+        else:
+            bare = project_name
+        project_page_title = f"Wikipedia:WikiProject {bare}"
+    else:
+        project_page_title = _resolve_project_page_title(project_name, wiki)
+        if project_page_title is None:
+            log_usage(ctx, "get_wikiproject_articles",
+                      {"project": project_name, "wiki": wiki},
+                      "no_conventions_for_wiki", start_time=_start, note=note)
+            return json.dumps({
+                'wiki': wiki,
+                'project': project_name,
+                'articles_found': 0,
+                'new_articles_added': 0,
+                'existing_updated': 0,
+                'tagging_mechanism': None,
+                'note': (f"No conventions encoded for "
+                         f"{wiki}.wikipedia.org and no Wikidata sitelink "
+                         f"found for {project_name!r}; cannot enumerate "
+                         f"members."),
+            }, indent=2, ensure_ascii=False)
+        local_prefix = conv.get('project_ns_prefix', '')
+        if local_prefix and project_page_title.startswith(local_prefix):
+            bare = project_page_title[len(local_prefix):]
+        else:
+            bare = project_page_title
 
-    articles, rejected_skipped, rejected_sample = _apply_rejections(topic_id, articles)
+    articles: list[str] = []
+    enum_method = None
+
+    if tagging == 'per_project_banner':
+        template_ns = conv.get('template_ns', 'Template')
+        banner_fmt = conv.get('banner_template_fmt', 'WikiProject {project}')
+        template_title = f"{template_ns}:{banner_fmt.format(project=bare)}"
+        params = {
+            'list': 'embeddedin',
+            'eititle': template_title,
+            'einamespace': '1',
+            'eilimit': '500',
+        }
+        for item in api_query_all(params, 'embeddedin',
+                                  max_items=max_articles, wiki=wiki):
+            title = item.get('title', '')
+            article_title = _strip_talk_prefix(title)
+            if article_title:
+                articles.append(normalize_title(article_title))
+        enum_method = f"embeddedin:{template_title}"
+
+    elif tagging == 'parameterized_banner':
+        # Banners render a link to the project page; Talk pages that
+        # link to the project = tagged articles. Some noise possible
+        # from discussion-text mentions of the project.
+        params = {
+            'list': 'backlinks',
+            'bltitle': project_page_title,
+            'blnamespace': '1',
+            'bllimit': '500',
+        }
+        for item in api_query_all(params, 'backlinks',
+                                  max_items=max_articles, wiki=wiki):
+            title = item.get('title', '')
+            article_title = _strip_talk_prefix(title)
+            if article_title:
+                articles.append(normalize_title(article_title))
+        enum_method = f"backlinks:{project_page_title}"
+
+    elif tagging == 'no_banner_system':
+        log_usage(ctx, "get_wikiproject_articles",
+                  {"project": project_name, "wiki": wiki},
+                  "no_banner_system", start_time=_start, note=note)
+        return json.dumps({
+            'wiki': wiki,
+            'project': project_name,
+            'project_page': project_page_title,
+            'articles_found': 0,
+            'new_articles_added': 0,
+            'existing_updated': 0,
+            'tagging_mechanism': tagging,
+            'note': (f"On {wiki}.wikipedia.org, article talk pages do "
+                     f"not appear to carry per-project banner templates; "
+                     f"this tool cannot enumerate members here."),
+        }, indent=2, ensure_ascii=False)
+    else:
+        # Unknown wiki, no conventions; fall through with an empty
+        # result rather than guessing.
+        log_usage(ctx, "get_wikiproject_articles",
+                  {"project": project_name, "wiki": wiki},
+                  "no_conventions", start_time=_start, note=note)
+        return json.dumps({
+            'wiki': wiki,
+            'project': project_name,
+            'project_page': project_page_title,
+            'articles_found': 0,
+            'new_articles_added': 0,
+            'existing_updated': 0,
+            'tagging_mechanism': None,
+            'note': (f"No tagging-mechanism convention encoded for "
+                     f"{wiki}.wikipedia.org. Add support in "
+                     f"WIKI_WP_CONVENTIONS to enable this tool here."),
+        }, indent=2, ensure_ascii=False)
+
+    # Dedupe (parameterized_banner can produce duplicates from re-links)
+    seen = set()
+    unique = []
+    for t in articles:
+        if t not in seen:
+            seen.add(t)
+            unique.append(t)
+    articles = unique
+
+    articles, rejected_skipped, rejected_sample = _apply_rejections(
+        topic_id, articles)
 
     source_label = f"wikiproject:{project_name}"
     batch = [(title, source_label, None) for title in articles]
     added, updated = db.add_articles(topic_id, batch)
 
-    log_usage(ctx, "get_wikiproject_articles", {"project": project_name, "wiki": wiki},
-              f"{len(articles)} articles", start_time=_start, note=note)
-    result = {
+    log_usage(ctx, "get_wikiproject_articles",
+              {"project": project_name, "wiki": wiki},
+              f"{len(articles)} articles ({tagging})",
+              start_time=_start, note=note)
+    return json.dumps({
         'wiki': wiki,
         'project': project_name,
+        'project_page': project_page_title,
+        'tagging_mechanism': tagging,
+        'enumeration': enum_method,
         'articles_found': len(articles),
         'rejected_skipped': rejected_skipped,
         'rejected_sample': rejected_sample,
@@ -4641,14 +5220,7 @@ def get_wikiproject_articles(project_name: str, max_articles: int = 50000,
         'existing_updated': updated,
         'source_label': source_label,
         'total_in_working_list': db.get_status(topic_id)['total_articles'],
-    }
-    if wiki != 'en' and len(articles) == 0:
-        result['hint'] = (
-            f"WikiProjects are rare outside enwiki — {wiki}.wikipedia.org "
-            f"probably doesn't tag articles this way. Use categories and "
-            f"search_articles instead."
-        )
-    return json.dumps(result, indent=2, ensure_ascii=False)
+    }, indent=2, ensure_ascii=False)
 
 
 @mcp.tool(annotations=WRITE_ADDITIVE)

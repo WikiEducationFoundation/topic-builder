@@ -1086,3 +1086,84 @@ share a canonical name).
   clear articles but preserve `topics.id`; no rename/rebuild path
   re-IDs a topic. Topic deletion cascades to `iv_packages` via the
   existing FK.
+
+## Cross-wiki WikiProject tools (2026-05-13)
+
+`find_wikiprojects` / `check_wikiproject` / `get_wikiproject_articles`
+now work cross-wiki — previously they were enwiki-only by design,
+and the AI-facing texts overclaimed that "WikiProjects are
+essentially absent" on non-en wikis, producing confabulations like
+Anthere's "No WikiProject system exists on French Wikipedia"
+(2026-05-13 dogfood session, fr OMPI build).
+
+Architecture:
+- **Wikidata cross-wiki cache** (`db.wp_crosswiki`): enumerates every
+  `Wikipedia:WikiProject *` root page on enwiki, resolves each to its
+  Wikidata QID via pageprops, and pulls sitelinks per QID via
+  `wbgetentities`. Result: one row per (en_project, target_wiki,
+  page_title) edge. Refreshed lazily on cache miss (~3-5 min full
+  rebuild); ~5500 cross-wiki edges from ~3K projects (fr leads at
+  ~500 edges, then zh / es / de / ru / it / pt / ja / ...). Same
+  TTL/refresh pattern as `wp_bot_projects`.
+- **Per-wiki conventions table** (`WIKI_WP_CONVENTIONS`): empirical
+  fallback for projects not in the Wikidata cache. Covers en, de,
+  ru, fr, es, it, pt, ja, pl, sv. Each entry encodes the project-page
+  namespace prefix + tagging mechanism. Three mechanism families
+  derived from talk-page probes:
+  - `per_project_banner` (en, de, ru) — article membership via
+    `embeddedin` on `Template:WikiProject <name>` (en),
+    `Vorlage:Projekt <name>` (de), `Шаблон:Статья проекта <name>`
+    (ru).
+  - `parameterized_banner` (fr, es, it, pt) — one banner template
+    handles all projects via first-positional-arg. Membership via
+    `backlinks` from Talk namespace to the project page (banners
+    render a link to the project, so Talk pages link there).
+  - `no_banner_system` (ja, pl, sv) — article talk pages don't
+    carry project banners; tool returns 0 articles + structured
+    note. No alternative prescribed (per the principle that hints
+    require validation, not invention).
+- **Tool changes**:
+  - `find_wikiprojects(keywords, wiki)` — enwiki path unchanged;
+    non-en searches the Wikidata cache and returns local titles +
+    en project name + a `convention_hint` describing the wiki's
+    tagging mechanism.
+  - `check_wikiproject(project_name, wiki)` — accepts bare,
+    en-canonical, or local-title forms. Resolves via cache then
+    conventions. Returns `tagging_mechanism` so callers know what
+    to expect from `get_wikiproject_articles`.
+  - `get_wikiproject_articles` — dispatches by mechanism family.
+    Per-project-banner wikis use `embeddedin`; parameterized-banner
+    wikis use `backlinks`; no-banner wikis return 0 with a
+    structured note.
+- **AI-facing text** rewritten in three places (`server_instructions.md`
+  non-en section, `check_wikiproject` and `find_wikiprojects`
+  docstrings, `strategy_moves.md` wikiproject-recon, `landing.html`
+  tool descriptions). The "essentially absent" claim is gone; in its
+  place, factual per-wiki naming + a pointer to the tagging-mechanism
+  field.
+- **`preview_wikiproject` stays enwiki-only** — the WP 1.0 bot data
+  it depends on doesn't exist on other wikis.
+
+Validated end-to-end on production with the climate-change canonical
+case: `find_wikiprojects(['climate'], wiki='fr')` returns
+`Projet:Changement climatique`; `check_wikiproject` confirms existence
++ `tagging_mechanism: parameterized_banner`; underlying backlinks
+query returns 200+ relevant Talk pages (Forêt amazonienne, Méthane,
+Énergie nucléaire, Canicule, ...). The originally-failing
+"Intellectual property" case turned out to have no Wikidata
+cross-wiki link AND no fr equivalent at all — Anthere's AI was
+confabulating the page name on top of the absent-namespace claim.
+The new tools now report this honestly instead of inventing a page.
+
+Empirical method (recorded for future tool extensions): the
+conventions table was built from a two-stage probe (2026-05-13).
+First stage: sample 500 enwiki WPs, resolve QIDs via pageprops, batch
+sitelinks via `wbgetentities` — gave the per-wiki naming patterns.
+Second stage: fetch templates on a known-tagged talk page per wiki
+(`Discussion:Afrique` on fr, etc.) and look for banner-shaped
+templates — revealed the per-wiki tagging mechanism. Tagging
+mechanism doesn't follow naming convention (fr/es have very
+different naming but both use parameterized banners; de/ru differ
+in naming but both use per-project banners). The probe script lives
+at `/tmp/probe_wp_*.py` style names during the build; not committed,
+but the method is reproducible.

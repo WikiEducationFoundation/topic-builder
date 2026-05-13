@@ -566,6 +566,38 @@ evidence:   2026-04-26 apollo-11 thin run wrote "Other Apollo
               but not all.
 ```
 
+## cross-wiki-feature-confabulation
+
+```
+symptom:    on a non-en topic, the AI claims a Wikipedia feature
+              (WikiProjects, list pages, specific templates) "does
+              not exist" on the target wiki and skips the
+              reconnaissance step, when in fact it does exist under
+              a localized name. The result is a thin corpus and a
+              false-confident user-facing statement.
+detection:  AI emits an authoritative claim ("No WikiProject system
+              exists on French Wikipedia") without a probe call
+              having been made — check the tool-call log for a
+              find_wikiprojects / search_articles call against the
+              target wiki. Absence of probe + presence of confident
+              claim = confabulation.
+rescue:     run the probe with the wiki= parameter set; consult the
+              wiki's conventions if the tool returns 0 (find a local
+              equivalent via Wikidata sitelink, or search_articles
+              with intitle:<local-namespace-prefix>); only conclude
+              "absent" after empirical check.
+evidence:   2026-05-13 WIPO/OMPI session — fr build received "No
+              WikiProject system exists on French Wikipedia — as
+              expected, this is an English-Wikipedia convention"
+              from the AI without any find_wikiprojects(wiki='fr')
+              call. fr-wiki has an active Projet: namespace with
+              ~500+ projects linked via Wikidata to enwiki
+              equivalents. Server-instruction text was the
+              upstream cause (claimed "WikiProjects are essentially
+              absent on non-en wikis"); fixed alongside cross-wiki
+              tool extensions on 2026-05-13.
+```
+
 ---
 
 ## Pointers
