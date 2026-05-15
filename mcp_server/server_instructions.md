@@ -1128,8 +1128,10 @@ where corpus-state pattern-matching can't reach.
       deferred-tool system that hides tool schemas until requested. Call
       the client's tool-discovery mechanism (e.g. tool_search) for that
       tool, then retry using the correct parameter names from its schema.
-    - "No approval received": the user didn't click the approval prompt in
-      time. Ask them to approve and retry the same call.
+    - "No approval received": a client-side approval-dialog timeout,
+      not a server response. Don't infer a server-side cause. Ask
+      whether to retry the same call or change course, and wait for
+      the user before re-issuing.
     - Unexpected / semantically wrong response: don't loop blindly on the
       same call. Tell the user in one sentence what happened and propose a
       different strategy — a different tool, different parameter, or a
