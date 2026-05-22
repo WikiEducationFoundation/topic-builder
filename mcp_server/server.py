@@ -3275,6 +3275,26 @@ def audit_progress(note: str = "",
         profile_committed=profile is not None,
     )
 
+    tag_dist = db.tag_distribution(topic_id)
+    tag_section = None
+    if not tag_dist['no_tags_defined']:
+        tag_section = {
+            "defined": [t['tag'] for t in tag_dist['per_tag']],
+            "per_tag": tag_dist['per_tag'],
+            "untagged_articles": tag_dist['untagged_articles'],
+            "multi_tagged_articles": tag_dist['multi_tagged_articles'],
+            "total_assignments": tag_dist['total_assignments'],
+            "property_coverage": {},
+        }
+        # Surface property coverage for tags that declare properties AND
+        # have any members (no point in detailing an empty tag).
+        for entry in tag_dist['per_tag']:
+            if entry['with_properties'] == 0 and entry['member_count'] == 0:
+                continue
+            coverage = db.tag_property_coverage(topic_id, entry['tag'])
+            if coverage:
+                tag_section['property_coverage'][entry['tag']] = coverage
+
     response = {
         "topic": topic_name,
         "corpus": {
@@ -3299,6 +3319,8 @@ def audit_progress(note: str = "",
             "rescues, and evidence."
         ),
     }
+    if tag_section is not None:
+        response["tags"] = tag_section
 
     if not profile:
         response["profile_reminder"] = (
@@ -3308,9 +3330,12 @@ def audit_progress(note: str = "",
         )
 
     log_usage(ctx, "audit_progress",
-              {"profile_committed": profile is not None},
+              {"profile_committed": profile is not None,
+               "tag_count": (len(tag_section['defined'])
+                             if tag_section else 0)},
               f"{total} articles, {len(failure_modes)} failure modes, "
-              f"{len(unused_moves)} unused moves",
+              f"{len(unused_moves)} unused moves, "
+              f"{(len(tag_section['defined']) if tag_section else 0)} tags",
               start_time=_start, note=note)
     return json.dumps(response, indent=2, ensure_ascii=False)
 
@@ -8739,6 +8764,10 @@ def get_articles(min_score: int | None = None, max_score: int | None = None,
                  title_regex: str | None = None,
                  description_regex: str | None = None,
                  unscored_only: bool = False,
+                 tag: str | None = None,
+                 tags_all: list[str] | None = None,
+                 tag_property: dict | None = None,
+                 with_tags: bool = False,
                  titles_only: bool = False,
                  limit: int = 100, offset: int = 0,
                  topic: str | None = None, auth_token: str | None = None, ctx: Context = None) -> str:
@@ -8769,6 +8798,17 @@ def get_articles(min_score: int | None = None, max_score: int | None = None,
                 this case-insensitive regex. Articles with empty/NULL
                 descriptions never match. Run fetch_descriptions first.
         unscored_only: Only return articles without a score
+        tag: Filter to articles carrying this tag.
+        tags_all: Filter to articles carrying ALL of these tags
+                (intersection semantics).
+        tag_property: Filter by a property value on a tag. Shape:
+                {"tag": "biography", "slug": "gender",
+                 "value_ids": ["Q6581072"]} → articles tagged
+                "biography" whose gender value_ids include Q6581072
+                (female). Value match is OR within value_ids.
+        with_tags: If True, include each article's tag list
+                (with property values) in the response. Default False
+                to keep response small.
         titles_only: If True, return just titles (saves tokens). Default False.
         limit: Max articles to return (default 100)
         offset: Skip this many articles (for pagination)
@@ -8778,12 +8818,40 @@ def get_articles(min_score: int | None = None, max_score: int | None = None,
     if err:
         return err
 
+    # Validate tag_property shape early.
+    if tag_property is not None:
+        if not isinstance(tag_property, dict):
+            return json.dumps({"error": "tag_property must be a dict."},
+                              indent=2, ensure_ascii=False)
+        tp_tag = tag_property.get('tag')
+        tp_slug = tag_property.get('slug')
+        tp_vals = tag_property.get('value_ids', [])
+        if not isinstance(tp_tag, str) or not tp_tag:
+            return json.dumps(
+                {"error": "tag_property.tag must be a non-empty string."},
+                indent=2, ensure_ascii=False)
+        if not isinstance(tp_slug, str) or not tp_slug:
+            return json.dumps(
+                {"error": "tag_property.slug must be a non-empty string."},
+                indent=2, ensure_ascii=False)
+        if not isinstance(tp_vals, list) or not tp_vals:
+            return json.dumps({
+                "error": ("tag_property.value_ids must be a non-empty list "
+                          "of value strings."),
+            }, indent=2, ensure_ascii=False)
+        tp_val_set = set(tp_vals)
+
     try:
+        # Pull a large page first; we'll re-paginate after tag filtering.
+        # Tag filter is applied in Python because article_tags is a separate
+        # table; for the typical few-thousand-article topic this is cheap.
+        wide_limit = (limit + offset) if not (tag or tags_all
+                                              or tag_property) else 10**9
         articles, total = db.get_articles(
             topic_id, min_score=min_score, max_score=max_score,
             source=source, sources_all=sources_all,
             title_regex=title_regex, description_regex=description_regex,
-            unscored_only=unscored_only, limit=limit, offset=offset
+            unscored_only=unscored_only, limit=wide_limit, offset=0
         )
     except re.error as e:
         return json.dumps({
@@ -8792,6 +8860,45 @@ def get_articles(min_score: int | None = None, max_score: int | None = None,
                     'Escape special characters with \\ and test against '
                     'sample titles before running on the full topic.',
         }, indent=2)
+
+    membership = (db.get_tag_membership_by_title(topic_id)
+                  if (tag or tags_all or tag_property or with_tags) else {})
+
+    if tag or tags_all or tag_property is not None:
+        filtered = []
+        for a in articles:
+            tags_for_article = {t for t, _ in membership.get(a['title'], [])}
+            if tag and tag not in tags_for_article:
+                continue
+            if tags_all and not set(tags_all).issubset(tags_for_article):
+                continue
+            if tag_property is not None:
+                tag_entries = membership.get(a['title'], [])
+                ok = False
+                for tname, props in tag_entries:
+                    if tname != tp_tag:
+                        continue
+                    for entry in props:
+                        if entry.get('slug') != tp_slug:
+                            continue
+                        vals = set(entry.get('value_ids') or [])
+                        if vals & tp_val_set:
+                            ok = True
+                            break
+                    if ok:
+                        break
+                if not ok:
+                    continue
+            filtered.append(a)
+        articles = filtered
+        total = len(articles)
+        articles = articles[offset:offset + limit]
+
+    if with_tags:
+        for a in articles:
+            a['tags'] = [
+                ({'name': t, 'values': p} if p else {'name': t, 'values': []})
+                for t, p in membership.get(a['title'], [])]
 
     if titles_only:
         return json.dumps({

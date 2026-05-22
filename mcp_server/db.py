@@ -887,6 +887,149 @@ def upsert_article_tags_with_values(topic_id, tag_name, assignments):
     }
 
 
+def get_tag_membership_by_title(topic_id):
+    """Return {title: [(tag_name, parsed_properties), ...]} for every
+    article in the topic that carries at least one tag. Articles with
+    no tags are absent from the dict — callers should treat absence as
+    "untagged".
+
+    `parsed_properties` is the article_tags row's `properties_json`
+    decoded; an empty list means binary tagging (no values set).
+    """
+    conn = _connect()
+    rows = conn.execute(
+        "SELECT a.title, at.tag_name, at.properties_json "
+        "FROM article_tags at "
+        "JOIN articles a ON a.id = at.article_id "
+        "WHERE at.topic_id = ?",
+        (topic_id,)).fetchall()
+    conn.close()
+    result: dict[str, list[tuple[str, list[dict]]]] = {}
+    for r in rows:
+        props = json.loads(r['properties_json'] or '[]')
+        result.setdefault(r['title'], []).append((r['tag_name'], props))
+    return result
+
+
+def tag_distribution(topic_id):
+    """Return per-tag member counts + multi-tagged + untagged stats.
+
+    Returns:
+        {
+          'per_tag': [{'tag': str, 'member_count': int,
+                       'with_properties': int}, ...]  # sorted by ordering
+          'untagged_articles': int,
+          'multi_tagged_articles': int,  # articles with >1 tag
+          'total_assignments': int,
+          'no_tags_defined': bool,
+        }
+    """
+    conn = _connect()
+    tag_rows = conn.execute(
+        "SELECT name, ordering, properties_json FROM topic_tags "
+        "WHERE topic_id = ? ORDER BY ordering, name",
+        (topic_id,)).fetchall()
+    if not tag_rows:
+        conn.close()
+        return {'per_tag': [], 'untagged_articles': 0,
+                'multi_tagged_articles': 0, 'total_assignments': 0,
+                'no_tags_defined': True}
+    per_tag = []
+    for r in tag_rows:
+        member_count = conn.execute(
+            "SELECT COUNT(*) AS c FROM article_tags "
+            "WHERE topic_id = ? AND tag_name = ?",
+            (topic_id, r['name'])).fetchone()['c']
+        with_props = conn.execute(
+            "SELECT COUNT(*) AS c FROM article_tags "
+            "WHERE topic_id = ? AND tag_name = ? "
+            "AND properties_json != '[]' AND properties_json != ''",
+            (topic_id, r['name'])).fetchone()['c']
+        per_tag.append({
+            'tag': r['name'],
+            'member_count': member_count,
+            'with_properties': with_props,
+        })
+    total_articles = conn.execute(
+        "SELECT COUNT(*) AS c FROM articles WHERE topic_id = ?",
+        (topic_id,)).fetchone()['c']
+    articles_with_any_tag = conn.execute(
+        "SELECT COUNT(DISTINCT article_id) AS c FROM article_tags "
+        "WHERE topic_id = ?",
+        (topic_id,)).fetchone()['c']
+    multi_tagged = conn.execute(
+        "SELECT COUNT(*) AS c FROM (SELECT article_id FROM article_tags "
+        "WHERE topic_id = ? GROUP BY article_id HAVING COUNT(*) > 1)",
+        (topic_id,)).fetchone()['c']
+    total_assignments = conn.execute(
+        "SELECT COUNT(*) AS c FROM article_tags WHERE topic_id = ?",
+        (topic_id,)).fetchone()['c']
+    conn.close()
+    return {
+        'per_tag': per_tag,
+        'untagged_articles': total_articles - articles_with_any_tag,
+        'multi_tagged_articles': multi_tagged,
+        'total_assignments': total_assignments,
+        'no_tags_defined': False,
+    }
+
+
+def tag_property_coverage(topic_id, tag_name):
+    """For a value-bearing tag, return per-property coverage stats:
+    {slug: {present, missing, segment_counts}}.
+
+    `present` is the count of tagged articles where this slug appears
+    in their properties_json (with a non-empty value_ids). `missing` is
+    `member_count - present`. `segment_counts` aggregates how often
+    each distinct value_id shows up (useful for diagnosing whether the
+    Wikidata capture pulled coherent values).
+    """
+    conn = _connect()
+    tag_row = conn.execute(
+        "SELECT properties_json FROM topic_tags "
+        "WHERE topic_id = ? AND name = ?",
+        (topic_id, tag_name)).fetchone()
+    if not tag_row:
+        conn.close()
+        return None
+    prop_defs = json.loads(tag_row['properties_json'] or '[]')
+    if not prop_defs:
+        conn.close()
+        return {}
+    member_count = conn.execute(
+        "SELECT COUNT(*) AS c FROM article_tags "
+        "WHERE topic_id = ? AND tag_name = ?",
+        (topic_id, tag_name)).fetchone()['c']
+    rows = conn.execute(
+        "SELECT properties_json FROM article_tags "
+        "WHERE topic_id = ? AND tag_name = ?",
+        (topic_id, tag_name)).fetchall()
+    conn.close()
+
+    coverage = {}
+    for pdef in prop_defs:
+        coverage[pdef['slug']] = {
+            'present': 0,
+            'missing': member_count,
+            'segment_counts': {},
+        }
+    for r in rows:
+        props = json.loads(r['properties_json'] or '[]')
+        for entry in props:
+            slug = entry.get('slug')
+            if slug not in coverage:
+                continue
+            vals = entry.get('value_ids') or []
+            if not vals:
+                continue
+            coverage[slug]['present'] += 1
+            coverage[slug]['missing'] -= 1
+            for v in vals:
+                coverage[slug]['segment_counts'][v] = (
+                    coverage[slug]['segment_counts'].get(v, 0) + 1)
+    return coverage
+
+
 def set_tag_property_value(topic_id, tag_name, article_id, slug, value_ids):
     """Set values for a single property on a single article's tag row.
     Membership must already exist (caller should check). Other properties
