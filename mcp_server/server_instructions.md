@@ -88,11 +88,17 @@ patience) when the earlier steps have landed.
     centrality scores in bulk for taxonomy or non-en topics where
     keyword-matching is reliable. Both optional; skip if there's no
     meaningful core/periphery distinction to capture.
-12. **Spot check + gap check** — before export, see the SPOT CHECK and
+12. **Tagging (optional)** — stratify the corpus for downstream charts.
+    Author the taxonomy with `set_topic_tags` (consultative, like the
+    rubric); apply membership via `tag_articles` / `tag_by_source` /
+    `tag_by_pattern` for AI judgment, or `tag_by_wikidata` for
+    structured signals. Audit per-tag distribution with
+    `audit_progress`. See § Tagging below for the recommended flow.
+13. **Spot check + gap check** — before export, see the SPOT CHECK and
     GAP CHECK bullets below.
-13. **Export** — `export_csv` (use `enriched=True` for manual review
+14. **Export** — `export_csv` (use `enriched=True` for manual review
     copies; default stays Impact-Visualizer-compatible).
-14. **Feedback** — `submit_feedback` at wrap-up, ask first.
+15. **Feedback** — `submit_feedback` at wrap-up, ask first.
 
 **Always probe `check_wikiproject` explicitly at step 2**, even when
 you believe category coverage will subsume it. Don't skip based on
@@ -114,6 +120,9 @@ closest current primitive.
 | "extract links from this list page" / "harvest this list" | `preview_harvest_list_page` then `harvest_list_page` (default `main_content_only=True` strips navboxes). Pass `annotate_types=True` when the list might leak wrong-shaped rows (eponym biographies in a taxonomy list, taxa in a bio list) — surfaces a type-bucket histogram so you can see the contamination before/after committing. Costs ~2 batched API calls regardless of harvest size; `unknown` covers both "no Wikidata page" and "no P31" so real-but-untracked items aren't silently coerced. |
 | "pull every article in this navbox" / "enumerate by broadcaster / by program / by award" | `harvest_navbox(template)` — accepts `"Apollo program"` or `"Template:Apollo program"`. Navboxes are editor-curated and often cleaner than list-page harvests for award / franchise / program shapes. |
 | "what counts as central for this topic?" | `set_topic_rubric(rubric)` after scope confirmation; `get_topic_rubric()` to re-read mid-session |
+| "tag biographies" / "label everything matching Wikidata P31=Q5" / "value-bearing tag with gender + country" | `set_topic_tags` to declare the tag (with property defs); `tag_by_wikidata` to apply membership + capture values in one SPARQL pass |
+| "stratify by topic-internal axis" (e.g. mitigation / adaptation, crew / ground-control) | `set_topic_tags` for the taxonomy; `tag_articles` (AI judgment by title), `tag_by_source` (bulk by source label), or `tag_by_pattern` (regex on title or description) for membership |
+| "this tag's wrong — start over" | `untag_all(tag)` wipes membership but keeps the definition. To delete the definition too, omit the tag from the next `set_topic_tags` call. |
 | "scope drifted mid-build" | Stop, update scope with the user, `set_topic_rubric` with the revised rubric, THEN continue. The rubric is the authoritative scope record. |
 | "find articles like this one" / "more similar" | `preview_similar`, then `search_similar` if the preview is clean |
 | "search for articles matching [keywords]" | `preview_search`, then commit via `add_articles(titles=[...])` with a filtered subset |
@@ -923,6 +932,78 @@ SUBTRACTIVE tools below.
   CSV with a header row (title, wikidata_qid, description, score,
   source_labels, first_added_at) — useful for manual review. No need to
   score before export.
+
+## Tagging
+
+Tags stratify a corpus into named subsets without changing centrality
+scores or membership. Each topic has its own tag taxonomy (no global
+registry). Tags are many-to-many — an article can carry zero or more.
+
+Two posture choices up front:
+
+- **Binary tag** — an article either has the tag or doesn't.
+  Examples: *mitigation*, *crew*, *list*, *recent-event*.
+- **Value-bearing tag** — the tag declares one or more `properties`,
+  each carrying values per article. Example: *biography* with a
+  `gender` property (segmented Female / Male / Other) and a `country`
+  property (auto-grouped). Properties + segments map directly to
+  Impact Visualizer's chart axes.
+
+**When to use which apply primitive:**
+
+| Primitive | Use when |
+|---|---|
+| `tag_articles(tag, titles=[...])` | You're applying AI judgment by title. Property values left empty. |
+| `tag_by_source(tag, source)` | Bulk: "everything pulled via this source label is tagged X". `prefix_match=True` for "everything from wikiproject:*". |
+| `tag_by_pattern(tag, title_regex=..., description_regex=...)` | Bulk pattern match (e.g. `^List of`, descriptions mentioning "activist"). Both regexes AND when both present. |
+| `tag_by_wikidata(tag, predicates, capture_properties)` | Membership + value capture in 1+N SPARQL queries — the cheap path for structured signals (P31=Q5, P106 occupations, P171 parent taxa). Auto-applies: the predicate match IS the tag set. Property capture requires `wikidata_property_id` declared on the property def. |
+| `set_tag_property_values(tag, articles)` | Per-article value overrides on already-tagged articles. Use after `tag_by_wikidata` to fix specific values, or for AI-judgment properties without a Wikidata source. |
+
+**Recommended flow:**
+
+1. **Author the taxonomy** with `set_topic_tags`. Consultative, like
+   the rubric — talk through the categories with the user before
+   committing. Pass the full taxonomy list each call; the function
+   is destructive replacement (tags omitted from the new list are
+   dropped, cascading to their membership).
+2. **Apply structured signals first** — `tag_by_wikidata` for
+   anything with a clean Wikidata predicate (biography, parent taxon,
+   citizenship). Cheap (O(predicates + properties) SPARQL queries,
+   regardless of corpus size) and authoritative for what Wikidata
+   knows.
+3. **Bulk-apply by source labels** — `tag_by_source` for "every
+   article from this list page is `core`" or "every WikiProject
+   article is `wp-tagged`". These pick up structured signals the
+   topic itself encoded but Wikidata may not.
+4. **Pattern-apply** — `tag_by_pattern` for regex-shaped clusters
+   ("everything titled `^List of`").
+5. **Finish by hand** for the rest — `tag_articles(titles=[...])`
+   on remaining articles where the tag is an AI judgment call.
+6. **Audit** via `audit_progress` — its `tags` section reports
+   per-tag member counts, untagged article count, multi-tagged
+   articles, and per-property coverage / segment counts for
+   value-bearing tags.
+
+**Additive only (load-bearing).** Every tagging primitive is
+additive: it finds candidates and adds them to the tag set. Tag
+absence does NOT mean "definitely not in this subset" — it means
+"we didn't tag it". Same caveat applies to captured property values:
+a missing `P21` gender value means "Wikidata didn't say", not "no
+gender". Don't use missing-tag or missing-value as a negative signal
+in reasoning or charts.
+
+**Tags vs. centrality.** Centrality is a 1–10 axis answering "how
+core is this article?" Tags are sets answering "what subset is this
+article in?" They don't merge. A *peripheral mitigation* article and
+a *central mitigation* article are both members of the `mitigation`
+tag; centrality differentiates them.
+
+**Tag deletion vs. membership wipe.** Two distinct operations:
+
+- `untag_all(tag)` — wipes membership; the tag definition stays.
+  Useful when you applied membership wrong and want to start over.
+- Omit the tag from a `set_topic_tags` call — deletes both the
+  definition and its membership.
 
 ## Impact Visualizer handoff (publish_topic)
 

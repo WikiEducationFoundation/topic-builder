@@ -1167,3 +1167,42 @@ different naming but both use parameterized banners; de/ru differ
 in naming but both use per-project banners). The probe script lives
 at `/tmp/probe_wp_*.py` style names during the build; not committed,
 but the method is reproducible.
+
+
+## Article tags v1 (2026-05-22)
+
+TB-side feature to stratify a topic's corpus into named subsets,
+designed to subsume Impact Visualizer's existing Classifications
+feature in a later IV deploy. Six slices, all behind the
+`TB_EMIT_TAGS` env flag on the publish path until the IV-side v2
+reader ships.
+
+**What landed:**
+
+- Two new tables (`topic_tags`, `article_tags`) mirroring IV's
+  `Classification` / `ArticleClassification` shapes. Tags are
+  per-topic, many-to-many, optionally value-bearing via declared
+  properties (with explicit-segment or auto-grouped binnings).
+- Ten new MCP tools: `set_topic_tags` / `get_topic_tags` for the
+  taxonomy; `tag_articles` / `untag_articles` /
+  `tag_by_source` / `untag_by_source` / `tag_by_pattern` /
+  `untag_all` for binary membership; `tag_by_wikidata` /
+  `set_tag_property_values` for Wikidata-driven and per-article
+  value capture.
+- `tag_by_wikidata` runs O(predicates + captured_properties)
+  SPARQL queries regardless of corpus size — for a 6.7K-article
+  biography tag capturing gender + country, that's 3 queries vs.
+  Impact Visualizer's ~107K per-article claims calls. Adds POST
+  support to `wikipedia_api.api_get` so VALUES clauses with
+  thousands of QIDs don't overflow URL limits.
+- `get_articles` gains `tag` / `tags_all` / `tag_property` /
+  `with_tags` filters.
+- `audit_progress` gains a `tags` section: per-tag member counts,
+  multi-tagged + untagged counts, per-property coverage with
+  segment-value histograms.
+- IV handoff payload (`prepare_iv_handoff` / `publish_topic` /
+  `GET /packages/<handle>`) bundles the taxonomy + per-article
+  membership when `TB_EMIT_TAGS=1` is set in the service env, and
+  bumps `schema_version` 1 → 2. The flag stays off until the
+  IV-side v2 reader ships, per the
+  `docs/backlog/article-tags.md` § Sequencing plan.

@@ -27,7 +27,9 @@ Source for the IV-side status: `impact-visualizer/docs/topic-builder-handoff-sta
 | IV   | `ArticleBagArticle.centrality` column | ☑ shipped 2026-05-08 | IV PR #55; nullable int |
 | IV   | `Topic.tb_handle` column | ☑ shipped 2026-05-08 | IV PR #55 |
 | Both | End-to-end dogfood run | ☑ shipped 2026-05-08 | 6562-article climate-change topic, wmcloud + wiki-ed prod |
-| IV   | Schema-version bump coordination story | ☐ not started | needed before TB ships `schema_version=2` |
+| IV   | Schema-version bump coordination story | ◐ TB side ready | TB ships `schema_version=2` payload behind `TB_EMIT_TAGS` (2026-05-22, `article-tags.md`). IV needs the v2 reader before the flag flips on. |
+| IV   | v2 reader: read `tags` taxonomy + per-article tag membership from TB payload | ☐ not started | TB-side article-tags v1 (2026-05-22) emits the full IV-Classification wire shape when `TB_EMIT_TAGS=1`. IV reader replaces `classify_all_articles` for new imports; existing classification-based topics keep working through deprecation. |
+| IV   | Deprecate `Classification` / `ArticleClassification` / `classify_all_articles` | ☐ not started | Follows the v2 reader: ActiveAdmin editor goes read-only, per-article Wikidata fan-out stops on new topics. Migration path for already-imported classified topics is the locked-decision (b) grace period. See `article-tags.md` § Sequencing. |
 | IV   | Broaden import gate beyond admin-only | ☐ deferred | `TopicBuilderImportService` already accepts a `topic_editor` |
 | TB   | TB → IV user list (parallel users CSV / package field) | ☐ deferred | IV's TB-topic UI hides Users panel; symmetric ingest straightforward once TB emits |
 | Both | Atomic edits (`patch_iv_topic`) | ☐ deferred | post-v1; see § Forward-compat |

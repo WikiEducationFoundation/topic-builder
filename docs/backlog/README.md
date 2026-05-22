@@ -7,7 +7,10 @@ this doc.
 
 Sibling docs in this directory hold larger deferred plans:
 - `impact-visualizer.md` — publish_topic handle → Impact Visualizer import.
-- `article-tags.md` — flexible per-topic tag feature for IV stratification (first sketch, refine before building).
+- `article-tags.md` — flexible per-topic tag feature for IV
+  stratification. TB side **shipped 2026-05-22** behind the
+  `TB_EMIT_TAGS` env flag; IV-side v2 reader + Classifications
+  deprecation remain open (covered in `impact-visualizer.md`).
 
 Add new items here as signals come in; promote items to
 `../shipped.md` when they land.

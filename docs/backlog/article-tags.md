@@ -1,7 +1,14 @@
 # Article tags — flexible per-topic stratification
 
-**Status:** ☐ first sketch — will be refined in a separate planning
-session before any implementation.
+**Status:** ☑ TB side shipped 2026-05-22 behind the `TB_EMIT_TAGS`
+env flag. IV-side v2 reader + Classifications deprecation remain
+open — coordination lives in `impact-visualizer.md`. See
+`docs/shipped.md` § Article tags v1 for the cutover summary.
+
+This doc is preserved as the design record (open questions + locked
+decisions + sequencing plan as written before the build). Where it
+disagrees with what shipped, the implementation is authoritative —
+inspect `mcp_server/server.py` and `db.py` for current behavior.
 
 ## Why
 
