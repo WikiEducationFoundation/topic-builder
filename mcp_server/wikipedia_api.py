@@ -58,20 +58,31 @@ def get_rate_limit_stats():
     }
 
 
-def api_get(url, params=None, timeout=30):
+def api_get(url, params=None, timeout=30, post_body=None):
+    """HTTP call routed through this module's rate-limiter + counters.
+
+    `post_body` (optional): if provided, send as POST with
+    application/x-www-form-urlencoded body. Used for large SPARQL VALUES
+    clauses that overflow a GET URL. When set, `params` is ignored and
+    `post_body` must be a urlencoded bytes string.
+    """
     global _last_request_time, _rate_limit_hits, _last_rate_limit_time
     elapsed = time.time() - _last_request_time
     if elapsed < REQUEST_DELAY:
         time.sleep(REQUEST_DELAY - elapsed)
 
-    if params:
+    if post_body is not None:
+        full_url = url
+    elif params:
         query_string = urllib.parse.urlencode(params, doseq=True)
         full_url = f"{url}?{query_string}"
     else:
         full_url = url
 
-    req = urllib.request.Request(full_url)
+    req = urllib.request.Request(full_url, data=post_body)
     req.add_header('User-Agent', USER_AGENT)
+    if post_body is not None:
+        req.add_header('Content-Type', 'application/x-www-form-urlencoded')
 
     for attempt in range(3):
         try:
@@ -438,7 +449,8 @@ def _simplify_sparql_binding(binding: dict) -> dict:
 
 
 def wikidata_sparql(query: str, timeout: int = 60,
-                   use_cache: bool = True) -> list[dict]:
+                   use_cache: bool = True,
+                   method: str = 'GET') -> list[dict]:
     """Run a SPARQL query against query.wikidata.org.
 
     Returns a list of simplified binding dicts — each dict maps SELECT
@@ -448,7 +460,13 @@ def wikidata_sparql(query: str, timeout: int = 60,
 
     `use_cache=True` (default) hits an in-memory 1-hour TTL cache keyed
     by the query text. Pass False for diagnostics or when you know data
-    has changed."""
+    has changed.
+
+    `method='POST'` sends the query in the request body — required for
+    large VALUES clauses that would overflow a GET URL (practical limit
+    ~6KB on the GET path). Use POST when you know the query is large
+    (e.g. VALUES of hundreds of QIDs); GET is fine for typical queries
+    and gets logged in WDQS's query log for diagnostics."""
     import hashlib
     cache_key = hashlib.sha256(query.encode('utf-8')).hexdigest()
     if use_cache:
@@ -456,8 +474,14 @@ def wikidata_sparql(query: str, timeout: int = 60,
         if cached and time.monotonic() - cached[0] < _WIKIDATA_CACHE_TTL_S:
             return cached[1]
 
-    params = {'query': query, 'format': 'json'}
-    data = api_get(WIKIDATA_SPARQL_ENDPOINT, params, timeout=timeout)
+    if method == 'POST':
+        body = urllib.parse.urlencode(
+            {'query': query, 'format': 'json'}).encode('utf-8')
+        data = api_get(WIKIDATA_SPARQL_ENDPOINT, post_body=body,
+                       timeout=timeout)
+    else:
+        params = {'query': query, 'format': 'json'}
+        data = api_get(WIKIDATA_SPARQL_ENDPOINT, params, timeout=timeout)
     if not isinstance(data, dict):
         return []
     bindings = (data.get('results', {}) or {}).get('bindings', []) or []

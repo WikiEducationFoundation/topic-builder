@@ -1343,6 +1343,361 @@ def tag_by_pattern(tag: str, title_regex: str | None = None,
     return json.dumps(response, indent=2, ensure_ascii=False)
 
 
+def _build_tag_membership_sparql(topic_qids, predicates):
+    """Build the SPARQL that returns ?qid for every topic QID matching all
+    predicates. Each predicate is {property_id, value_ids}; predicates AND
+    together; value_ids OR within a predicate."""
+    qid_values = ' '.join(f'wd:{q}' for q in topic_qids)
+    lines = ["SELECT ?qid WHERE {", f"  VALUES ?qid {{ {qid_values} }}"]
+    for i, pred in enumerate(predicates):
+        pid = pred['property_id']
+        vals = pred['value_ids']
+        if len(vals) == 1:
+            lines.append(f"  ?qid wdt:{pid} wd:{vals[0]} .")
+        else:
+            var = f"v_{i}"
+            vlist = ' '.join(f'wd:{v}' for v in vals)
+            lines.append(f"  ?qid wdt:{pid} ?{var} .")
+            lines.append(f"  VALUES ?{var} {{ {vlist} }}")
+    lines.append("}")
+    return "\n".join(lines)
+
+
+def _build_tag_capture_sparql(matched_qids, property_id):
+    """Build the SPARQL that returns ?qid ?value for the given matched
+    QIDs and a single property (the captured-property predicate). One
+    row per (qid, value) pair; multi-valued properties produce multiple
+    rows."""
+    qid_values = ' '.join(f'wd:{q}' for q in matched_qids)
+    return (
+        "SELECT ?qid ?value WHERE {\n"
+        f"  VALUES ?qid {{ {qid_values} }}\n"
+        f"  ?qid wdt:{property_id} ?value .\n"
+        "}"
+    )
+
+
+@mcp.tool(annotations=WRITE_ADDITIVE)
+def tag_by_wikidata(tag: str, predicates: list[dict],
+                    capture_properties: list[str] | None = None,
+                    note: str = "",
+                    topic: str | None = None,
+                    auth_token: str | None = None,
+                    ctx: Context = None) -> str:
+    """Apply a tag to every article whose Wikidata entity matches the
+    given predicates, optionally capturing per-article property values in
+    the same pass. The killer primitive for value-bearing tags — covers
+    what IV's `classify_all_articles` does, but as ~one SPARQL pass over
+    the topic's QID set instead of a per-article Wikidata fan-out.
+
+    Cost story: O(predicates + captured_properties) SPARQL queries
+    regardless of corpus size, vs IV's O(articles × ~16 Wikidata
+    claims-calls). For a 6.7K-article topic with a Biography tag
+    capturing gender + country, that's 3 SPARQL queries instead of
+    ~107K Wikidata API calls.
+
+    Article QIDs must be resolved first via `resolve_qids` — articles
+    without a `wikidata_qid` set are skipped and reported in the
+    response.
+
+    Additive only: this finds candidates via Wikidata claims. Tag
+    absence does NOT mean "Wikidata says not-X" — Wikidata coverage is
+    uneven. Don't lean on missing membership as a negative signal. Same
+    caveat applies to captured property values: a missing P21 means
+    "Wikidata didn't say", not "no gender".
+
+    Auto-apply: this writes article_tags rows directly (membership is
+    a structured fact, not centrality). To undo, use `untag_all` or
+    `untag_articles`.
+
+    Args:
+        tag: Name of an existing tag (defined via set_topic_tags).
+        predicates: List of {property_id, value_ids} dicts. Multiple
+            predicates AND together; within a predicate, value_ids OR.
+            Example: [{"property_id": "P31", "value_ids": ["Q5"]}] →
+            articles whose "instance of" is "human" (biographies).
+            Compound: [{"property_id": "P31", "value_ids": ["Q5"]},
+                       {"property_id": "P106", "value_ids": ["Q82955"]}]
+            → biographies who are also politicians.
+        capture_properties: Optional list of property slugs to fetch
+            values for. Each slug must be declared in the tag's
+            property defs AND have a wikidata_property_id set. The
+            fetched values populate `article_tags.properties_json`.
+        note: Optional free-text observation.
+        topic: Optional topic name for stateless clients.
+
+    Returns: {tag, matched_in_topic, tagged_new, updated, unchanged,
+    properties_captured, sparql_queries_run, qids_skipped, note}.
+    """
+    _start = _start_call()
+    topic_id, _wiki, err = _require_topic(ctx, topic, auth_token=auth_token)
+    if err:
+        return err
+    tag_name, terr = _require_tag_defined(topic_id, tag)
+    if terr:
+        return terr
+
+    if not isinstance(predicates, list) or not predicates:
+        return json.dumps({
+            "error": ("predicates must be a non-empty list of "
+                      "{property_id, value_ids} dicts."),
+        }, indent=2, ensure_ascii=False)
+    for i, pred in enumerate(predicates):
+        if not isinstance(pred, dict):
+            return json.dumps(
+                {"error": f"predicates[{i}] must be a dict."},
+                indent=2, ensure_ascii=False)
+        pid = pred.get('property_id')
+        if not isinstance(pid, str) or not re.match(r'^P\d+$', pid):
+            return json.dumps({
+                "error": (f"predicates[{i}].property_id must match "
+                          f"P<digits>. Got: {pid!r}"),
+            }, indent=2, ensure_ascii=False)
+        vals = pred.get('value_ids', [])
+        if not isinstance(vals, list) or not vals:
+            return json.dumps({
+                "error": (f"predicates[{i}].value_ids must be a non-empty "
+                          "list of Q<digits>."),
+            }, indent=2, ensure_ascii=False)
+        for j, v in enumerate(vals):
+            if not isinstance(v, str) or not re.match(r'^Q\d+$', v):
+                return json.dumps({
+                    "error": (f"predicates[{i}].value_ids[{j}] must match "
+                              f"Q<digits>. Got: {v!r}"),
+                }, indent=2, ensure_ascii=False)
+
+    tag_def = db.get_topic_tag(topic_id, tag_name)
+    tag_props_by_slug = {p['slug']: p for p in tag_def['properties']}
+    capture_resolved = []  # list of (slug, wikidata_property_id)
+    if capture_properties:
+        if not isinstance(capture_properties, list):
+            return json.dumps(
+                {"error": "capture_properties must be a list of slugs."},
+                indent=2, ensure_ascii=False)
+        for slug in capture_properties:
+            if slug not in tag_props_by_slug:
+                return json.dumps({
+                    "error": (f"capture_properties: slug {slug!r} is not "
+                              f"declared on tag {tag_name!r}. Add it via "
+                              "set_topic_tags first."),
+                }, indent=2, ensure_ascii=False)
+            pdef = tag_props_by_slug[slug]
+            wpid = pdef.get('wikidata_property_id')
+            if not wpid:
+                return json.dumps({
+                    "error": (f"capture_properties: property {slug!r} has "
+                              "no wikidata_property_id. Add one to the "
+                              "property def in set_topic_tags, or use "
+                              "set_tag_property_values for AI-judgment "
+                              "values."),
+                }, indent=2, ensure_ascii=False)
+            capture_resolved.append((slug, wpid))
+
+    qid_rows = db.get_topic_qids(topic_id)
+    qid_to_aid = {qid: aid for aid, _title, qid in qid_rows}
+    total_articles = db.get_status(topic_id)['total_articles']
+    qids_skipped = total_articles - len(qid_rows)
+
+    if not qid_rows:
+        return json.dumps({
+            "error": ("No articles in this topic have a resolved "
+                      "wikidata_qid yet. Run resolve_qids first."),
+            "topic_articles": total_articles,
+        }, indent=2, ensure_ascii=False)
+
+    membership_sparql = _build_tag_membership_sparql(
+        [q for _, _, q in qid_rows], predicates)
+    try:
+        membership_rows = wikipedia_api.wikidata_sparql(
+            membership_sparql, method='POST')
+    except Exception as exc:
+        return json.dumps({
+            "error": f"Membership SPARQL failed: {exc}",
+        }, indent=2, ensure_ascii=False)
+    matched_qids = [r.get('qid', '') for r in membership_rows
+                    if r.get('qid', '') in qid_to_aid]
+
+    queries_run = 1
+    captured_by_qid: dict[str, list[dict]] = {}
+    for slug, wpid in capture_resolved:
+        if not matched_qids:
+            break
+        capture_sparql = _build_tag_capture_sparql(matched_qids, wpid)
+        try:
+            value_rows = wikipedia_api.wikidata_sparql(
+                capture_sparql, method='POST')
+        except Exception as exc:
+            return json.dumps({
+                "error": (f"Capture SPARQL for {slug!r}/{wpid} failed: "
+                          f"{exc}"),
+                "matched_so_far": len(matched_qids),
+            }, indent=2, ensure_ascii=False)
+        queries_run += 1
+        by_qid: dict[str, list[str]] = {}
+        for r in value_rows:
+            q = r.get('qid', '')
+            v = r.get('value', '')
+            if q and v:
+                by_qid.setdefault(q, []).append(v)
+        for q, vs in by_qid.items():
+            captured_by_qid.setdefault(q, []).append({
+                'slug': slug, 'value_ids': vs,
+            })
+
+    assignments = []
+    for q in matched_qids:
+        aid = qid_to_aid[q]
+        props = captured_by_qid.get(q, [])
+        assignments.append(
+            (aid, json.dumps(props, ensure_ascii=False)))
+
+    result = db.upsert_article_tags_with_values(
+        topic_id, tag_name, assignments)
+
+    response = {
+        'tag': tag_name,
+        'matched_in_topic': len(matched_qids),
+        'tagged_new': result['tagged_new'],
+        'updated': result['updated'],
+        'unchanged': result['unchanged'],
+        'properties_captured': [s for s, _ in capture_resolved],
+        'sparql_queries_run': queries_run,
+        'qids_skipped': qids_skipped,
+        'note': (
+            'Additive: missing membership means "Wikidata did not say so", '
+            'not "no". Do not use absence as a negative signal. Same caveat '
+            f'applies to captured property values. To undo: untag_all({tag_name!r}).'
+        ),
+    }
+    if qids_skipped:
+        response['qids_skipped_note'] = (
+            f"{qids_skipped} articles had no wikidata_qid resolved; they "
+            "were skipped. Run resolve_qids to resolve them, then re-run."
+        )
+
+    log_usage(ctx, "tag_by_wikidata",
+              {"tag": tag_name, "predicates": predicates,
+               "capture": [s for s, _ in capture_resolved],
+               "topic_qids": len(qid_rows)},
+              f"+{result['tagged_new']} tagged, "
+              f"{result['updated']} updated; "
+              f"{queries_run} SPARQL queries",
+              start_time=_start, note=note)
+    return json.dumps(response, indent=2, ensure_ascii=False)
+
+
+@mcp.tool(annotations=WRITE_IDEMPOTENT)
+def set_tag_property_values(tag: str, articles: list[dict],
+                            note: str = "",
+                            topic: str | None = None,
+                            auth_token: str | None = None,
+                            ctx: Context = None) -> str:
+    """Set per-article values for a tag's properties without changing
+    membership. Use when the AI has judgment values, or when you need to
+    override a Wikidata-derived value from `tag_by_wikidata`.
+
+    Each entry sets one property's values on one article. If the article
+    isn't already tagged, the entry is skipped and reported in
+    `not_tagged`. (Apply membership first via `tag_articles` /
+    `tag_by_source` / `tag_by_wikidata`.)
+
+    Args:
+        tag: Name of an existing tag.
+        articles: List of {title, slug, value_ids} entries.
+          - title (str): Article title in this topic.
+          - slug (str): Property slug declared on the tag.
+          - value_ids (list[str]): Values to store. For Wikidata-aligned
+              properties these are QIDs (so IV's segment matcher can
+              bucket them); for AI-judgment properties they can be any
+              short string IV's chart code accepts.
+        note: Optional free-text observation.
+        topic: Optional topic name for stateless clients.
+
+    Returns: {tag, updated, unchanged, not_tagged, not_in_topic,
+    slug_unknown}.
+    """
+    _start = _start_call()
+    topic_id, _wiki, err = _require_topic(ctx, topic, auth_token=auth_token)
+    if err:
+        return err
+    tag_name, terr = _require_tag_defined(topic_id, tag)
+    if terr:
+        return terr
+    if not isinstance(articles, list):
+        return json.dumps(
+            {"error": "articles must be a list."},
+            indent=2, ensure_ascii=False)
+
+    tag_def = db.get_topic_tag(topic_id, tag_name)
+    known_slugs = {p['slug'] for p in tag_def['properties']}
+
+    entries = []
+    for i, ent in enumerate(articles):
+        if not isinstance(ent, dict):
+            return json.dumps(
+                {"error": f"articles[{i}] must be a dict."},
+                indent=2, ensure_ascii=False)
+        title = ent.get('title')
+        if not isinstance(title, str) or not title:
+            return json.dumps(
+                {"error": f"articles[{i}].title must be non-empty string."},
+                indent=2, ensure_ascii=False)
+        slug = ent.get('slug')
+        if not isinstance(slug, str) or not slug:
+            return json.dumps(
+                {"error": f"articles[{i}].slug must be non-empty string."},
+                indent=2, ensure_ascii=False)
+        vals = ent.get('value_ids', [])
+        if not isinstance(vals, list):
+            return json.dumps(
+                {"error": f"articles[{i}].value_ids must be a list."},
+                indent=2, ensure_ascii=False)
+        for j, v in enumerate(vals):
+            if not isinstance(v, str):
+                return json.dumps(
+                    {"error": f"articles[{i}].value_ids[{j}] must be string."},
+                    indent=2, ensure_ascii=False)
+        entries.append({'title': title, 'slug': slug, 'value_ids': vals})
+
+    titles = sorted({e['title'] for e in entries})
+    title_to_id, not_in_topic = db.resolve_titles_to_ids(topic_id, titles)
+
+    updated = 0
+    unchanged = 0
+    not_tagged = []
+    slug_unknown = []
+    for ent in entries:
+        if ent['slug'] not in known_slugs:
+            slug_unknown.append({'title': ent['title'], 'slug': ent['slug']})
+            continue
+        aid = title_to_id.get(ent['title'])
+        if aid is None:
+            continue  # already in not_in_topic
+        ok = db.set_tag_property_value(
+            topic_id, tag_name, aid, ent['slug'], ent['value_ids'])
+        if ok:
+            updated += 1
+        else:
+            not_tagged.append(ent['title'])
+
+    log_usage(ctx, "set_tag_property_values",
+              {"tag": tag_name, "entry_count": len(entries)},
+              f"{updated} updated, {len(not_tagged)} not tagged, "
+              f"{len(not_in_topic)} not in topic, "
+              f"{len(slug_unknown)} unknown slugs",
+              start_time=_start, note=note)
+    return json.dumps({
+        'tag': tag_name,
+        'updated': updated,
+        'not_tagged': not_tagged[:50],
+        'not_tagged_count': len(not_tagged),
+        'not_in_topic': not_in_topic[:50],
+        'not_in_topic_count': len(not_in_topic),
+        'slug_unknown': slug_unknown[:20],
+        'slug_unknown_count': len(slug_unknown),
+    }, indent=2, ensure_ascii=False)
+
+
 @mcp.tool(annotations=WRITE_DESTRUCTIVE)
 def untag_all(tag: str, note: str = "",
               topic: str | None = None, auth_token: str | None = None,

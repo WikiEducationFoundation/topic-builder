@@ -612,6 +612,15 @@ def tag_definition_exists(topic_id, tag_name):
     return row is not None
 
 
+def resolve_titles_to_ids(topic_id, titles):
+    """Public wrapper: open a connection and resolve titles → ids."""
+    conn = _connect()
+    try:
+        return _resolve_titles_to_ids(conn, topic_id, titles)
+    finally:
+        conn.close()
+
+
 def _resolve_titles_to_ids(conn, topic_id, titles):
     """Resolve a list of article titles to ids within a topic. Returns
     (title→id dict, sorted list of titles not in topic). Batched to avoid
@@ -800,6 +809,116 @@ def untag_all_for_tag(topic_id, tag_name):
     conn.commit()
     conn.close()
     return untagged
+
+
+def get_topic_tag(topic_id, tag_name):
+    """Return a single tag definition (with parsed properties), or None
+    if the tag isn't defined. Used by Wikidata-driven tagging to look up
+    declared property defs by slug."""
+    conn = _connect()
+    row = conn.execute(
+        "SELECT name, description, ordering, derived_from, properties_json "
+        "FROM topic_tags WHERE topic_id = ? AND name = ?",
+        (topic_id, tag_name)).fetchone()
+    conn.close()
+    if row is None:
+        return None
+    return {
+        'name': row['name'],
+        'description': row['description'],
+        'ordering': row['ordering'],
+        'derived_from': row['derived_from'],
+        'properties': json.loads(row['properties_json'] or '[]'),
+    }
+
+
+def get_topic_qids(topic_id):
+    """Return [(article_id, title, qid), ...] for every article in the
+    topic that has a non-empty wikidata_qid. Used as the candidate set
+    for tag_by_wikidata."""
+    conn = _connect()
+    rows = conn.execute(
+        "SELECT id, title, wikidata_qid FROM articles "
+        "WHERE topic_id = ? AND wikidata_qid IS NOT NULL "
+        "AND wikidata_qid != ''",
+        (topic_id,)).fetchall()
+    conn.close()
+    return [(r['id'], r['title'], r['wikidata_qid']) for r in rows]
+
+
+def upsert_article_tags_with_values(topic_id, tag_name, assignments):
+    """Insert or update article_tags rows. `assignments` is a list of
+    (article_id, properties_json_str). For each row: insert if missing,
+    update properties_json if present. Returns {'tagged_new', 'updated',
+    'unchanged'}."""
+    if not assignments:
+        return {'tagged_new': 0, 'updated': 0, 'unchanged': 0}
+    conn = _connect()
+    tagged_new = 0
+    updated = 0
+    unchanged = 0
+    for article_id, props_json in assignments:
+        existing = conn.execute(
+            "SELECT properties_json FROM article_tags "
+            "WHERE topic_id = ? AND article_id = ? AND tag_name = ?",
+            (topic_id, article_id, tag_name)).fetchone()
+        if existing is None:
+            conn.execute(
+                "INSERT INTO article_tags "
+                "(topic_id, article_id, tag_name, properties_json) "
+                "VALUES (?, ?, ?, ?)",
+                (topic_id, article_id, tag_name, props_json))
+            tagged_new += 1
+        elif existing['properties_json'] != props_json:
+            conn.execute(
+                "UPDATE article_tags SET properties_json = ?, "
+                "       assigned_at = datetime('now') "
+                "WHERE topic_id = ? AND article_id = ? AND tag_name = ?",
+                (props_json, topic_id, article_id, tag_name))
+            updated += 1
+        else:
+            unchanged += 1
+    conn.commit()
+    conn.close()
+    return {
+        'tagged_new': tagged_new,
+        'updated': updated,
+        'unchanged': unchanged,
+    }
+
+
+def set_tag_property_value(topic_id, tag_name, article_id, slug, value_ids):
+    """Set values for a single property on a single article's tag row.
+    Membership must already exist (caller should check). Other properties
+    on the row are preserved. Returns True if the row was updated, False
+    if there's no membership row to update."""
+    conn = _connect()
+    row = conn.execute(
+        "SELECT properties_json FROM article_tags "
+        "WHERE topic_id = ? AND article_id = ? AND tag_name = ?",
+        (topic_id, article_id, tag_name)).fetchone()
+    if row is None:
+        conn.close()
+        return False
+    props = json.loads(row['properties_json'] or '[]')
+    # Replace existing entry for this slug, or append.
+    replaced = False
+    for entry in props:
+        if entry.get('slug') == slug:
+            entry['value_ids'] = list(value_ids)
+            replaced = True
+            break
+    if not replaced:
+        props.append({'slug': slug, 'value_ids': list(value_ids)})
+    conn.execute(
+        "UPDATE article_tags SET properties_json = ?, "
+        "       assigned_at = datetime('now') "
+        "WHERE topic_id = ? AND article_id = ? AND tag_name = ?",
+        (json.dumps(props, ensure_ascii=False),
+         topic_id, article_id, tag_name))
+    conn.commit()
+    conn.close()
+    return True
 
 
 def append_feedback(entry):
