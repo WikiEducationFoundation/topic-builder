@@ -1508,7 +1508,7 @@ def tag_by_wikidata(tag: str, predicates: list[dict],
     membership_sparql = _build_tag_membership_sparql(
         [q for _, _, q in qid_rows], predicates)
     try:
-        membership_rows = wikipedia_api.wikidata_sparql(
+        membership_rows = _wikidata_sparql(
             membership_sparql, method='POST')
     except Exception as exc:
         return json.dumps({
@@ -1524,7 +1524,7 @@ def tag_by_wikidata(tag: str, predicates: list[dict],
             break
         capture_sparql = _build_tag_capture_sparql(matched_qids, wpid)
         try:
-            value_rows = wikipedia_api.wikidata_sparql(
+            value_rows = _wikidata_sparql(
                 capture_sparql, method='POST')
         except Exception as exc:
             return json.dumps({
