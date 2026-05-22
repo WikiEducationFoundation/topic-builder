@@ -280,6 +280,15 @@ def init_db():
         conn.execute(
             "UPDATE iv_packages SET source_topic_id = topic_id "
             "WHERE source_topic_id IS NULL")
+    # Snapshot of the topic's tag taxonomy at publish time. Empty string
+    # ('') means "tags not emitted" (TB_EMIT_TAGS feature flag was off);
+    # a JSON array of tag defs means tags are part of this v2 package.
+    # Per-article tag membership lives inside articles_json (each article
+    # dict has its own 'tags' field when emission is on).
+    if iv_pkg_cols and 'tags_json' not in iv_pkg_cols:
+        conn.execute(
+            "ALTER TABLE iv_packages ADD COLUMN tags_json TEXT NOT NULL "
+            "DEFAULT ''")
     conn.commit()
     conn.close()
 
@@ -2197,27 +2206,40 @@ def mint_iv_handle():
 
 
 def create_iv_package(handle, topic_id, config, articles, source_topic,
-                      source_topic_id, publisher_user, ttl_days=30):
+                      source_topic_id, publisher_user, ttl_days=30,
+                      tags=None, schema_version=1):
     """Insert a frozen IV package row. config and articles are
     JSON-serialized here so callers don't have to remember to dump.
     Returns expires_at (ISO string, in UTC SQLite-default form).
 
     source_topic_id is denormalized alongside source_topic so the
     package can outlive a deleted TB topic — IV uses it to recognize
-    republishes of an already-imported topic."""
+    republishes of an already-imported topic.
+
+    `tags` (optional): the topic's tag taxonomy snapshot. When provided
+    AND schema_version >= 2, gets serialized to tags_json. None or empty
+    stores '' meaning "tags not emitted on this package" (the legacy
+    case)."""
     conn = _connect()
+    if tags and schema_version >= 2:
+        tags_json = json.dumps(tags, ensure_ascii=False)
+    else:
+        tags_json = ''
     conn.execute(
         "INSERT INTO iv_packages "
         "(handle, topic_id, config_json, articles_json, source_topic, "
-        " source_topic_id, publisher_user, expires_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now', ?))",
+        " source_topic_id, publisher_user, expires_at, tags_json, "
+        " schema_version) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now', ?), ?, ?)",
         (handle, topic_id,
          json.dumps(config, ensure_ascii=False),
          json.dumps(articles, ensure_ascii=False),
          source_topic,
          source_topic_id,
          publisher_user,
-         f"+{int(ttl_days)} days"))
+         f"+{int(ttl_days)} days",
+         tags_json,
+         schema_version))
     expires_at = conn.execute(
         "SELECT expires_at FROM iv_packages WHERE handle = ?",
         (handle,)).fetchone()['expires_at']
@@ -2234,16 +2256,19 @@ def get_iv_package(handle):
     row = conn.execute(
         "SELECT handle, topic_id, config_json, articles_json, source_topic, "
         "       source_topic_id, publisher_user, created_at, consumed_at, "
-        "       expires_at, schema_version "
+        "       expires_at, schema_version, tags_json "
         "FROM iv_packages WHERE handle = ?", (handle,)).fetchone()
     conn.close()
     if row is None:
         return None
+    tags_json = row['tags_json'] or ''
+    tags = json.loads(tags_json) if tags_json else []
     return {
         'handle': row['handle'],
         'topic_id': row['topic_id'],
         'config': json.loads(row['config_json']),
         'articles': json.loads(row['articles_json']),
+        'tags': tags,
         'source_topic': row['source_topic'],
         'source_topic_id': row['source_topic_id'],
         'publisher_user': row['publisher_user'],

@@ -9504,6 +9504,15 @@ def _default_timepoint_interval(start_date: str, end_date: str) -> int:
     return 365
 
 
+def _tags_emission_enabled() -> bool:
+    """Feature flag for emitting tags in IV handoff packages. Off by
+    default until the IV side ships the v2 reader; flipped on by setting
+    TB_EMIT_TAGS=1 in the operator-owned env file. See
+    docs/backlog/article-tags.md § Sequencing for the deprecation
+    ordering."""
+    return os.environ.get("TB_EMIT_TAGS", "").lower() in ("1", "true", "yes")
+
+
 def _build_iv_config_and_articles(
     topic_id: int, canonical_name: str, wiki: str, *,
     iv_name: str | None,
@@ -9514,7 +9523,7 @@ def _build_iv_config_and_articles(
     end_date: str | None,
     timepoint_day_interval: int | None,
     min_centrality: int,
-) -> tuple[dict, list[dict], list[str]]:
+) -> tuple[dict, list[dict], list[str], list[dict], int]:
     """Apply defaults + validate + compute the would-be config and
     article list. Pure function — no DB write. Shared by
     prepare_iv_handoff and publish_topic so previews and commits agree
@@ -9617,7 +9626,32 @@ def _build_iv_config_and_articles(
                 continue
         articles.append({"title": title, "centrality": score})
 
-    return config, articles, errors
+    # Tag emission (v2 packages). Behind TB_EMIT_TAGS feature flag so the
+    # cross-repo deprecation can land in order: IV ships v2 reader first,
+    # then TB flips this on (per docs/backlog/article-tags.md § Sequencing).
+    tags_taxonomy: list[dict] = []
+    schema_version = 1
+    if _tags_emission_enabled():
+        topic_tags = db.list_topic_tags(topic_id)
+        if topic_tags:
+            tags_taxonomy = [
+                {k: v for k, v in t.items()
+                 if k in ('name', 'description', 'ordering',
+                          'derived_from', 'properties')}
+                for t in topic_tags
+            ]
+            membership = db.get_tag_membership_by_title(topic_id)
+            for a in articles:
+                article_tags = []
+                for tname, props in membership.get(a['title'], []):
+                    article_tags.append({
+                        'name': tname,
+                        'values': props,  # list of {slug, value_ids}
+                    })
+                a['tags'] = article_tags
+            schema_version = 2
+
+    return config, articles, errors, tags_taxonomy, schema_version
 
 
 @mcp.tool(annotations=WRITE_ADDITIVE)
@@ -9681,19 +9715,22 @@ def prepare_iv_handoff(iv_description: str,
         return err
     _, canonical, _ = _get_topic(ctx)
 
-    config, articles, errors = _build_iv_config_and_articles(
-        topic_id, canonical, wiki,
-        iv_name=iv_name, iv_slug=iv_slug,
-        iv_description=iv_description, editor_label=editor_label,
-        start_date=start_date, end_date=end_date,
-        timepoint_day_interval=timepoint_day_interval,
-        min_centrality=min_centrality)
+    config, articles, errors, tags_taxonomy, schema_version = \
+        _build_iv_config_and_articles(
+            topic_id, canonical, wiki,
+            iv_name=iv_name, iv_slug=iv_slug,
+            iv_description=iv_description, editor_label=editor_label,
+            start_date=start_date, end_date=end_date,
+            timepoint_day_interval=timepoint_day_interval,
+            min_centrality=min_centrality)
 
     preview = {
         "config": config,
         "article_count": len(articles),
         "first_articles": articles[:10],
         "centrality_distribution": _summarize_centrality(articles),
+        "schema_version": schema_version,
+        "tag_count": len(tags_taxonomy),
         "editability_note": (
             "The name and slug above will appear on Impact Visualizer "
             "exactly as shown. Surface them to the user before "
@@ -9758,13 +9795,14 @@ def publish_topic(iv_description: str,
         return err
     _, canonical, _ = _get_topic(ctx)
 
-    config, articles, errors = _build_iv_config_and_articles(
-        topic_id, canonical, wiki,
-        iv_name=iv_name, iv_slug=iv_slug,
-        iv_description=iv_description, editor_label=editor_label,
-        start_date=start_date, end_date=end_date,
-        timepoint_day_interval=timepoint_day_interval,
-        min_centrality=min_centrality)
+    config, articles, errors, tags_taxonomy, schema_version = \
+        _build_iv_config_and_articles(
+            topic_id, canonical, wiki,
+            iv_name=iv_name, iv_slug=iv_slug,
+            iv_description=iv_description, editor_label=editor_label,
+            start_date=start_date, end_date=end_date,
+            timepoint_day_interval=timepoint_day_interval,
+            min_centrality=min_centrality)
     if errors:
         return json.dumps({
             "error": "validation failed",
@@ -9777,7 +9815,8 @@ def publish_topic(iv_description: str,
         handle=handle, topic_id=topic_id,
         config=config, articles=articles,
         source_topic=canonical, source_topic_id=topic_id,
-        publisher_user=publisher)
+        publisher_user=publisher,
+        tags=tags_taxonomy, schema_version=schema_version)
 
     db.append_package_event({
         "event": "publish",
@@ -9786,6 +9825,8 @@ def publish_topic(iv_description: str,
         "source_topic_id": topic_id,
         "publisher_user": publisher,
         "article_count": len(articles),
+        "schema_version": schema_version,
+        "tag_count": len(tags_taxonomy),
         "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
     })
 

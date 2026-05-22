@@ -79,6 +79,11 @@ async def get_package(request: Request) -> Response:
         "created_at": pkg["created_at"],
         "consumed_at": pkg["consumed_at"] or sqlite_now,
     }
+    # v2 packages carry a top-level tag taxonomy. v1 packages have an
+    # empty tags list (stored as '') — omit the field for clean back-compat
+    # with the IV-side v1 reader.
+    if pkg.get("tags"):
+        body["tags"] = pkg["tags"]
     db.append_package_event({
         "event": "fetch",
         "handle": handle,
