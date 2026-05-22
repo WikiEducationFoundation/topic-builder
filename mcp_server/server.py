@@ -900,6 +900,175 @@ def get_topic_rubric(topic: str | None = None, auth_token: str | None = None, ct
     }, indent=2, ensure_ascii=False)
 
 
+@mcp.tool(annotations=WRITE_DESTRUCTIVE)
+def set_topic_tags(tags: list[dict], note: str = "",
+                   topic: str | None = None,
+                   auth_token: str | None = None,
+                   ctx: Context = None) -> str:
+    """Define or replace the topic's tag taxonomy. Destructive replacement —
+    pass the full taxonomy each call; tags absent from the new list are
+    dropped along with their membership.
+
+    Tags layer alongside centrality. Centrality is an axis (how core);
+    tags are sets (what subset). Most useful for topic-internal
+    stratifications that don't have a clean Wikidata signature — for
+    climate-change, tags like "mitigation" / "adaptation" / "policy" /
+    "science"; for apollo-11, tags like "crew" / "spacecraft" /
+    "ground-control". Also works for structured signals (e.g. P31=Q5
+    for biographies, with optional gender/country property capture via
+    `tag_by_wikidata` later).
+
+    This tool ONLY defines the taxonomy. Apply membership separately —
+    see `tag_articles`, `tag_by_source`, `tag_by_pattern`,
+    `tag_by_wikidata` (Slice 2+3, forthcoming).
+
+    Replacement semantics:
+    - New entry with the same name as an existing tag → updated in
+      place; membership rows in article_tags preserved.
+    - New entry with a previously-unseen name → created.
+    - Existing tag absent from the new list → DELETED, cascading to
+      all article_tags rows for that tag.
+
+    Tags may optionally declare PROPERTIES — sub-axes of stratification
+    within a tag (e.g. *biography* by *gender*). A property has a slug,
+    human name, and SEGMENTS — either an explicit list of value bins
+    or the literal `true` to auto-group by top values across the
+    corpus. Properties map slug-for-slug to IV's
+    `Classification.properties` wire shape.
+
+    Coverage caveat: any tag derived from Wikidata is ADDITIVE — finding
+    membership via P31=Q5 means "Wikidata says these are biographies",
+    not "these are the only biographies". Don't use tag absence as a
+    negative signal.
+
+    Args:
+        tags: List of tag definitions. Each entry:
+          - name (str, required): kebab-case slug, max 64 chars.
+              Pattern `[a-z0-9][a-z0-9_-]*`.
+          - description (str, recommended): one-line definition of what
+              membership means. Max 500 chars.
+          - ordering (int, optional): IV display order. Defaults to
+              the position in the list you passed.
+          - derived_from (str, optional): provenance audit trail, e.g.
+              "wikidata:P31=Q5", "source:wikiproject:Climate change",
+              "judgment", "pattern:title_regex=^List of". Informational;
+              not used to re-derive membership.
+          - properties (list, optional): property defs. Each property:
+              - slug (str, required): kebab-case.
+              - name (str, required): human-readable.
+              - wikidata_property_id (str, optional): "P21", "P27", etc.
+                  Present when values come from Wikidata.
+              - segments (true | list, required):
+                  * `true` → auto-group by top values across the corpus.
+                  * list of explicit bins:
+                      - key (str, required): kebab-case.
+                      - label (str, required): human-readable.
+                      - value_ids (list[str], optional): Wikidata QIDs
+                          (e.g. ["Q6581072"] for "female").
+                      - default (bool, optional): at most one segment
+                          may set `default=true` (the catch-all bin).
+        note: Optional free-text observation for this call's log entry.
+        topic: Optional topic name (for stateless clients).
+
+    Returns: {ok, tag_count, added, updated, removed, note}.
+
+    Example — climate-change topic-internal stratification with one
+    Wikidata-aligned tag carrying gender/country properties:
+        set_topic_tags(tags=[
+          {"name": "mitigation",
+           "description": "Reducing emissions or sequestering carbon."},
+          {"name": "adaptation",
+           "description": "Responding to climate impacts."},
+          {"name": "policy",
+           "description": "Climate policy + governance."},
+          {"name": "biography",
+           "description": "People notable for climate work.",
+           "derived_from": "wikidata:P31=Q5",
+           "properties": [
+             {"slug": "gender", "name": "Gender",
+              "wikidata_property_id": "P21",
+              "segments": [
+                {"key": "female", "label": "Female", "value_ids": ["Q6581072"]},
+                {"key": "male", "label": "Male", "value_ids": ["Q6581097"]},
+                {"key": "other", "label": "Other", "default": True}]},
+             {"slug": "country", "name": "Country",
+              "wikidata_property_id": "P27", "segments": True}]}])
+    """
+    _start = _start_call()
+    topic_id, _wiki, err = _require_topic(ctx, topic, auth_token=auth_token)
+    if err:
+        return err
+
+    cleaned, verr = db.validate_tag_definitions(tags)
+    if verr:
+        return json.dumps({"error": verr}, indent=2, ensure_ascii=False)
+
+    result = db.replace_topic_tags(topic_id, cleaned)
+    _, topic_name, _ = _get_topic(ctx)
+
+    response = {
+        'topic': topic_name,
+        'ok': True,
+        'tag_count': len(cleaned),
+        'added': result['added'],
+        'updated': result['updated'],
+        'removed': result['removed'],
+        'note': (
+            'Tag taxonomy persisted. Apply membership via the tagging '
+            'tools (tag_articles / tag_by_source / tag_by_pattern for '
+            'binary apply; tag_by_wikidata for Wikidata-driven). '
+            'Membership is preserved across re-runs of set_topic_tags '
+            'for tags whose name is unchanged; removed tags cascade-'
+            'delete their article_tags rows.'
+        ),
+    }
+
+    log_usage(ctx, "set_topic_tags",
+              {"tag_count": len(cleaned),
+               "added": len(result['added']),
+               "updated": len(result['updated']),
+               "removed": len(result['removed'])},
+              f"taxonomy: {len(cleaned)} tags "
+              f"({len(result['added'])} added, "
+              f"{len(result['updated'])} updated, "
+              f"{len(result['removed'])} removed)",
+              start_time=_start, note=note)
+
+    return json.dumps(response, indent=2, ensure_ascii=False)
+
+
+@mcp.tool(annotations=READ_ONLY)
+def get_topic_tags(topic: str | None = None, auth_token: str | None = None,
+                   ctx: Context = None) -> str:
+    """Read the topic's tag taxonomy (definitions only — no membership
+    counts here; see `audit_progress` for per-tag distribution).
+
+    Returns: {"topic": <name>, "tag_count": N, "tags": [...]} where each
+    tag is {name, description, ordering, derived_from, properties,
+    created_at, updated_at}.
+
+    Args:
+        topic: Optional topic name for stateless clients.
+    """
+    topic_id, _, err = _require_topic(
+        ctx, topic, mode='read', auth_token=auth_token)
+    if err:
+        return err
+    tags = db.list_topic_tags(topic_id)
+    _, topic_name, _ = _get_topic(ctx)
+    return json.dumps({
+        'topic': topic_name,
+        'tag_count': len(tags),
+        'tags': tags,
+        'note': (
+            'No tag taxonomy defined yet. Use set_topic_tags to author one.'
+            if not tags else
+            'Apply membership via the tagging tools; see '
+            'audit_progress for per-tag distribution.'
+        ),
+    }, indent=2, ensure_ascii=False)
+
+
 @mcp.tool(annotations=READ_ONLY)
 def list_topics(auth_token: str | None = None,
                 ctx: Context = None) -> str:

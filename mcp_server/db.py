@@ -151,6 +151,44 @@ def init_db():
             ON iv_packages(publisher_user);
         CREATE INDEX IF NOT EXISTS idx_iv_packages_expires
             ON iv_packages(expires_at);
+        -- Tag taxonomy + per-article membership. Tags are per-topic
+        -- (no global registry), many-to-many, optionally value-bearing
+        -- (a tag may declare 'properties' carrying per-article values).
+        -- Designed to subsume IV's Classifications feature: same wire
+        -- shape, sourced from TB at publish time instead of computed
+        -- via per-article Wikidata fan-out.
+        CREATE TABLE IF NOT EXISTS topic_tags (
+            topic_id INTEGER NOT NULL REFERENCES topics(id) ON DELETE CASCADE,
+            name TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            ordering INTEGER NOT NULL DEFAULT 0,
+            derived_from TEXT,
+            properties_json TEXT NOT NULL DEFAULT '[]',
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (topic_id, name)
+        );
+        -- Per-article tag membership. article_id FKs articles(id); topic_id
+        -- is denormalized for query speed and joined-FK to topic_tags so a
+        -- topic_tags delete cascades to membership. properties_json carries
+        -- per-article values for the tag's declared properties (empty array
+        -- for binary tags).
+        CREATE TABLE IF NOT EXISTS article_tags (
+            topic_id INTEGER NOT NULL,
+            article_id INTEGER NOT NULL,
+            tag_name TEXT NOT NULL,
+            properties_json TEXT NOT NULL DEFAULT '[]',
+            assigned_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (topic_id, article_id, tag_name),
+            FOREIGN KEY (topic_id, tag_name)
+                REFERENCES topic_tags(topic_id, name) ON DELETE CASCADE,
+            FOREIGN KEY (article_id)
+                REFERENCES articles(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_article_tags_topic_tag
+            ON article_tags(topic_id, tag_name);
+        CREATE INDEX IF NOT EXISTS idx_article_tags_article
+            ON article_tags(article_id);
     """)
     # Migrate existing DBs that predate the description column. NULL means
     # "not fetched yet"; empty string means "fetched, no short-desc on Wikipedia".
@@ -335,6 +373,233 @@ def set_topic_rubric(topic_id, rubric):
         (rubric, topic_id))
     conn.commit()
     conn.close()
+
+
+# --- Tag taxonomy ---------------------------------------------------------
+#
+# Tags layer alongside the centrality score: centrality is an axis (how
+# core), tags are sets (what subset). Validation here mirrors IV's wire
+# shape for Classification + ArticleClassification — a topic_tag row is
+# structurally an IV Classification minus the `prerequisites` half, and a
+# property def maps slug-for-slug to IV's Classification.properties shape.
+# Membership writes (article_tags) live in Slice 2 helpers.
+
+_TAG_NAME_RE = re.compile(r'^[a-z0-9][a-z0-9_-]{0,63}$')
+_PROPERTY_SLUG_RE = re.compile(r'^[a-z0-9][a-z0-9_-]{0,63}$')
+_SEGMENT_KEY_RE = re.compile(r'^[a-z0-9][a-z0-9_-]{0,63}$')
+_WIKIDATA_PID_RE = re.compile(r'^P\d+$')
+_WIKIDATA_QID_RE = re.compile(r'^Q\d+$')
+
+
+def validate_tag_definitions(tags):
+    """Validate + normalize a list of tag definitions. Returns
+    (cleaned_list, error_or_None). cleaned_list preserves caller order;
+    `ordering` is filled in from list position when omitted."""
+    if not isinstance(tags, list):
+        return None, "tags must be a list."
+    cleaned = []
+    seen_names = set()
+    for i, tag in enumerate(tags):
+        if not isinstance(tag, dict):
+            return None, f"tags[{i}] must be a dict."
+        name = tag.get('name')
+        if not isinstance(name, str) or not _TAG_NAME_RE.match(name):
+            return None, (
+                f"tags[{i}].name must be a kebab-case slug "
+                f"(a-z, 0-9, _, -; first char alphanumeric; <=64 chars). "
+                f"Got: {name!r}")
+        if name in seen_names:
+            return None, f"Duplicate tag name {name!r}."
+        seen_names.add(name)
+        description = tag.get('description', '')
+        if not isinstance(description, str):
+            return None, f"tags[{i}].description must be a string."
+        if len(description) > 500:
+            return None, (
+                f"tags[{i}].description exceeds 500 chars "
+                f"({len(description)}).")
+        ordering = tag.get('ordering', i)
+        if not isinstance(ordering, int):
+            return None, f"tags[{i}].ordering must be int."
+        derived_from = tag.get('derived_from')
+        if derived_from is not None and not isinstance(derived_from, str):
+            return None, f"tags[{i}].derived_from must be string or null."
+        properties = tag.get('properties', [])
+        cleaned_props, err = _validate_tag_properties(properties, f"tags[{i}]")
+        if err:
+            return None, err
+        cleaned.append({
+            'name': name,
+            'description': description,
+            'ordering': ordering,
+            'derived_from': derived_from,
+            'properties': cleaned_props,
+        })
+    return cleaned, None
+
+
+def _validate_tag_properties(properties, where):
+    if not isinstance(properties, list):
+        return None, f"{where}.properties must be a list."
+    cleaned = []
+    seen_slugs = set()
+    for j, prop in enumerate(properties):
+        if not isinstance(prop, dict):
+            return None, f"{where}.properties[{j}] must be a dict."
+        slug = prop.get('slug')
+        if not isinstance(slug, str) or not _PROPERTY_SLUG_RE.match(slug):
+            return None, (
+                f"{where}.properties[{j}].slug must be kebab-case. "
+                f"Got: {slug!r}")
+        if slug in seen_slugs:
+            return None, f"{where}.properties: duplicate slug {slug!r}."
+        seen_slugs.add(slug)
+        name = prop.get('name')
+        if not isinstance(name, str) or not name:
+            return None, (
+                f"{where}.properties[{j}].name must be non-empty string.")
+        wpid = prop.get('wikidata_property_id')
+        if wpid is not None and (not isinstance(wpid, str)
+                                 or not _WIKIDATA_PID_RE.match(wpid)):
+            return None, (
+                f"{where}.properties[{j}].wikidata_property_id must match "
+                f"P<digits> or be omitted. Got: {wpid!r}")
+        segments = prop.get('segments')
+        cleaned_segs, err = _validate_tag_segments(
+            segments, f"{where}.properties[{j}]")
+        if err:
+            return None, err
+        cleaned_prop = {'slug': slug, 'name': name, 'segments': cleaned_segs}
+        if wpid:
+            cleaned_prop['wikidata_property_id'] = wpid
+        cleaned.append(cleaned_prop)
+    return cleaned, None
+
+
+def _validate_tag_segments(segments, where):
+    if segments is True:
+        return True, None
+    if not isinstance(segments, list):
+        return None, (
+            f"{where}.segments must be `true` (auto-group by top values) "
+            f"or a list of segment dicts.")
+    cleaned = []
+    seen_keys = set()
+    default_count = 0
+    for k, seg in enumerate(segments):
+        if not isinstance(seg, dict):
+            return None, f"{where}.segments[{k}] must be a dict."
+        key = seg.get('key')
+        if not isinstance(key, str) or not _SEGMENT_KEY_RE.match(key):
+            return None, (
+                f"{where}.segments[{k}].key must be kebab-case. Got: {key!r}")
+        if key in seen_keys:
+            return None, f"{where}.segments: duplicate key {key!r}."
+        seen_keys.add(key)
+        label = seg.get('label')
+        if not isinstance(label, str) or not label:
+            return None, f"{where}.segments[{k}].label must be non-empty."
+        value_ids = seg.get('value_ids', [])
+        if not isinstance(value_ids, list):
+            return None, f"{where}.segments[{k}].value_ids must be a list."
+        for v, vid in enumerate(value_ids):
+            if not isinstance(vid, str) or not _WIKIDATA_QID_RE.match(vid):
+                return None, (
+                    f"{where}.segments[{k}].value_ids[{v}] must match "
+                    f"Q<digits>. Got: {vid!r}")
+        default = seg.get('default', False)
+        if not isinstance(default, bool):
+            return None, f"{where}.segments[{k}].default must be bool."
+        if default:
+            default_count += 1
+        cleaned_seg = {'key': key, 'label': label}
+        if value_ids:
+            cleaned_seg['value_ids'] = value_ids
+        if default:
+            cleaned_seg['default'] = True
+        cleaned.append(cleaned_seg)
+    if default_count > 1:
+        return None, (
+            f"{where}.segments: at most one segment may set default=true.")
+    return cleaned, None
+
+
+def list_topic_tags(topic_id):
+    """Return the topic's tag taxonomy ordered by `ordering` then `name`.
+    Empty list if no tags defined."""
+    conn = _connect()
+    rows = conn.execute(
+        "SELECT name, description, ordering, derived_from, "
+        "       properties_json, created_at, updated_at "
+        "FROM topic_tags WHERE topic_id = ? "
+        "ORDER BY ordering, name",
+        (topic_id,)).fetchall()
+    conn.close()
+    result = []
+    for r in rows:
+        result.append({
+            'name': r['name'],
+            'description': r['description'],
+            'ordering': r['ordering'],
+            'derived_from': r['derived_from'],
+            'properties': json.loads(r['properties_json'] or '[]'),
+            'created_at': r['created_at'],
+            'updated_at': r['updated_at'],
+        })
+    return result
+
+
+def replace_topic_tags(topic_id, cleaned_tags):
+    """Replace the topic's tag taxonomy. Tags absent from `cleaned_tags`
+    are dropped (cascading to article_tags). Tags present with an existing
+    name are updated in place; membership is preserved.
+
+    Caller is responsible for validation via `validate_tag_definitions`.
+
+    Returns {'added': [...], 'updated': [...], 'removed': [...]}.
+    """
+    conn = _connect()
+    existing_rows = conn.execute(
+        "SELECT name FROM topic_tags WHERE topic_id = ?",
+        (topic_id,)).fetchall()
+    existing_names = {r['name'] for r in existing_rows}
+    new_names = {t['name'] for t in cleaned_tags}
+
+    added = []
+    updated = []
+    removed = sorted(existing_names - new_names)
+
+    for name in removed:
+        conn.execute(
+            "DELETE FROM topic_tags WHERE topic_id = ? AND name = ?",
+            (topic_id, name))
+
+    for tag in cleaned_tags:
+        props_json = json.dumps(tag['properties'], ensure_ascii=False)
+        if tag['name'] in existing_names:
+            conn.execute(
+                "UPDATE topic_tags SET description = ?, ordering = ?, "
+                "       derived_from = ?, properties_json = ?, "
+                "       updated_at = datetime('now') "
+                "WHERE topic_id = ? AND name = ?",
+                (tag['description'], tag['ordering'], tag['derived_from'],
+                 props_json, topic_id, tag['name']))
+            updated.append(tag['name'])
+        else:
+            conn.execute(
+                "INSERT INTO topic_tags (topic_id, name, description, "
+                "       ordering, derived_from, properties_json) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (topic_id, tag['name'], tag['description'], tag['ordering'],
+                 tag['derived_from'], props_json))
+            added.append(tag['name'])
+
+    conn.execute(
+        "UPDATE topics SET updated_at = datetime('now') WHERE id = ?",
+        (topic_id,))
+    conn.commit()
+    conn.close()
+    return {'added': added, 'updated': updated, 'removed': removed}
 
 
 def append_feedback(entry):
