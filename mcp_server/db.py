@@ -602,6 +602,206 @@ def replace_topic_tags(topic_id, cleaned_tags):
     return {'added': added, 'updated': updated, 'removed': removed}
 
 
+def tag_definition_exists(topic_id, tag_name):
+    """True if the topic has a tag with this name defined."""
+    conn = _connect()
+    row = conn.execute(
+        "SELECT 1 FROM topic_tags WHERE topic_id = ? AND name = ?",
+        (topic_id, tag_name)).fetchone()
+    conn.close()
+    return row is not None
+
+
+def _resolve_titles_to_ids(conn, topic_id, titles):
+    """Resolve a list of article titles to ids within a topic. Returns
+    (title→id dict, sorted list of titles not in topic). Batched to avoid
+    SQLite's variable-count limit."""
+    found = {}
+    seen = set(titles)
+    for i in range(0, len(titles), 500):
+        batch = titles[i:i + 500]
+        placeholders = ','.join('?' * len(batch))
+        rows = conn.execute(
+            f"SELECT id, title FROM articles "
+            f"WHERE topic_id = ? AND title IN ({placeholders})",
+            [topic_id] + list(batch)).fetchall()
+        for r in rows:
+            found[r['title']] = r['id']
+    not_in_topic = sorted(seen - set(found.keys()))
+    return found, not_in_topic
+
+
+def tag_articles_by_titles(topic_id, tag_name, titles):
+    """Apply `tag_name` to articles with these titles. Caller must have
+    confirmed the tag definition exists. Returns {'tagged_new', 'already_tagged',
+    'not_in_topic'}. Property values are not set here — Slice 3 covers that."""
+    if not titles:
+        return {'tagged_new': 0, 'already_tagged': 0, 'not_in_topic': []}
+    conn = _connect()
+    found_ids, not_in_topic = _resolve_titles_to_ids(conn, topic_id, titles)
+    article_ids = list(found_ids.values())
+    tagged_new = 0
+    if article_ids:
+        before = conn.total_changes
+        conn.executemany(
+            "INSERT OR IGNORE INTO article_tags "
+            "(topic_id, article_id, tag_name) VALUES (?, ?, ?)",
+            [(topic_id, aid, tag_name) for aid in article_ids])
+        tagged_new = conn.total_changes - before
+    conn.commit()
+    conn.close()
+    return {
+        'tagged_new': tagged_new,
+        'already_tagged': len(article_ids) - tagged_new,
+        'not_in_topic': not_in_topic,
+    }
+
+
+def untag_articles_by_titles(topic_id, tag_name, titles):
+    """Remove the tag from these titles. Returns {'untagged',
+    'in_topic_but_not_tagged', 'not_in_topic'}."""
+    if not titles:
+        return {'untagged': 0, 'in_topic_but_not_tagged': 0, 'not_in_topic': []}
+    conn = _connect()
+    found_ids, not_in_topic = _resolve_titles_to_ids(conn, topic_id, titles)
+    article_ids = list(found_ids.values())
+    untagged = 0
+    if article_ids:
+        for i in range(0, len(article_ids), 500):
+            batch = article_ids[i:i + 500]
+            placeholders = ','.join('?' * len(batch))
+            cur = conn.execute(
+                f"DELETE FROM article_tags WHERE topic_id = ? "
+                f"AND tag_name = ? AND article_id IN ({placeholders})",
+                [topic_id, tag_name] + list(batch))
+            untagged += cur.rowcount
+    conn.commit()
+    conn.close()
+    return {
+        'untagged': untagged,
+        'in_topic_but_not_tagged': len(article_ids) - untagged,
+        'not_in_topic': not_in_topic,
+    }
+
+
+def tag_articles_by_source(topic_id, tag_name, source_label,
+                           prefix_match=False):
+    """Apply `tag_name` to every article whose sources include
+    `source_label` (or, if prefix_match, any source label starting with it).
+    Returns {'matched', 'tagged_new', 'already_tagged'}."""
+    conn = _connect()
+    rows = conn.execute(
+        "SELECT id, sources FROM articles WHERE topic_id = ?",
+        (topic_id,)).fetchall()
+    article_ids = []
+    for r in rows:
+        sources = json.loads(r['sources'])
+        if prefix_match:
+            if any(s.startswith(source_label) for s in sources):
+                article_ids.append(r['id'])
+        elif source_label in sources:
+            article_ids.append(r['id'])
+    tagged_new = 0
+    if article_ids:
+        before = conn.total_changes
+        conn.executemany(
+            "INSERT OR IGNORE INTO article_tags "
+            "(topic_id, article_id, tag_name) VALUES (?, ?, ?)",
+            [(topic_id, aid, tag_name) for aid in article_ids])
+        tagged_new = conn.total_changes - before
+    conn.commit()
+    conn.close()
+    return {
+        'matched': len(article_ids),
+        'tagged_new': tagged_new,
+        'already_tagged': len(article_ids) - tagged_new,
+    }
+
+
+def untag_articles_by_source(topic_id, tag_name, source_label,
+                             prefix_match=False):
+    """Remove `tag_name` membership from every article whose sources match.
+    Returns {'matched', 'untagged'}."""
+    conn = _connect()
+    rows = conn.execute(
+        "SELECT id, sources FROM articles WHERE topic_id = ?",
+        (topic_id,)).fetchall()
+    article_ids = []
+    for r in rows:
+        sources = json.loads(r['sources'])
+        if prefix_match:
+            if any(s.startswith(source_label) for s in sources):
+                article_ids.append(r['id'])
+        elif source_label in sources:
+            article_ids.append(r['id'])
+    untagged = 0
+    if article_ids:
+        for i in range(0, len(article_ids), 500):
+            batch = article_ids[i:i + 500]
+            placeholders = ','.join('?' * len(batch))
+            cur = conn.execute(
+                f"DELETE FROM article_tags WHERE topic_id = ? "
+                f"AND tag_name = ? AND article_id IN ({placeholders})",
+                [topic_id, tag_name] + list(batch))
+            untagged += cur.rowcount
+    conn.commit()
+    conn.close()
+    return {'matched': len(article_ids), 'untagged': untagged}
+
+
+def tag_articles_by_pattern(topic_id, tag_name, title_regex=None,
+                            description_regex=None):
+    """Apply `tag_name` to articles whose title or description matches the
+    regex (case-insensitive). If both regexes are set, they AND together.
+    Returns {'matched', 'tagged_new', 'already_tagged'}."""
+    if not title_regex and not description_regex:
+        return {'matched': 0, 'tagged_new': 0, 'already_tagged': 0}
+    title_re = re.compile(title_regex, re.IGNORECASE) if title_regex else None
+    desc_re = (re.compile(description_regex, re.IGNORECASE)
+               if description_regex else None)
+    conn = _connect()
+    rows = conn.execute(
+        "SELECT id, title, description FROM articles WHERE topic_id = ?",
+        (topic_id,)).fetchall()
+    article_ids = []
+    for r in rows:
+        title = r['title']
+        desc = r['description'] or ''
+        if title_re and not title_re.search(title):
+            continue
+        if desc_re and not desc_re.search(desc):
+            continue
+        article_ids.append(r['id'])
+    tagged_new = 0
+    if article_ids:
+        before = conn.total_changes
+        conn.executemany(
+            "INSERT OR IGNORE INTO article_tags "
+            "(topic_id, article_id, tag_name) VALUES (?, ?, ?)",
+            [(topic_id, aid, tag_name) for aid in article_ids])
+        tagged_new = conn.total_changes - before
+    conn.commit()
+    conn.close()
+    return {
+        'matched': len(article_ids),
+        'tagged_new': tagged_new,
+        'already_tagged': len(article_ids) - tagged_new,
+    }
+
+
+def untag_all_for_tag(topic_id, tag_name):
+    """Wipe all membership for a tag without deleting its definition.
+    Returns count untagged."""
+    conn = _connect()
+    cur = conn.execute(
+        "DELETE FROM article_tags WHERE topic_id = ? AND tag_name = ?",
+        (topic_id, tag_name))
+    untagged = cur.rowcount
+    conn.commit()
+    conn.close()
+    return untagged
+
+
 def append_feedback(entry):
     """Append a feedback record (dict) as JSON Lines to the feedback log."""
     log_dir = os.environ.get("LOG_DIR", "/opt/topic-builder/logs")

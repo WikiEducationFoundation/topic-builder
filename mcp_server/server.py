@@ -1069,6 +1069,316 @@ def get_topic_tags(topic: str | None = None, auth_token: str | None = None,
     }, indent=2, ensure_ascii=False)
 
 
+def _require_tag_defined(topic_id, tag_name):
+    """Return (None, err_json_str) if the tag isn't defined; (cleaned_name,
+    None) otherwise. Surfaces a tighter error than a foreign-key violation."""
+    if not isinstance(tag_name, str) or not tag_name:
+        return None, json.dumps(
+            {"error": "tag must be a non-empty string."},
+            indent=2, ensure_ascii=False)
+    if not db.tag_definition_exists(topic_id, tag_name):
+        return None, json.dumps({
+            "error": (f"No tag named {tag_name!r} is defined for this topic. "
+                      "Define it first via set_topic_tags."),
+        }, indent=2, ensure_ascii=False)
+    return tag_name, None
+
+
+@mcp.tool(annotations=WRITE_ADDITIVE)
+def tag_articles(tag: str, titles: list[str], note: str = "",
+                 topic: str | None = None, auth_token: str | None = None,
+                 ctx: Context = None) -> str:
+    """Apply a tag to a list of articles by title. The tag must already be
+    defined via set_topic_tags. Idempotent — re-tagging an already-tagged
+    article is a no-op.
+
+    Binary tagging only: property values for value-bearing tags are NOT set
+    here. Use tag_by_wikidata (forthcoming) for membership + Wikidata value
+    capture in one pass, or set_tag_property_values to fill values later.
+
+    Args:
+        tag: Name of an existing tag (from set_topic_tags).
+        titles: Article titles to tag.
+        note: Optional free-text observation for this call's log entry.
+        topic: Optional topic name for stateless clients.
+
+    Returns: {tagged_new, already_tagged, not_in_topic, note}.
+    """
+    _start = _start_call()
+    topic_id, _wiki, err = _require_topic(ctx, topic, auth_token=auth_token)
+    if err:
+        return err
+    tag_name, terr = _require_tag_defined(topic_id, tag)
+    if terr:
+        return terr
+    if not isinstance(titles, list):
+        return json.dumps({"error": "titles must be a list of strings."},
+                          indent=2, ensure_ascii=False)
+
+    result = db.tag_articles_by_titles(topic_id, tag_name, titles)
+    response = {
+        'tag': tag_name,
+        'tagged_new': result['tagged_new'],
+        'already_tagged': result['already_tagged'],
+        'not_in_topic': result['not_in_topic'][:50],
+        'not_in_topic_count': len(result['not_in_topic']),
+        'note': (
+            f"To undo: untag_articles({tag_name!r}, titles=[...]). "
+            "Property values were not set; if this tag declares properties, "
+            "use set_tag_property_values to fill them."
+        ),
+    }
+    log_usage(ctx, "tag_articles",
+              {"tag": tag_name, "title_count": len(titles)},
+              f"+{result['tagged_new']} tagged, "
+              f"{result['already_tagged']} already, "
+              f"{len(result['not_in_topic'])} not in topic",
+              start_time=_start, note=note)
+    return json.dumps(response, indent=2, ensure_ascii=False)
+
+
+@mcp.tool(annotations=WRITE_DESTRUCTIVE)
+def untag_articles(tag: str, titles: list[str], note: str = "",
+                   topic: str | None = None, auth_token: str | None = None,
+                   ctx: Context = None) -> str:
+    """Remove a tag from a list of articles by title. No-op for articles
+    that don't carry the tag. The tag definition itself is not deleted.
+
+    Args:
+        tag: Name of an existing tag.
+        titles: Article titles to untag.
+        note: Optional free-text observation.
+        topic: Optional topic name for stateless clients.
+
+    Returns: {untagged, in_topic_but_not_tagged, not_in_topic, note}.
+    """
+    _start = _start_call()
+    topic_id, _wiki, err = _require_topic(ctx, topic, auth_token=auth_token)
+    if err:
+        return err
+    tag_name, terr = _require_tag_defined(topic_id, tag)
+    if terr:
+        return terr
+    if not isinstance(titles, list):
+        return json.dumps({"error": "titles must be a list of strings."},
+                          indent=2, ensure_ascii=False)
+
+    result = db.untag_articles_by_titles(topic_id, tag_name, titles)
+    response = {
+        'tag': tag_name,
+        'untagged': result['untagged'],
+        'in_topic_but_not_tagged': result['in_topic_but_not_tagged'],
+        'not_in_topic': result['not_in_topic'][:50],
+        'not_in_topic_count': len(result['not_in_topic']),
+    }
+    log_usage(ctx, "untag_articles",
+              {"tag": tag_name, "title_count": len(titles)},
+              f"-{result['untagged']} untagged",
+              start_time=_start, note=note)
+    return json.dumps(response, indent=2, ensure_ascii=False)
+
+
+@mcp.tool(annotations=WRITE_ADDITIVE)
+def tag_by_source(tag: str, source: str, prefix_match: bool = False,
+                  note: str = "",
+                  topic: str | None = None, auth_token: str | None = None,
+                  ctx: Context = None) -> str:
+    """Apply a tag to every article that has this source label. Useful for
+    saying "everything from `wikiproject:Climate change` is `core`" in one
+    call. With prefix_match=True, matches any source label starting with
+    the given string (e.g. `source="search:morelike:", prefix_match=True`).
+
+    Idempotent. Property values are not set — see tag_by_wikidata for
+    Wikidata-driven membership + value capture.
+
+    Args:
+        tag: Name of an existing tag.
+        source: Source label to match (exact, unless prefix_match=True).
+        prefix_match: If True, match any source label starting with `source`.
+        note: Optional free-text observation.
+        topic: Optional topic name for stateless clients.
+
+    Returns: {tag, source, matched, tagged_new, already_tagged, note}.
+    """
+    _start = _start_call()
+    topic_id, _wiki, err = _require_topic(ctx, topic, auth_token=auth_token)
+    if err:
+        return err
+    tag_name, terr = _require_tag_defined(topic_id, tag)
+    if terr:
+        return terr
+    if not isinstance(source, str) or not source:
+        return json.dumps({"error": "source must be a non-empty string."},
+                          indent=2, ensure_ascii=False)
+
+    result = db.tag_articles_by_source(topic_id, tag_name, source,
+                                       prefix_match=prefix_match)
+    response = {
+        'tag': tag_name,
+        'source': source,
+        'prefix_match': prefix_match,
+        'matched': result['matched'],
+        'tagged_new': result['tagged_new'],
+        'already_tagged': result['already_tagged'],
+        'note': f"To undo: untag_by_source({tag_name!r}, {source!r}).",
+    }
+    log_usage(ctx, "tag_by_source",
+              {"tag": tag_name, "source": source,
+               "prefix_match": prefix_match},
+              f"+{result['tagged_new']} tagged "
+              f"(matched {result['matched']})",
+              start_time=_start, note=note)
+    return json.dumps(response, indent=2, ensure_ascii=False)
+
+
+@mcp.tool(annotations=WRITE_DESTRUCTIVE)
+def untag_by_source(tag: str, source: str, prefix_match: bool = False,
+                    note: str = "",
+                    topic: str | None = None, auth_token: str | None = None,
+                    ctx: Context = None) -> str:
+    """Symmetric to tag_by_source: remove a tag from every article whose
+    sources match. Tag definition is not deleted.
+
+    Args:
+        tag: Name of an existing tag.
+        source: Source label to match (exact, unless prefix_match=True).
+        prefix_match: If True, match any source label starting with `source`.
+        note: Optional free-text observation.
+        topic: Optional topic name for stateless clients.
+
+    Returns: {tag, source, matched, untagged}.
+    """
+    _start = _start_call()
+    topic_id, _wiki, err = _require_topic(ctx, topic, auth_token=auth_token)
+    if err:
+        return err
+    tag_name, terr = _require_tag_defined(topic_id, tag)
+    if terr:
+        return terr
+    if not isinstance(source, str) or not source:
+        return json.dumps({"error": "source must be a non-empty string."},
+                          indent=2, ensure_ascii=False)
+
+    result = db.untag_articles_by_source(topic_id, tag_name, source,
+                                         prefix_match=prefix_match)
+    log_usage(ctx, "untag_by_source",
+              {"tag": tag_name, "source": source,
+               "prefix_match": prefix_match},
+              f"-{result['untagged']} untagged "
+              f"(matched {result['matched']})",
+              start_time=_start, note=note)
+    return json.dumps({
+        'tag': tag_name,
+        'source': source,
+        'prefix_match': prefix_match,
+        'matched': result['matched'],
+        'untagged': result['untagged'],
+    }, indent=2, ensure_ascii=False)
+
+
+@mcp.tool(annotations=WRITE_ADDITIVE)
+def tag_by_pattern(tag: str, title_regex: str | None = None,
+                   description_regex: str | None = None,
+                   note: str = "",
+                   topic: str | None = None, auth_token: str | None = None,
+                   ctx: Context = None) -> str:
+    """Apply a tag to articles whose title or description matches the regex
+    (case-insensitive Python re). If both regexes are set they AND together.
+    At least one must be set.
+
+    Useful for the "everything that starts with 'List of'" or "everything
+    whose description mentions 'climate'" pattern.
+
+    Args:
+        tag: Name of an existing tag.
+        title_regex: Optional regex matched against title (case-insensitive).
+        description_regex: Optional regex matched against description.
+        note: Optional free-text observation.
+        topic: Optional topic name for stateless clients.
+
+    Returns: {tag, matched, tagged_new, already_tagged, note}.
+    """
+    _start = _start_call()
+    topic_id, _wiki, err = _require_topic(ctx, topic, auth_token=auth_token)
+    if err:
+        return err
+    tag_name, terr = _require_tag_defined(topic_id, tag)
+    if terr:
+        return terr
+    if not title_regex and not description_regex:
+        return json.dumps({
+            "error": "At least one of title_regex or description_regex required.",
+        }, indent=2, ensure_ascii=False)
+    # Validate regexes up front so the AI sees a clean error.
+    try:
+        if title_regex:
+            re.compile(title_regex)
+        if description_regex:
+            re.compile(description_regex)
+    except re.error as exc:
+        return json.dumps({"error": f"Invalid regex: {exc}"},
+                          indent=2, ensure_ascii=False)
+
+    result = db.tag_articles_by_pattern(topic_id, tag_name,
+                                        title_regex=title_regex,
+                                        description_regex=description_regex)
+    response = {
+        'tag': tag_name,
+        'title_regex': title_regex,
+        'description_regex': description_regex,
+        'matched': result['matched'],
+        'tagged_new': result['tagged_new'],
+        'already_tagged': result['already_tagged'],
+        'note': (
+            f"To undo: untag_articles({tag_name!r}, titles=[...]) on the "
+            "matched titles, or untag_all to wipe the whole tag."
+        ),
+    }
+    log_usage(ctx, "tag_by_pattern",
+              {"tag": tag_name, "title_regex": title_regex,
+               "description_regex": description_regex},
+              f"+{result['tagged_new']} tagged "
+              f"(matched {result['matched']})",
+              start_time=_start, note=note)
+    return json.dumps(response, indent=2, ensure_ascii=False)
+
+
+@mcp.tool(annotations=WRITE_DESTRUCTIVE)
+def untag_all(tag: str, note: str = "",
+              topic: str | None = None, auth_token: str | None = None,
+              ctx: Context = None) -> str:
+    """Wipe ALL membership for a tag without deleting its definition. Useful
+    when you assigned membership wrong and want to start over without
+    re-defining the taxonomy.
+
+    To delete the tag definition itself, call set_topic_tags with the tag
+    omitted from the list.
+
+    Args:
+        tag: Name of an existing tag.
+        note: Optional free-text observation.
+        topic: Optional topic name for stateless clients.
+
+    Returns: {tag, untagged}.
+    """
+    _start = _start_call()
+    topic_id, _wiki, err = _require_topic(ctx, topic, auth_token=auth_token)
+    if err:
+        return err
+    tag_name, terr = _require_tag_defined(topic_id, tag)
+    if terr:
+        return terr
+
+    untagged = db.untag_all_for_tag(topic_id, tag_name)
+    log_usage(ctx, "untag_all", {"tag": tag_name},
+              f"-{untagged} untagged",
+              start_time=_start, note=note)
+    return json.dumps({
+        'tag': tag_name,
+        'untagged': untagged,
+    }, indent=2, ensure_ascii=False)
+
+
 @mcp.tool(annotations=READ_ONLY)
 def list_topics(auth_token: str | None = None,
                 ctx: Context = None) -> str:
