@@ -8841,17 +8841,21 @@ def get_articles(min_score: int | None = None, max_score: int | None = None,
             }, indent=2, ensure_ascii=False)
         tp_val_set = set(tp_vals)
 
+    # Tag filters happen in Python (article_tags is a separate table), so
+    # they require a wide pre-load and re-pagination. When no tag filter
+    # is set, the SQL-level limit/offset is correct as-is — we must NOT
+    # pre-widen and reset offset, or the caller's offset gets silently
+    # dropped.
+    needs_post_filter = bool(tag or tags_all or tag_property is not None)
+    sql_limit = 10**9 if needs_post_filter else limit
+    sql_offset = 0 if needs_post_filter else offset
     try:
-        # Pull a large page first; we'll re-paginate after tag filtering.
-        # Tag filter is applied in Python because article_tags is a separate
-        # table; for the typical few-thousand-article topic this is cheap.
-        wide_limit = (limit + offset) if not (tag or tags_all
-                                              or tag_property) else 10**9
         articles, total = db.get_articles(
             topic_id, min_score=min_score, max_score=max_score,
             source=source, sources_all=sources_all,
             title_regex=title_regex, description_regex=description_regex,
-            unscored_only=unscored_only, limit=wide_limit, offset=0
+            unscored_only=unscored_only,
+            limit=sql_limit, offset=sql_offset,
         )
     except re.error as e:
         return json.dumps({
@@ -8862,9 +8866,9 @@ def get_articles(min_score: int | None = None, max_score: int | None = None,
         }, indent=2)
 
     membership = (db.get_tag_membership_by_title(topic_id)
-                  if (tag or tags_all or tag_property or with_tags) else {})
+                  if (needs_post_filter or with_tags) else {})
 
-    if tag or tags_all or tag_property is not None:
+    if needs_post_filter:
         filtered = []
         for a in articles:
             tags_for_article = {t for t, _ in membership.get(a['title'], [])}
