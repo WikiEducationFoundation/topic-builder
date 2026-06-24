@@ -68,7 +68,7 @@ benchmarks/          # gold-standard topic audits + replay harness.
 - SQLite holds topics, articles, sources, scores, sticky rejections, and dogfood task briefs. Durable across restarts.
 - A dict keyed by `id(ctx.session)` holds the session's "current topic" so a stateful client doesn't have to pass the topic on every call. Stateless clients (ChatGPT) pass `topic=<name>` on every call.
 - nginx fronts the service: `/` serves `landing.html`, `/exports/*` serves generated CSVs, `/mcp` proxies to the Python service on `127.0.0.1:8000`.
-- systemd unit `topic-builder.service` supervises the process.
+- A systemd template unit `topic-builder@.service` supervises the process; two worker instances run, `topic-builder@8000.service` and `topic-builder@8001.service` (restart/status both). Both load `EnvironmentFile=-/etc/topic-builder.env`.
 - **Dogfood / benchmark task system**: `dogfood_tasks` DB table holds pre-seeded task briefs; `fetch_task_brief(task_id)` MCP tool renders `{ts}` placeholders and serves the brief to an AI. Source-of-truth markdown lives under `dogfood/tasks/`, seeded via `scripts/seed_dogfood_tasks.py`. Authoring + operator recipe in `dogfood/README.md` and `dogfood/tasks/README.md`.
 
 See `docs/operations.md` for the host layout, log locations, and administration recipes.

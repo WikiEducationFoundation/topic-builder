@@ -17,8 +17,13 @@ set -a
 source "$PROJECT_DIR/.env"
 set +a
 
-SSH_CMD="ssh -i $PROJECT_DIR/$DEPLOY_KEY $DEPLOY_USER@$DEPLOY_HOST"
-SCP_CMD="scp -i $PROJECT_DIR/$DEPLOY_KEY"
+# Keepalive + connect timeout so a transient network blip can't wedge a
+# step forever: each step opens a fresh, unmultiplexed connection, and
+# without these a half-open socket hangs indefinitely (no ServerAlive
+# probe to notice the peer is gone).
+SSH_OPTS="-o ConnectTimeout=10 -o ServerAliveInterval=10 -o ServerAliveCountMax=3"
+SSH_CMD="ssh $SSH_OPTS -i $PROJECT_DIR/$DEPLOY_KEY $DEPLOY_USER@$DEPLOY_HOST"
+SCP_CMD="scp $SSH_OPTS -i $PROJECT_DIR/$DEPLOY_KEY"
 
 REMOTE_DIR="/opt/topic-builder"
 
