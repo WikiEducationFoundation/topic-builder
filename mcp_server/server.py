@@ -9517,6 +9517,36 @@ def _tags_emission_enabled() -> bool:
     return os.environ.get("TB_EMIT_TAGS", "").lower() in ("1", "true", "yes")
 
 
+def _project_tag_for_iv(tag: dict) -> dict:
+    """Project a stored topic_tag into the IV package wire shape.
+
+    Keeps only the fields IV's Classification reader consumes, and
+    normalizes segments: IV's PROPERTIES_SCHEMA requires every explicit
+    (array-form) segment to carry a boolean `default`, whereas TB stores
+    it as optional (only the catch-all bin sets default=true). Backfill
+    `default: False` on segments that omit it so the payload validates on
+    the IV side. The boolean `segments: true` ("auto-group") form is
+    passed through untouched.
+    """
+    projected = {k: v for k, v in tag.items()
+                 if k in ('name', 'description', 'ordering',
+                          'derived_from', 'properties')}
+    props = projected.get('properties')
+    if isinstance(props, list):
+        norm_props = []
+        for prop in props:
+            prop = dict(prop)
+            segs = prop.get('segments')
+            if isinstance(segs, list):
+                prop['segments'] = [
+                    {**seg, 'default': bool(seg.get('default', False))}
+                    for seg in segs if isinstance(seg, dict)
+                ]
+            norm_props.append(prop)
+        projected['properties'] = norm_props
+    return projected
+
+
 def _build_iv_config_and_articles(
     topic_id: int, canonical_name: str, wiki: str, *,
     iv_name: str | None,
@@ -9638,12 +9668,7 @@ def _build_iv_config_and_articles(
     if _tags_emission_enabled():
         topic_tags = db.list_topic_tags(topic_id)
         if topic_tags:
-            tags_taxonomy = [
-                {k: v for k, v in t.items()
-                 if k in ('name', 'description', 'ordering',
-                          'derived_from', 'properties')}
-                for t in topic_tags
-            ]
+            tags_taxonomy = [_project_tag_for_iv(t) for t in topic_tags]
             membership = db.get_tag_membership_by_title(topic_id)
             for a in articles:
                 article_tags = []
